@@ -1,0 +1,170 @@
+<?php
+defined('ABSPATH') || exit;
+
+final class CSM_Database {
+    public static function inventory(): array {
+        global $wpdb;
+        $sql = $wpdb->prepare('SELECT TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH AS bytes FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = %s ORDER BY TABLE_NAME', DB_NAME, 'BASE TABLE');
+        $result = [];
+        foreach ($wpdb->get_results($sql, ARRAY_A) as $row) {
+            if (!str_starts_with($row['TABLE_NAME'], $wpdb->prefix) || str_starts_with($row['TABLE_NAME'], '_csm_')) { continue; }
+            $result[] = ['id' => $row['TABLE_NAME'], 'name' => $row['TABLE_NAME'], 'engine' => $row['ENGINE'], 'rows' => (int)$row['TABLE_ROWS'], 'bytes' => (int)$row['bytes']];
+        }
+        return $result;
+    }
+
+    public static function validate(array $tables): array {
+        $allowed = array_column(self::inventory(), null, 'id');
+        $output = [];
+        foreach (array_unique($tables) as $table) {
+            if (!isset($allowed[$table])) { throw new RuntimeException('Unknown database table.'); }
+            if (strtoupper($allowed[$table]['engine']) !== 'INNODB') {
+                throw new RuntimeException($table . ' is not InnoDB; a consistent live snapshot cannot be guaranteed.');
+            }
+            $output[] = $table;
+        }
+        return $output;
+    }
+
+    public static function stream(array $selection): Generator {
+        global $wpdb;
+        $tables = self::validate($selection['tables'] ?? []);
+        yield CSM_Support::json(['type' => 'header', 'version' => 1, 'kind' => 'database', 'prefix' => $wpdb->prefix, 'url' => site_url(), 'home' => home_url(), 'root' => ABSPATH, 'content' => WP_CONTENT_DIR, 'tables' => $tables]);
+        CSM_Support::query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        CSM_Support::query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+        $hash = hash_init('sha256');
+        $rows = 0;
+        try {
+            foreach ($tables as $table) {
+                $quoted = CSM_Support::ident($table);
+                $ddl = $wpdb->get_row('SHOW CREATE TABLE ' . $quoted, ARRAY_N);
+                if (!$ddl) { throw new RuntimeException('Cannot read table schema.'); }
+                if (preg_match('/\bFOREIGN KEY\b/i', $ddl[1])) {
+                    throw new RuntimeException('Foreign-key tables are not supported in this release: ' . $table);
+                }
+                $columns = $wpdb->get_results('SHOW COLUMNS FROM ' . $quoted, ARRAY_A);
+                $columns = array_values(array_filter($columns, fn($column) => !str_contains($column['Extra'], 'GENERATED')));
+                $names = array_column($columns, 'Field');
+                $text_columns = array_column(array_filter($columns, fn($column) => (bool)preg_match('/^(char|varchar|tinytext|text|mediumtext|longtext|enum|set|json)\b/i', $column['Type'])), 'Field');
+                $line = CSM_Support::json(['type' => 'table', 'name' => $table, 'schema' => $ddl[1], 'columns' => $names, 'text_columns' => $text_columns]);
+                hash_update($hash, $line); yield $line;
+                $keys = $wpdb->get_results('SHOW INDEX FROM ' . $quoted . " WHERE Key_name = 'PRIMARY' ORDER BY Seq_in_index", ARRAY_A);
+                $keys = array_column($keys, 'Column_name');
+                $last = null; $offset = 0;
+                do {
+                    $where = '';
+                    if ($last && $keys) {
+                        $clauses = [];
+                        foreach ($keys as $index => $key) {
+                            $terms = [];
+                            for ($j = 0; $j <= $index; $j++) {
+                                $terms[] = CSM_Support::ident($keys[$j]) . ($j === $index ? ' > ' : ' = ') . $wpdb->prepare('%s', $last[$keys[$j]]);
+                            }
+                            $clauses[] = '(' . implode(' AND ', $terms) . ')';
+                        }
+                        $where = ' WHERE ' . implode(' OR ', $clauses);
+                    }
+                    $order = $keys ? ' ORDER BY ' . implode(',', array_map([CSM_Support::class, 'ident'], $keys)) : '';
+                    $limit = $keys ? ' LIMIT 250' : ' LIMIT ' . $offset . ',250';
+                    $batch = $wpdb->get_results('SELECT ' . implode(',', array_map([CSM_Support::class, 'ident'], $names)) . ' FROM ' . $quoted . $where . $order . $limit, ARRAY_A);
+                    if ($wpdb->last_error) { throw new RuntimeException($wpdb->last_error); }
+                    foreach ($batch as $row) {
+                        $last = $row;
+                        if ($table === $wpdb->options && isset($row['option_name']) && str_starts_with($row['option_name'], '_csm_')) { continue; }
+                        $encoded = [];
+                        foreach ($row as $name => $value) { $encoded[] = $value === null ? null : base64_encode((string)$value); }
+                        $line = CSM_Support::json(['type' => 'row', 'values' => $encoded]);
+                        if (strlen($line) >= 32 * 1024 * 1024) { throw new RuntimeException('A database row exceeds the 32 MB stream record limit.'); }
+                        hash_update($hash, $line); yield $line; $rows++;
+                    }
+                    $offset += count($batch);
+                } while (count($batch) === 250);
+                $line = CSM_Support::json(['type' => 'table-end']);
+                hash_update($hash, $line); yield $line;
+            }
+            yield CSM_Support::json(['type' => 'end', 'rows' => $rows, 'sha256' => hash_final($hash)]);
+        } finally {
+            CSM_Support::query('ROLLBACK');
+        }
+    }
+
+    public static function stage($fp, array &$job): void {
+        global $wpdb;
+        $header = CSM_Support::line($fp);
+        if (($header['type'] ?? '') !== 'header' || ($header['version'] ?? 0) !== 1 || ($header['kind'] ?? '') !== 'database') { throw new RuntimeException('Invalid database stream header.'); }
+        $prefix = $header['prefix'];
+        if (!$prefix || !is_array($header['tables']) || $header['tables'] !== $job['selection']['tables']) { throw new RuntimeException('Database stream does not match the selected tables.'); }
+        $job['database'] = []; CSM_Support::save($job);
+        $hash = hash_init('sha256'); $rows = 0; $current = null; $columns = []; $seen = [];
+        $pairs = !empty($job['selection']['replace']) ? [
+            $header['url'] => site_url(), $header['home'] => home_url(),
+            $header['root'] => ABSPATH, $header['content'] => WP_CONTENT_DIR,
+        ] : [];
+        unset($pairs['']);
+        while (true) {
+            $record = CSM_Support::line($fp);
+            if (($record['type'] ?? '') === 'end') {
+                if ($current || $rows !== $record['rows'] || !hash_equals(hash_final($hash), $record['sha256']) || $seen !== $header['tables'] || fread($fp, 1) !== '') {
+                    throw new RuntimeException('Database stream is incomplete or checksum failed.');
+                }
+                $job['rows'] = $rows; return;
+            }
+            hash_update($hash, CSM_Support::json($record));
+            if ($record['type'] === 'table') {
+                if ($current || !in_array($record['name'], $header['tables'], true) || in_array($record['name'], $seen, true) || !str_starts_with($record['name'], $prefix)) { throw new RuntimeException('Unexpected table.'); }
+                $seen[] = $record['name'];
+                $suffix = substr($record['name'], strlen($prefix));
+                $target = $wpdb->prefix . $suffix;
+                $current = '_csm_' . substr($job['id'], 0, 10) . '_' . count($job['database']);
+                $backup = $current . '_old';
+                CSM_Support::ident($target);
+                $ddl = $record['schema'];
+                // A signed peer can send data, not arbitrary executable SQL.
+                if (preg_match('/;|\b(FOREIGN KEY|DATA DIRECTORY|INDEX DIRECTORY|TABLESPACE|CONNECTION|SELECT|INSERT|DROP)\b/i', $ddl) || !preg_match('/\bENGINE=InnoDB\b/i', $ddl) || !str_starts_with($ddl, 'CREATE TABLE ' . CSM_Support::ident($record['name']) . ' (')) {
+                    throw new RuntimeException('Unsupported or unsafe table schema.');
+                }
+                $columns = $record['columns']; $text_columns = $record['text_columns'] ?? [];
+                foreach ($columns as $column) { CSM_Support::ident($column); }
+                $job['database'][] = ['target' => $target, 'stage' => $current, 'backup' => $backup];
+                CSM_Support::save($job);
+                $ddl = preg_replace('/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . CSM_Support::ident($current), $ddl, 1);
+                CSM_Support::query($ddl);
+            } elseif ($record['type'] === 'row' && $current) {
+                if (count($record['values']) !== count($columns)) { throw new RuntimeException('Invalid database row.'); }
+                $values = [];
+                foreach ($record['values'] as $index => $value) {
+                    if ($value === null) { $values[] = 'NULL'; continue; }
+                    $decoded = base64_decode($value, true);
+                    if ($decoded === false) { throw new RuntimeException('Invalid row encoding.'); }
+                    if (in_array($columns[$index], $text_columns, true)) { $decoded = CSM_Support::replace($decoded, $pairs); }
+                    if ($prefix !== $wpdb->prefix && in_array($columns[$index], ['meta_key', 'option_name'], true) && str_starts_with($decoded, $prefix)) {
+                        $decoded = $wpdb->prefix . substr($decoded, strlen($prefix));
+                    }
+                    $values[] = "X'" . bin2hex($decoded) . "'";
+                }
+                CSM_Support::query('INSERT INTO ' . CSM_Support::ident($current) . ' (' . implode(',', array_map([CSM_Support::class, 'ident'], $columns)) . ') VALUES (' . implode(',', $values) . ')');
+                $rows++;
+            } elseif ($record['type'] === 'table-end' && $current) {
+                $current = null;
+            } else { throw new RuntimeException('Unexpected database record.'); }
+        }
+    }
+
+    public static function preserve_options(array $job, bool $connection_only = false): void {
+        global $wpdb;
+        foreach ($job['database'] ?? [] as $table) {
+            if ($table['target'] !== $wpdb->options) { continue; }
+            $staged = CSM_Support::ident($table['stage']);
+            // Keep the destination identity, credentials, local environment and plugin activation state.
+            $names = $connection_only ? [] : ['siteurl', 'home', 'active_plugins', 'cron', 'blog_public', 'upload_path', 'upload_url_path'];
+            CSM_Support::query($wpdb->prepare('DELETE FROM ' . $staged . ' WHERE option_name LIKE %s', $wpdb->esc_like('_csm_') . '%'));
+            foreach ($names as $name) { CSM_Support::query($wpdb->prepare('DELETE FROM ' . $staged . ' WHERE option_name = %s', $name)); }
+            $rows = $wpdb->get_results('SELECT option_name, option_value, autoload FROM ' . CSM_Support::ident($wpdb->options), ARRAY_A);
+            foreach ($rows as $row) {
+                if (!str_starts_with($row['option_name'], '_csm_') && !in_array($row['option_name'], $names, true)) { continue; }
+                CSM_Support::query($wpdb->prepare('DELETE FROM ' . $staged . ' WHERE option_name = %s', $row['option_name']));
+                CSM_Support::query($wpdb->prepare('INSERT INTO ' . $staged . ' (option_name, option_value, autoload) VALUES (%s,%s,%s)', $row['option_name'], $row['option_value'], $row['autoload']));
+            }
+        }
+    }
+}
