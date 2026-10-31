@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Read-only-source recovery/old-loader checks on QA-A/C. No migration apply or push."""
-import json, os, shutil, subprocess, tempfile, time
+import json, shutil, subprocess, tempfile, time
 from pathlib import Path
 S,D='trickle-qa-a','trickle-qa-c'; NAME='trickle-source-recovery-fixture'
 ROOT={s:Path.home()/'Cove/Sites'/(s+'.localhost/public') for s in [S,D]}
-UA=os.environ.get('TRICKLE_TEST_USER_AGENT');checks=0
+checks=0
 def wp(s,*args):
  p=subprocess.run(['cove','wp',s,*args],capture_output=True,text=True,timeout=180)
  assert p.returncode==0,p.stdout+p.stderr
  return p.stdout
 def ev(s,code):
- prefix='add_filter("csm_user_agent",static fn($ua)=>'+json.dumps(UA)+');' if UA else ''
- return json.loads(wp(s,'eval',prefix+code))
+ return json.loads(wp(s,'eval',code))
 def op(action):return ev(D,'$s=CSM_Controller::session();echo wp_json_encode(CSM_Controller::execute('+json.dumps(action)+',["id"=>$s["id"],"kind"=>"files"]));')
 def prepare():return ev(D,'echo wp_json_encode(CSM_Controller::execute("prepare",["site"=>"https://trickle-qa-a.localhost:8453","direction"=>"pull","selection"=>["plugins"=>["'+NAME+'"],"transport"=>"stream","sync_active_plugins"=>false]]));')
 def preflight():return ev(D,'$calls=[];add_action("csm_request_complete",static function($a,$c)use(&$calls){if($a==="bundle")$calls[]=$c["http_status"];},10,2);$s=CSM_Controller::session();$r=CSM_Controller::execute("preflight",["id"=>$s["id"],"kind"=>"files"]);echo wp_json_encode([$r["timeline"]["ready"],$calls]);')

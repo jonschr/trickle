@@ -4,6 +4,7 @@ defined('ABSPATH') || exit;
 /** Immutable gzip snapshots with resumable streaming, bounded chunks and durable byte offsets. */
 final class CSM_Segments {
     public const SIZE = 524288;
+    public const UPLOAD_SIZE = 16 * 1024 * 1024;
 
     private static function path(string $id, string $kind, string $suffix): string {
         if (!preg_match('/^[a-f0-9]{32}$/D', $id) || !in_array($kind, ['files', 'database'], true)) { throw new RuntimeException('Invalid segmented transfer.'); }
@@ -58,18 +59,20 @@ final class CSM_Segments {
         finally { fclose($fp); }
     }
 
-    public static function source(string $id, string $kind, int $offset, array $bundle): Generator {
+    public static function source(string $id, string $kind, int $offset, array $bundle, ?int $length = null): Generator {
         self::validate_bundle($bundle); $path = self::path($id, $kind, '.source');
         $meta = is_file($path . '.json') ? json_decode(file_get_contents($path . '.json'), true, 32, JSON_THROW_ON_ERROR) : [];
         CSM_Access::assert_owner($meta);
         if ($offset < 0 || $offset > $bundle['size'] || ($meta['size'] ?? null) !== $bundle['size'] || !hash_equals($meta['sha256'] ?? '', $bundle['sha256']) || !is_file($path) || filesize($path) !== $bundle['size']) { throw new RuntimeException('Source snapshot or offset does not match.'); }
+        $length ??= $bundle['size'] - $offset;
+        if ($length < 0 || $length > $bundle['size'] - $offset) { throw new RuntimeException('Invalid source window length.'); }
         $fp = fopen($path, 'rb');
         if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Cannot open source snapshot.'); }
         try {
-            while (!feof($fp)) {
-                $bytes = fread($fp, self::SIZE);
+            while ($length > 0 && !feof($fp)) {
+                $bytes = fread($fp, min(self::SIZE, $length));
                 if ($bytes === false) { throw new RuntimeException('Cannot read source snapshot.'); }
-                if ($bytes !== '') { yield $bytes; }
+                if ($bytes !== '') { $length -= strlen($bytes); yield $bytes; }
             }
         } finally { fclose($fp); }
     }
@@ -90,9 +93,11 @@ final class CSM_Segments {
         return self::receive($job, $kind, $bundle, $next, '', hash('sha256', ''));
     }
 
-    public static function receive_stream(array $job, string $kind, array $bundle, int $offset, $input): array {
+    public static function receive_stream(array $job, string $kind, array $bundle, int $offset, $input, ?int $length = null): array {
         $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
         if ($offset !== $state['offset']) { throw new RuntimeException('Destination offset changed. Refresh its checkpoint before resuming.'); }
+        if ($length !== null && ($length < 0 || $length > self::UPLOAD_SIZE || $length > $bundle['size'] - $offset || ($length === 0 && $offset !== $bundle['size']))) { throw new RuntimeException('Invalid upload window length.'); }
+        $end = $offset + ($length ?? ($bundle['size'] - $offset));
         self::write_json($path . '.json', $bundle);
         $fp = fopen($path, 'c+b');
         if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Cannot resume destination stream.'); }
@@ -101,12 +106,12 @@ final class CSM_Segments {
             while (!feof($input)) {
                 $bytes = fread($input, self::SIZE);
                 if ($bytes === false || ($bytes === '' && !feof($input))) { throw new CSM_Network_Error('Connection failed: Incoming stream interrupted.'); }
-                if ($offset + strlen($bytes) > $bundle['size']) { throw new RuntimeException('Snapshot stream exceeds its declared size.'); }
+                if ($offset + strlen($bytes) > $end) { throw new RuntimeException('Snapshot stream exceeds its declared size.'); }
                 CSM_Support::write($fp, $bytes); $offset += strlen($bytes); fflush($fp);
                 CSM_Progress::update(['phase'=>'Receiving resumable stream', 'component'=>$kind, 'bytes'=>$offset, 'count'=>$offset, 'total'=>$bundle['size'], 'unit'=>'bytes']);
             }
         } finally { fclose($fp); }
-        if ($offset !== $bundle['size']) { throw new CSM_Network_Error('Connection failed: Incoming stream interrupted. Resume from the saved offset.'); }
+        if ($offset !== $end) { throw new CSM_Network_Error('Connection failed: Incoming stream interrupted. Resume from the saved offset.'); }
         return self::receive($job, $kind, $bundle, $offset, '', hash('sha256', ''));
     }
 

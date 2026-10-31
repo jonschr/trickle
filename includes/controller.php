@@ -241,9 +241,10 @@ final class CSM_Controller {
         $bundle = $control['bundles'][$kind];
         $state = $pull ? CSM_Segments::state(CSM_Support::job($id), $kind, $bundle) : CSM_Transport::request($peer, 'segment_state', ['id' => $id, 'kind' => $kind, 'bundle' => $bundle]);
         CSM_Progress::update(['phase' => 'Transferring ' . $kind . ' stream', 'component' => $kind, 'count' => $state['offset'], 'total' => $bundle['size'], 'unit' => 'bytes', 'bytes' => $state['offset']], true);
-        if (($control['selection']['transport'] ?? 'chunks') === 'stream') {
+        if (($control['selection']['transport'] ?? 'stream') === 'stream') {
+            $length = min(CSM_Segments::UPLOAD_SIZE, $bundle['size'] - $state['offset']);
             $summary = $pull ? CSM_Segments::pull($peer, CSM_Support::job($id), $kind, $bundle)
-                : CSM_Transport::request($peer, 'stream_data', ['id'=>$id, 'kind'=>$kind, 'bundle'=>$bundle, 'offset'=>$state['offset'], 'progress_run'=>CSM_Progress::run()], CSM_Segments::source($id, $kind, $state['offset'], $bundle));
+                : CSM_Transport::request($peer, 'stream_data', ['id'=>$id, 'kind'=>$kind, 'bundle'=>$bundle, 'offset'=>$state['offset'], 'length'=>$length, 'progress_run'=>CSM_Progress::run()], CSM_Segments::source($id, $kind, $state['offset'], $bundle, $length));
         } else {
             $bytes = '';
             if ($state['offset'] < $bundle['size']) {

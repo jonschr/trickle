@@ -134,6 +134,7 @@ final class CSM_Transport {
         if ($upload) {
             $buffer = ''; $initialized = false;
             $options[CURLOPT_UPLOAD] = true;
+            if ($action === 'stream_data' && isset($data['length'])) { $options[CURLOPT_INFILESIZE] = $data['length']; }
             $options[CURLOPT_CUSTOMREQUEST] = 'POST';
             $options[CURLOPT_READFUNCTION] = static function ($curl, $fp, $length) use ($upload, &$buffer, &$initialized, &$upload_error) {
                 try {

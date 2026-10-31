@@ -151,9 +151,10 @@ final class CSM_Plugin {
             if ($action === 'stream_data') {
                 CSM_Updates::assert_job($job);
                 if (!is_int($data['offset'] ?? null)) { throw new RuntimeException('Invalid destination offset.'); }
+                if (isset($data['length']) && !is_int($data['length'])) { throw new RuntimeException('Invalid upload window length.'); }
                 CSM_Progress::start($job['id'], 'Receiving resumable stream', $data['progress_run'] ?? null);
                 $fp = fopen('php://input', 'rb');
-                try { self::respond(CSM_Segments::receive_stream($job, $data['kind'] ?? '', $data['bundle'] ?? [], $data['offset'], $fp)); }
+                try { self::respond(CSM_Segments::receive_stream($job, $data['kind'] ?? '', $data['bundle'] ?? [], $data['offset'], $fp, $data['length'] ?? null)); }
                 finally { fclose($fp); }
             }
             if ($action === 'receive') {

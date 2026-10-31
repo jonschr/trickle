@@ -94,7 +94,7 @@ final class CSM_CLI {
      * : Explicit per-transfer Git overrides; --yes never grants these.
      *
      * [--transport=<mode>]
-     * : stream (default) or chunks; both resume retained snapshots.
+     * : stream (default): continuous pulls and 16 MiB push windows. chunks uses 512 KB requests. Both resume.
      *
      * [--format=<format>]
      * : table or json.
@@ -368,7 +368,7 @@ final class CSM_CLI {
      * : Confirm application without an interactive prompt.
      *
      * [--transport=<mode>]
-     * : stream (default) or chunks; both resume retained snapshots.
+     * : stream (default): continuous pulls and 16 MiB push windows. chunks uses 512 KB requests. Both resume.
      *
      * [--format=<format>]
      * : table or json.
@@ -441,7 +441,7 @@ final class CSM_CLI {
      * : Confirm application without an interactive prompt.
      *
      * [--transport=<mode>]
-     * : stream (default) or chunks; both resume retained snapshots.
+     * : stream (default): continuous pulls and 16 MiB push windows. chunks uses 512 KB requests. Both resume.
      *
      * [--format=<format>]
      * : table or json.

@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """A real stalled TLS download must time out and resume, without a push or apply."""
 import json
-import os
 from pathlib import Path
 import random
 import shutil
@@ -11,7 +10,6 @@ import tempfile
 S, D = 'trickle-qa-a', 'trickle-qa-c'
 NAME = 'trickle-stall-fixture'
 ROOT = {s: Path.home() / 'Cove/Sites' / (s + '.localhost/public') for s in [S, D]}
-UA = os.environ.get('TRICKLE_TEST_USER_AGENT')
 
 def wp(site, *args):
     p = subprocess.run(['cove', 'wp', site, *args], capture_output=True, text=True, timeout=120)
@@ -19,8 +17,7 @@ def wp(site, *args):
     return p.stdout
 
 def ev(site, code):
-    prefix = 'add_filter("csm_user_agent",static fn($ua)=>' + json.dumps(UA) + ');' if UA else ''
-    return json.loads(wp(site, 'eval', prefix + code))
+    return json.loads(wp(site, 'eval', code))
 
 def op(action, data=None):
     return ev(D, '$s=CSM_Controller::session();echo wp_json_encode(CSM_Controller::execute(' + json.dumps(action) + ',["id"=>$s["id"]]+json_decode(' + repr(json.dumps(data or {})) + ',true)));')

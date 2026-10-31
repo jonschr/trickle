@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compact unchanged-component plans, real pulls and independent verification on QA-A/C."""
-import json,subprocess,shutil,os,tempfile
+import json,subprocess,shutil,tempfile
 from pathlib import Path
 S,D='trickle-qa-a','trickle-qa-c';NAME='trickle-component-fixture';ROOT={x:Path.home()/'Cove/Sites'/(x+'.localhost/public') for x in [S,D]};checks=0
 
@@ -31,7 +31,6 @@ temp=tempfile.TemporaryDirectory(prefix='trickle-component-');flag=Path(temp.nam
 try:
  for site in ROOT:
   code='<?php\n'
-  if os.environ.get('TRICKLE_TEST_USER_AGENT'):code+='add_filter("csm_user_agent",static fn($ua)=>'+json.dumps(os.environ['TRICKLE_TEST_USER_AGENT'])+');\n'
   if site==S:code+='''add_action('plugins_loaded',static function(){if(($_GET['trickle']??'')!=='component_hashes'||!is_file(__FLAG__))return;$d=CSM_Transport::authenticate('component_hashes');$mode=file_get_contents(__FLAG__);unlink(__FLAG__);$r=CSM_Components::inventory($d);if($mode==='legacy'){unset($r['component_groups'],$r['component_counts']);}else{$r['files']=100001;$r['component_counts']['plugins/trickle-component-fixture']=100001;}CSM_Plugin::respond($r);},0);'''.replace('__FLAG__',repr(str(flag)))
   mu[site].write_text(code)
   plugin=ROOT[site]/'wp-content/plugins'/NAME;theme=ROOT[site]/'wp-content/themes'/NAME;plugin.mkdir();theme.mkdir()

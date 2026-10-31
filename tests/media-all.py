@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """All-media defaults, force and saved settings on isolated QA uploads; pulls only."""
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -11,7 +10,6 @@ S, D = 'trickle-qa-a', 'trickle-qa-c'
 ROOT = {s: Path.home() / 'Cove/Sites' / (s + '.localhost/public') for s in [S, D]}
 FIX = {s: ROOT[s] / 'wp-content/uploads/trickle-media-all-fixture' for s in ROOT}
 MU = {s: ROOT[s] / 'wp-content/mu-plugins/trickle-media-all-fixture.php' for s in ROOT}
-UA = os.environ.get('TRICKLE_TEST_USER_AGENT')
 checks = 0
 
 def wp(site, *args, fail=False):
@@ -48,8 +46,6 @@ try:
     for site in ROOT:
         FIX[site].mkdir()
         hook = "<?php\nadd_filter('upload_dir',static function($u){$u['basedir']=WP_CONTENT_DIR.'/uploads/trickle-media-all-fixture';$u['baseurl']=content_url('/uploads/trickle-media-all-fixture');$u['path']=$u['basedir'];$u['url']=$u['baseurl'];$u['error']=false;return $u;});\n"
-        if UA:
-            hook += 'add_filter("csm_user_agent",static fn($ua)=>' + json.dumps(UA) + ');\n'
         MU[site].write_text(hook)
         for relative, data in {'2030/01/a.jpg': b'first', '2030/01/b.jpg': b'second', '2031/02/c.jpg': b'third', '.env': b'excluded', 'node_modules/asset.jpg': b'excluded', 'protected/code.jpg': b'protected'}.items():
             path = FIX[site] / relative
