@@ -89,6 +89,10 @@ final class CSM_Support {
         return $id;
     }
 
+    public static function unlock(): void {
+        if (isset($GLOBALS['_csm_lock'])) { fclose($GLOBALS['_csm_lock']); unset($GLOBALS['_csm_lock']); }
+    }
+
     public static function remove_tree(string $path): void {
         if (!file_exists($path)) { return; }
         if (is_dir($path) && !is_link($path)) {
@@ -104,6 +108,9 @@ final class CSM_Support {
 
     public static function replace(string $text, array $pairs): string {
         if (!$pairs) { return $text; }
+        $replaced = strtr($text, $pairs);
+        // Leave unrelated values byte-for-byte intact, including malformed legacy serialization.
+        if ($replaced === $text) { return $text; }
         // Parse serialized strings without instantiating PHP objects or executing __wakeup().
         if (is_serialized($text)) {
             $offset = 0;
@@ -111,7 +118,7 @@ final class CSM_Support {
             if ($offset !== strlen($text)) { throw new RuntimeException('Unexpected trailing serialized data.'); }
             return $result;
         }
-        return strtr($text, $pairs);
+        return $replaced;
     }
 
     private static function serialized(string $s, int &$p, array $pairs): string {

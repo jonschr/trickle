@@ -26,16 +26,80 @@ final class CSM_Database {
         return $output;
     }
 
+    public static function identity(): array {
+        return ['url' => site_url(), 'home' => home_url(), 'root' => ABSPATH, 'content' => WP_CONTENT_DIR];
+    }
+
+    public static function replacement_defaults(array $source, array $destination): array {
+        $rules = [];
+        foreach (['url' => 'WordPress URL', 'home' => 'Home URL', 'root' => 'WordPress directory', 'content' => 'Content directory'] as $id => $label) {
+            if (!is_string($source[$id] ?? null) || !is_string($destination[$id] ?? null)) { throw new RuntimeException('Update Trickle on both sites to preview all default replacements.'); }
+            $find = $source[$id];
+            if ($find === '') { continue; }
+            if (isset($rules[$find])) {
+                $rules[$find]['label'] .= ' / ' . $label;
+                // Preserve the legacy mapping when site/home URLs share the same search string.
+                $rules[$find]['replace'] = $destination[$id];
+            } else {
+                $rules[$find] = ['kind' => 'default', 'id' => $id, 'label' => $label, 'find' => $find, 'replace' => $destination[$id], 'enabled' => true];
+            }
+        }
+        return array_values($rules);
+    }
+
+    public static function replacement_selection(array $selection): array {
+        $selection['replace'] = !array_key_exists('replace', $selection) || !empty($selection['replace']);
+        if (!array_key_exists('replacements', $selection)) { return $selection; }
+        $rules = $selection['replacements'];
+        if (!is_array($rules) || !array_is_list($rules) || count($rules) > 100 || strlen(CSM_Support::json($rules)) > 65536) {
+            throw new RuntimeException('Use a list of at most 100 replacement rules, totaling no more than 64 KB.');
+        }
+        $selection['replacements'] = [];
+        foreach ($rules as $rule) {
+            if (!is_array($rule) || !is_string($rule['find'] ?? null) || !is_string($rule['replace'] ?? null) || (array_key_exists('enabled', $rule) && !is_bool($rule['enabled']))) {
+                throw new RuntimeException('Each replacement needs find and replace text and an optional boolean enabled value.');
+            }
+            $kind = $rule['kind'] ?? 'custom';
+            if (!in_array($kind, ['default', 'custom'], true)) { throw new RuntimeException('Invalid replacement rule type.'); }
+            $selection['replacements'][] = ['kind' => $kind, 'id' => $kind === 'default' ? sanitize_key($rule['id'] ?? '') : '',
+                'label' => $kind === 'default' ? sanitize_text_field($rule['label'] ?? 'Default replacement') : '',
+                'find' => $rule['find'], 'replace' => $rule['replace'], 'enabled' => $rule['enabled'] ?? true];
+        }
+        self::rules_to_pairs($selection['replacements'], $selection['replace']);
+        return $selection;
+    }
+
+    private static function rules_to_pairs(array $rules, bool $enabled): array {
+        if (!$enabled) { return []; }
+        $pairs = [];
+        foreach ($rules as $rule) {
+            if (!$rule['enabled']) { continue; }
+            if ($rule['find'] === '') { throw new RuntimeException('An enabled replacement cannot have empty find text. Disable or remove the empty row.'); }
+            if (array_key_exists($rule['find'], $pairs) && $pairs[$rule['find']] !== $rule['replace']) {
+                throw new RuntimeException('Enabled replacement rules search for the same text with different replacements. Disable one of the conflicting rows.');
+            }
+            $pairs[$rule['find']] = $rule['replace'];
+        }
+        return $pairs;
+    }
+
+    public static function replacement_pairs(array $source, array $destination, array $selection): array {
+        $selection = self::replacement_selection($selection);
+        if (!$selection['replace']) { return []; }
+        return self::rules_to_pairs($selection['replacements'] ?? self::replacement_defaults($source, $destination), $selection['replace']);
+    }
+
     public static function stream(array $selection): Generator {
         global $wpdb;
         $tables = self::validate($selection['tables'] ?? []);
-        yield CSM_Support::json(['type' => 'header', 'version' => 1, 'kind' => 'database', 'prefix' => $wpdb->prefix, 'url' => site_url(), 'home' => home_url(), 'root' => ABSPATH, 'content' => WP_CONTENT_DIR, 'tables' => $tables]);
+        yield CSM_Support::json(array_merge(['type' => 'header', 'version' => 1, 'kind' => 'database', 'prefix' => $wpdb->prefix, 'tables' => $tables], self::identity()));
         CSM_Support::query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
         CSM_Support::query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
         $hash = hash_init('sha256');
         $rows = 0;
         try {
             foreach ($tables as $table) {
+                CSM_Progress::update(['phase' => 'Exporting table', 'component' => $table, 'count' => $rows, 'total' => null, 'unit' => 'rows', 'bytes' => 0]);
                 $quoted = CSM_Support::ident($table);
                 $ddl = $wpdb->get_row('SHOW CREATE TABLE ' . $quoted, ARRAY_N);
                 if (!$ddl) { throw new RuntimeException('Cannot read table schema.'); }
@@ -76,6 +140,7 @@ final class CSM_Database {
                         $line = CSM_Support::json(['type' => 'row', 'values' => $encoded]);
                         if (strlen($line) >= 32 * 1024 * 1024) { throw new RuntimeException('A database row exceeds the 32 MB stream record limit.'); }
                         hash_update($hash, $line); yield $line; $rows++;
+                        CSM_Progress::update(['count' => $rows]);
                     }
                     $offset += count($batch);
                 } while (count($batch) === 250);
@@ -96,11 +161,7 @@ final class CSM_Database {
         if (!$prefix || !is_array($header['tables']) || $header['tables'] !== $job['selection']['tables']) { throw new RuntimeException('Database stream does not match the selected tables.'); }
         $job['database'] = []; CSM_Support::save($job);
         $hash = hash_init('sha256'); $rows = 0; $current = null; $columns = []; $seen = [];
-        $pairs = !empty($job['selection']['replace']) ? [
-            $header['url'] => site_url(), $header['home'] => home_url(),
-            $header['root'] => ABSPATH, $header['content'] => WP_CONTENT_DIR,
-        ] : [];
-        unset($pairs['']);
+        $pairs = self::replacement_pairs($header, self::identity(), $job['selection']);
         while (true) {
             $record = CSM_Support::line($fp);
             if (($record['type'] ?? '') === 'end') {
@@ -113,6 +174,7 @@ final class CSM_Database {
             if ($record['type'] === 'table') {
                 if ($current || !in_array($record['name'], $header['tables'], true) || in_array($record['name'], $seen, true) || !str_starts_with($record['name'], $prefix)) { throw new RuntimeException('Unexpected table.'); }
                 $seen[] = $record['name'];
+                CSM_Progress::update(['phase' => 'Receiving and verifying table', 'component' => $record['name'], 'count' => $rows, 'total' => null, 'unit' => 'rows', 'bytes' => 0]);
                 $suffix = substr($record['name'], strlen($prefix));
                 $target = $wpdb->prefix . $suffix;
                 $current = '_csm_' . substr($job['id'], 0, 10) . '_' . count($job['database']);
@@ -144,6 +206,7 @@ final class CSM_Database {
                 }
                 CSM_Support::query('INSERT INTO ' . CSM_Support::ident($current) . ' (' . implode(',', array_map([CSM_Support::class, 'ident'], $columns)) . ') VALUES (' . implode(',', $values) . ')');
                 $rows++;
+                CSM_Progress::update(['count' => $rows]);
             } elseif ($record['type'] === 'table-end' && $current) {
                 $current = null;
             } else { throw new RuntimeException('Unexpected database record.'); }

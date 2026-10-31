@@ -21,11 +21,23 @@ final class CSM_Files {
         foreach (wp_get_themes() as $id => $theme) {
             $themes[] = ['id' => $id, 'name' => $theme->get('Name'), 'version' => $theme->get('Version'), 'update' => $theme_updates->response[$id]['new_version'] ?? null, 'icon' => esc_url_raw($theme->get_screenshot() ?: '', ['http', 'https']), 'parent' => $theme->get('Template'), 'active' => in_array($id, $active_themes, true)];
         }
+        return ['plugins' => array_values($plugins), 'themes' => $themes] + self::media();
+    }
+
+    public static function media(int $page = 1, array $ids = []): array {
+        if ($page < 1 || $page > 100000 || count($ids) > 10000) { throw new RuntimeException('Invalid media page or attachment selection.'); }
+        foreach ($ids as $id) { if (!is_int($id) || $id < 1) { throw new RuntimeException('Invalid attachment ID.'); } }
+        $args = ['post_type' => 'attachment', 'post_status' => 'inherit', 'numberposts' => 60, 'offset' => ($page - 1) * 60, 'orderby' => 'date ID', 'order' => 'DESC'];
+        if ($ids) { $args['post__in'] = $ids; $args['numberposts'] = count($ids); $args['offset'] = 0; }
         $media = [];
-        foreach (get_posts(['post_type' => 'attachment', 'post_status' => 'inherit', 'numberposts' => 250, 'orderby' => 'ID', 'order' => 'DESC']) as $post) {
-            $media[] = ['id' => $post->ID, 'name' => $post->post_title, 'file' => get_post_meta($post->ID, '_wp_attached_file', true), 'date' => $post->post_modified_gmt];
+        foreach (get_posts($args) as $post) {
+            $image = wp_attachment_is_image($post->ID) ? wp_get_attachment_image_src($post->ID, 'thumbnail') : false;
+            $uploaded = $post->post_date_gmt !== '0000-00-00 00:00:00' ? str_replace(' ', 'T', $post->post_date_gmt) . 'Z' : null;
+            $media[] = ['id' => $post->ID, 'name' => $post->post_title, 'file' => get_post_meta($post->ID, '_wp_attached_file', true),
+                'date' => $post->post_modified_gmt, 'uploaded' => $uploaded, 'preview' => $image ? esc_url_raw($image[0], ['http', 'https']) : '', 'mime' => get_post_mime_type($post)];
         }
-        return ['plugins' => array_values($plugins), 'themes' => $themes, 'media' => $media, 'media_total' => (int)wp_count_posts('attachment')->inherit];
+        $total = (int)wp_count_posts('attachment')->inherit;
+        return ['media' => $media, 'media_total' => $total, 'media_page' => $page, 'media_more' => !$ids && $page * 60 < $total];
     }
 
     public static function selection(array $selection): array {
@@ -37,13 +49,43 @@ final class CSM_Files {
                 if (!isset($allowed[$id]) || !empty($allowed[$id]['protected'])) { throw new RuntimeException('Unknown or protected ' . $kind . ' selection.'); }
             }
         }
+        return self::media_selection($selection);
+    }
+
+    public static function media_selection(array $selection): array {
         $mode = $selection['media'] ?? 'none';
-        if (!in_array($mode, ['none', 'all', 'changed', 'selected'], true)) { throw new RuntimeException('Unknown media selection.'); }
+        if (!in_array($mode, ['none', 'all', 'changed', 'selected', 'uploaded', 'compare'], true)) { throw new RuntimeException('Unknown media selection.'); }
         $selection['media'] = $mode;
+        $selection['media_verify'] = !empty($selection['media_verify']);
         $selection['since'] = max(0, (int)($selection['since'] ?? 0));
         if ($mode === 'changed' && !$selection['since']) { throw new RuntimeException('Choose a starting date or complete an initial media transfer first.'); }
         $selection['media_ids'] = array_values(array_unique(array_map('intval', $selection['media_ids'] ?? [])));
+        foreach (['media_after', 'media_before'] as $field) {
+            $date = $selection[$field] ?? '';
+            if (!is_string($date)) { throw new RuntimeException('Upload dates must use YYYY-MM-DD.'); }
+            if ($date !== '') {
+                $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date, new DateTimeZone('UTC'));
+                if (!$parsed || $parsed->format('Y-m-d') !== $date) { throw new RuntimeException('Upload dates must use valid YYYY-MM-DD dates.'); }
+            }
+            $selection[$field] = $date;
+        }
+        if ($mode === 'uploaded') {
+            if ($selection['media_after'] === '' && $selection['media_before'] === '') { throw new RuntimeException('Choose at least one upload-date boundary.'); }
+            if ($selection['media_after'] && $selection['media_before'] && $selection['media_after'] > $selection['media_before']) { throw new RuntimeException('The upload end date must be on or after the start date.'); }
+        }
         return $selection;
+    }
+
+    private static function attachment_ids(array $selection): Generator {
+        if ($selection['media'] === 'selected') { yield from $selection['media_ids']; return; }
+        $query = ['column' => 'post_date_gmt', 'inclusive' => true];
+        if ($selection['media_after']) { $query['after'] = $selection['media_after'] . ' 00:00:00'; }
+        if ($selection['media_before']) { $query['before'] = $selection['media_before'] . ' 23:59:59'; }
+        $offset = 0;
+        do {
+            $ids = get_posts(['post_type' => 'attachment', 'post_status' => 'inherit', 'numberposts' => 250, 'offset' => $offset, 'fields' => 'ids', 'date_query' => [$query], 'orderby' => 'ID', 'order' => 'ASC']);
+            yield from $ids; $offset += count($ids);
+        } while (count($ids) === 250);
     }
 
     public static function root(string $kind, string $component = ''): string {
@@ -94,6 +136,7 @@ final class CSM_Files {
     public static function paths(array $selection): Generator {
         foreach (['plugins', 'themes'] as $kind) {
             foreach ($selection[$kind] as $id) {
+                CSM_Progress::update(['phase' => 'Reading source component', 'component' => $kind . '/' . $id]);
                 $root = self::root($kind, $id); $count = 0;
                 if (!file_exists($root . '/' . $id)) { throw new RuntimeException('Selected source component is missing: ' . $id); }
                 foreach (self::scan($root . '/' . $id) as $file) {
@@ -105,9 +148,10 @@ final class CSM_Files {
             }
         }
         $root = self::root('uploads');
-        if ($selection['media'] === 'selected') {
+        if ($selection['media'] === 'compare') { yield from CSM_Media::paths($selection['media_delta'] ?? ''); return; }
+        if (in_array($selection['media'], ['selected', 'uploaded'], true)) {
             $seen = [];
-            foreach ($selection['media_ids'] as $id) {
+            foreach (self::attachment_ids($selection) as $id) {
                 if (get_post_type($id) !== 'attachment') { throw new RuntimeException('Unknown attachment.'); }
                 $file = get_post_meta($id, '_wp_attached_file', true);
                 $metadata = wp_get_attachment_metadata($id);
@@ -140,7 +184,9 @@ final class CSM_Files {
         $parents = [];
         foreach ($selection['themes'] as $theme) { $parents[$theme] = wp_get_theme($theme)->get('Template'); }
         yield CSM_Support::json(['type' => 'header', 'version' => 1, 'kind' => 'files', 'started' => $started, 'theme_parents' => $parents]);
-        foreach (self::paths($selection) as [$relative, $path]) {
+        foreach (self::paths($selection) as $entry) {
+            [$relative, $path] = $entry;
+            CSM_Progress::update(['phase' => 'Exporting file', 'component' => $relative, 'count' => $count, 'total' => null, 'unit' => 'files', 'bytes' => 0]);
             $fp = fopen($path, 'rb');
             if (!$fp) { throw new RuntimeException('Cannot read file: ' . $relative); }
             try {
@@ -152,10 +198,14 @@ final class CSM_Files {
                     $bytes = fread($fp, min(65536, $remaining));
                     if ($bytes === false || $bytes === '') { throw new RuntimeException('File changed or became unreadable during transfer.'); }
                     $remaining -= strlen($bytes); hash_update($filehash, $bytes); yield $bytes;
+                    CSM_Progress::update(['bytes' => $size - $remaining]);
                 }
                 if (fread($fp, 1) !== '' || fstat($fp)['mtime'] !== $stat['mtime']) { throw new RuntimeException('File changed during transfer: ' . $relative); }
-                $line = CSM_Support::json(['type' => 'file-end', 'sha256' => hash_final($filehash)]);
+                $checksum = hash_final($filehash);
+                if (isset($entry[2]) && !hash_equals($entry[2], $checksum)) { throw new RuntimeException('Media contents changed after comparison: ' . $relative); }
+                $line = CSM_Support::json(['type' => 'file-end', 'sha256' => $checksum]);
                 hash_update($hash, $line); yield $line; $count++;
+                CSM_Progress::update(['count' => $count]);
             } finally { fclose($fp); }
         }
         yield CSM_Support::json(['type' => 'end', 'files' => $count, 'started' => $started, 'sha256' => hash_final($hash)]);
@@ -181,6 +231,7 @@ final class CSM_Files {
             }
             if (($record['type'] ?? '') !== 'file' || !is_int($record['size']) || $record['size'] < 0 || isset($seen[$record['path']])) { throw new RuntimeException('Invalid file header.'); }
             self::destination($record['path'], $job['selection']);
+            CSM_Progress::update(['phase' => 'Receiving and verifying file', 'component' => $record['path'], 'count' => count($files), 'total' => null, 'unit' => 'files', 'bytes' => 0]);
             $parts = explode('/', $record['path']); $components[$parts[0] . '/' . $parts[1]] = true;
             $seen[$record['path']] = true; hash_update($hash, CSM_Support::json($record));
             $index = count($files); $staged = $dir . '/' . $index;
@@ -192,12 +243,14 @@ final class CSM_Files {
                     $bytes = fread($fp, min(65536, $remaining));
                     if ($bytes === false || $bytes === '') { throw new RuntimeException('Truncated file stream.'); }
                     CSM_Support::write($out, $bytes); hash_update($filehash, $bytes); $remaining -= strlen($bytes);
+                    CSM_Progress::update(['bytes' => $record['size'] - $remaining]);
                 }
             } finally { fclose($out); }
             $end = CSM_Support::line($fp);
             if (($end['type'] ?? '') !== 'file-end' || !hash_equals(hash_final($filehash), $end['sha256'])) { throw new RuntimeException('File checksum mismatch.'); }
             hash_update($hash, CSM_Support::json($end));
             $files[] = ['path' => $record['path'], 'mtime' => (int)$record['mtime'], 'size' => $record['size'], 'mode' => !str_starts_with($record['path'], 'uploads/') && (($record['mode'] ?? 0644) & 0111) ? 0755 : 0644, 'stage' => $staged, 'sha256' => $end['sha256']];
+            CSM_Progress::update(['count' => count($files)]);
         }
     }
 }

@@ -1,7 +1,7 @@
 <?php
 // Run only on the disposable Trickle test sites with wp eval-file.
-if (!in_array(basename(dirname(ABSPATH)), ['cove-stream-local.localhost', 'cove-stream-remote.localhost'], true)) { throw new RuntimeException('Refusing to seed a non-test site.'); }
-$local = str_contains(site_url(), 'cove-stream-local.');
+if (!in_array(basename(dirname(ABSPATH)), ['trickle-qa-a.localhost', 'trickle-qa-b.localhost'], true)) { throw new RuntimeException('Refusing to seed a non-test site.'); }
+$local = str_contains(site_url(), 'trickle-qa-b.');
 $mu = WPMU_PLUGIN_DIR . '/csm-test-environment.php';
 wp_mkdir_p(WPMU_PLUGIN_DIR);
 $ca = getenv('HOME') . '/Library/Application Support/Caddy/pki/authorities/local/root.crt';

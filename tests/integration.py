@@ -17,7 +17,8 @@ from urllib.parse import urlencode
 BASE = Path.home() / 'Cove/Sites'
 CA = Path.home() / 'Library/Application Support/Caddy/pki/authorities/local/root.crt'
 CTX = ssl.create_default_context(cafile=str(CA))
-SITES = {name: BASE / f'cove-stream-{name}.localhost/public' for name in ('local', 'remote')}
+HOSTS = {'local':'trickle-qa-b.localhost', 'remote':'trickle-qa-a.localhost'}
+SITES = {name: BASE / host / 'public' for name, host in HOSTS.items()}
 CHECKS = 0
 
 
@@ -51,7 +52,7 @@ def headers(site, action, body, params=None):
 
 
 def raw(site, action, body=b'{}\n', custom_headers=None, chunked=False):
-    host = f'cove-stream-{site}.localhost'
+    host = HOSTS[site]
     connection = http.client.HTTPSConnection(host, 8453, context=CTX, timeout=90)
     connection.request('POST', '/?trickle=' + action, body, custom_headers or headers(site, action, body), encode_chunked=chunked)
     response = connection.getresponse()
@@ -145,6 +146,7 @@ for source, target in [('local', 'remote'), ('remote', 'local')]:
         check((SITES[target] / 'wp-content/plugins/csm-fixture/payload.txt').read_bytes() == before_file, 'Staging leaves live plugin files unchanged')
         applied = api(target, 'commit', {'id': job['id']})
         check(applied['status'] == 'applied', f'{source} → {target}: apply succeeded')
+        check(applied['progress']['state'] == 'complete' and applied['progress']['phase'] == 'Transfer complete', 'Completed status is reported only after apply finishes')
         check((SITES[target] / 'wp-content/plugins/csm-fixture/payload.txt').read_bytes() == (SITES[source] / 'wp-content/plugins/csm-fixture/payload.txt').read_bytes(), 'Selected plugin bytes match source')
         if source == 'local':
             check(not (SITES[target] / 'wp-content/plugins/csm-fixture/obsolete.php').exists(), 'Obsolete plugin file removed by replacement')
@@ -174,8 +176,11 @@ try:
     check(failed, 'Truncated database stream rejected')
     info = api('remote', 'status', {'id': job['id']})
     check(not info['ready'], 'Incomplete stream cannot be applied')
+    check(info['progress']['state'] == 'failed' and info['progress']['failure']['component'] == selected['tables'][0], 'A truncated database stream retains the exact table and error')
     api('remote', 'receive', {'id': job['id']}, database, 'database')
-    check(api('remote', 'status', {'id': job['id']})['ready'], 'Failed database stream can be retried cleanly')
+    retried = api('remote', 'status', {'id': job['id']})
+    check(retried['ready'], 'Failed database stream can be retried cleanly')
+    check(retried['progress']['state'] == 'complete' and 'failure' not in retried['progress'], 'Retry clears stale failure details')
     try:
         api('remote', 'receive', {'id':job['id']}, bad, 'database')
     except RuntimeError:
@@ -219,7 +224,7 @@ echo json_encode(['cookie'=>SECURE_AUTH_COOKIE.'='.$secure.'; '.LOGGED_IN_COOKIE
 
 
 def admin(op, data=None):
-    connection = http.client.HTTPSConnection('cove-stream-local.localhost', 8453, context=CTX, timeout=120)
+    connection = http.client.HTTPSConnection(HOSTS['local'], 8453, context=CTX, timeout=120)
     payload = urlencode({'action':'csm_admin','nonce':login['nonce'],'op':op,'data':json.dumps(data or {})})
     connection.request('POST', '/wp-admin/admin-ajax.php', payload, {'Content-Type':'application/x-www-form-urlencoded','Cookie':login['cookie']})
     response = connection.getresponse(); raw_ = response.read()
@@ -244,11 +249,11 @@ def admin(op, data=None):
 
 pairing = base64.b64encode(json.dumps({'url':manifest['remote']['url'],'key':KEYS['remote']}).encode()).decode()
 connected = admin('connect', {'pairing':pairing})
-check(connected['remote']['url'] == manifest['remote']['url'], 'Admin connection uses verified PHP cURL with a legacy base64 code')
+check(next(site for site in connected['state']['connections'] if site['id'] == connected['saved'])['url'] == manifest['remote']['url'], 'Admin connection uses verified PHP cURL with a legacy base64 code')
 readable_code = php('remote', '$_SERVER["HTTPS"]="on"; echo CSM_Plugin::pairing();').strip()
 check(readable_code.splitlines() == [manifest['remote']['url'], KEYS['remote']], 'New connection code visibly starts with the correct site URL')
 connected = admin('connect', {'pairing':readable_code.replace('\n', '\r\n')})
-check(connected['remote']['url'] == manifest['remote']['url'], 'Readable URL/key connection code connects with copied Windows line endings')
+check(next(site for site in connected['state']['connections'] if site['id'] == connected['saved'])['url'] == manifest['remote']['url'], 'Readable URL/key connection code connects with copied Windows line endings')
 rejected = False
 try:
     admin('connect', {'pairing':manifest['remote']['url']+'\nnot-a-valid-key'})
@@ -337,5 +342,138 @@ finally:
     api('remote','discard',{'id':job['id']})
     php('remote', 'update_option("_csm_key", '+json.dumps(old_key)+', false);')
     KEYS['remote'] = old_key
+
+# Explicit replacement snapshots use the same serialized-data engine in both directions.
+for direction_, source_, target_ in [('push', 'local', 'remote'), ('pull', 'remote', 'local')]:
+    view = admin('manifest')
+    rules = view['replacements'][direction_]
+    check(len({rule['find'] for rule in rules}) == len(rules), 'Default replacement preview combines duplicate search strings')
+    check(all(rule['find'] and rule['replace'] for rule in rules), 'Default preview includes exact URL and filesystem path values')
+    for rule in rules:
+        if rule['id'] == 'root':
+            rule['enabled'] = False
+    for find, replacement, enabled in [('alpha', 'βeta 😀', True), ('foo.test', '', True), ('a.b', 'literal', True), ('disabled', 'SHOULD NOT CHANGE', False), ('βeta 😀', 'cascade', True)]:
+        rules.append({'kind':'custom','id':'','label':'','find':find,'replace':replacement,'enabled':enabled})
+    old_source = php(source_, 'global $wpdb; echo base64_encode($wpdb->get_var("SELECT payload FROM {$wpdb->prefix}csm_fixture WHERE id=1"));')
+    old_target = php(target_, 'global $wpdb; echo base64_encode($wpdb->get_var("SELECT payload FROM {$wpdb->prefix}csm_fixture WHERE id=1"));')
+    php(source_, 'global $wpdb; $value=serialize(["url"=>site_url()."/example", "root"=>ABSPATH."example", "content"=>WP_CONTENT_DIR."/example", "text"=>"alpha foo.test a.b", "nested"=>serialize(["value"=>"alpha","keep"=>"disabled"])]); $wpdb->update($wpdb->prefix."csm_fixture",["payload"=>$value],["id"=>1]);')
+    # CLI bootstrap has no request scheme; set HTTPS explicitly for source fixture URLs.
+    php(source_, 'global $wpdb; $_SERVER["HTTPS"]="on"; $value=unserialize($wpdb->get_var("SELECT payload FROM {$wpdb->prefix}csm_fixture WHERE id=1")); $value["url"]=site_url()."/example"; $wpdb->update($wpdb->prefix."csm_fixture",["payload"=>serialize($value)],["id"=>1]);')
+    job_ = None
+    try:
+        chosen = selection(tables=[manifest[source_]['prefix']+'csm_fixture'], replacements=rules)
+        job_ = admin('prepare', {'direction':direction_, 'selection':chosen})
+        admin('transfer', {'id':job_['id'], 'kind':'database'})
+        admin('commit', {'id':job_['id']})
+        value = json.loads(php(target_, 'global $wpdb; $r=unserialize($wpdb->get_var("SELECT payload FROM {$wpdb->prefix}csm_fixture WHERE id=1")); $r["nested"]=unserialize($r["nested"]); echo json_encode($r);'))
+        check(value['url'] == manifest[target_]['url']+'/example', direction_ + ': enabled URL default applies')
+        check(value['root'] == str(SITES[source_])+'/example', direction_ + ': disabled root replacement leaves source path unchanged')
+        check(value['content'] == str(SITES[target_])+'/wp-content/example', direction_ + ': longer content-path replacement applies independently')
+        check(value['text'] == 'βeta 😀  literal' and value['nested'] == {'value':'βeta 😀','keep':'disabled'}, direction_ + ': custom, disabled, empty and non-cascading replacements preserve nested serialization')
+        check(php(target_, 'global $wpdb; echo bin2hex($wpdb->get_var("SELECT binary_data FROM {$wpdb->prefix}csm_fixture WHERE id=1"));') == '00fffe010a', 'Custom replacements leave binary columns untouched')
+        recent_ = next(row for row in admin('state')['recents'] if row['id'] == job_['id'])
+        check(recent_['selection']['replacements'] == rules, 'Recent transfers retain the exact replacement snapshot and enabled flags')
+        admin('rollback', {'id':job_['id']})
+        check(php(target_, 'global $wpdb; echo base64_encode($wpdb->get_var("SELECT payload FROM {$wpdb->prefix}csm_fixture WHERE id=1"));') == old_target, 'Replacement transfer rollback restores exact destination data')
+    finally:
+        if job_:
+            admin('discard', {'id':job_['id']})
+        php(source_, 'global $wpdb; $wpdb->update($wpdb->prefix."csm_fixture",["payload"=>base64_decode('+json.dumps(old_source)+')],["id"=>1]);')
+
+for bad_rules in [[{'find':'','replace':'x'}], [{'find':'x','replace':'a'},{'find':'x','replace':'b'}], [{'find':'x','replace':'y','enabled':'false'}]]:
+    rejected = False
+    try:
+        admin('prepare', {'direction':'pull', 'selection':selection(tables=['wp_csm_fixture'], replacements=bad_rules)})
+    except RuntimeError:
+        rejected = True
+    check(rejected and not php('local', 'echo get_option("_csm_active_job", "");'), 'Invalid or conflicting replacement rules are rejected before creating a transfer')
+
+# Progress must remain readable while the mutation lock is held, without changing the job.
+job = api('remote', 'prepare', {'selection': selection(plugins=['csm-fixture'])})
+writer = None
+try:
+    script = ('require $argv[1]."/wp-load.php"; CSM_Support::lock(); '
+              'CSM_Progress::start($argv[2],"Receiving and verifying file"); '
+              'CSM_Progress::update(["component"=>"plugins/csm-fixture/payload.txt","count"=>1,"unit"=>"files"],true); '
+              'echo "READY\\n"; flush(); usleep(2500000); '
+              'CSM_Progress::finish("Files verified");')
+    writer = subprocess.Popen(['php', '-r', script, str(SITES['remote']), job['id']], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    check(writer.stdout.readline().strip() == 'READY', 'Concurrent progress writer acquired the real transfer lock')
+    started = time.monotonic()
+    detail = api('remote', 'progress', {'id': job['id']})
+    check(detail['state'] == 'running' and detail['component'] == 'plugins/csm-fixture/payload.txt' and time.monotonic() - started < 2, 'Authenticated progress reads remain live while the mutation lock is held')
+    writer.communicate(timeout=10)
+    check(writer.returncode == 0, 'Progress writer completed without disturbing the transfer')
+    status, _ = raw('remote', 'progress', b'{}', {'Content-Type':'application/json'})
+    check(status == 403, 'Progress endpoint requires authentication')
+    rejected = False
+    try:
+        api('remote', 'progress', {'id':'../wp-config.php'})
+    except RuntimeError:
+        rejected = True
+    check(rejected, 'Progress endpoint rejects unsafe transfer IDs')
+
+    # Corrupt a per-file checksum, then verify both precise diagnosis and a clean retry.
+    files = api('local', 'export', {'kind':'files','selection':selection(plugins=['csm-fixture']), 'progress_id':job['id']})
+    exported = api('local', 'progress', {'id':job['id']})
+    check(exported['state'] == 'complete' and exported['component'].startswith('plugins/csm-fixture/'), 'Source exports report their actual component too')
+    decoded = gzip.decompress(files)
+    position = decoded.index(b'"sha256":"') + len(b'"sha256":"')
+    corrupt = gzip.compress(decoded[:position] + (b'0' if decoded[position:position+1] != b'0' else b'1') + decoded[position+1:])
+    failed = False
+    try:
+        api('remote', 'receive', {'id':job['id']}, corrupt, 'files')
+    except RuntimeError:
+        failed = True
+    detail = api('remote', 'progress', {'id':job['id']})
+    check(failed and detail['failure']['component'].startswith('plugins/csm-fixture/') and detail['failure']['error'] == 'File checksum mismatch.', 'File checksum failure retains the exact plugin file and cause')
+    clean = api('remote', 'receive', {'id':job['id']}, files, 'files')
+    check(clean['ready'] and 'failure' not in clean['progress'], 'File retry replaces the failed progress snapshot')
+    staged = json.loads(php('remote','echo json_encode(CSM_Support::job('+json.dumps(job['id'])+')["files"][0]);'))
+    Path(staged['stage']).unlink()
+    failed = False
+    try:
+        api('remote', 'commit', {'id':job['id']})
+    except RuntimeError:
+        failed = True
+    detail = api('remote', 'progress', {'id':job['id']})
+    check(failed and detail['failure']['component'] == staged['path'] and detail['state'] == 'failed', 'Apply preflight failure identifies the exact missing staged file')
+finally:
+    if writer and writer.poll() is None:
+        writer.kill(); writer.communicate()
+    api('remote', 'discard', {'id':job['id']})
+    php('local', 'CSM_Progress::remove('+json.dumps(job['id'])+');')
+check(not api('remote', 'progress', {'id':job['id']}), 'Discard removes retained progress detail')
+
+# A failure after file replacement begins must retain the failed path through automatic rollback.
+source_dir = SITES['local'] / 'wp-content/plugins/csm-fixture/zzz-progress-blocker'
+blocker = SITES['remote'] / 'wp-content/plugins/csm-fixture/zzz-progress-blocker'
+assert not source_dir.exists() and not blocker.exists()
+original_payload = (SITES['remote'] / 'wp-content/plugins/csm-fixture/payload.txt').read_bytes()
+job = None
+try:
+    source_dir.mkdir()
+    (source_dir / 'nested.txt').write_text('Disposable progress failure fixture')
+    blocker.write_text('A file prevents creating the incoming directory')
+    chosen = selection(plugins=['csm-fixture'])
+    job = api('remote', 'prepare', {'selection':chosen})
+    stream = api('local', 'export', {'kind':'files','selection':chosen})
+    api('remote', 'receive', {'id':job['id']}, stream, 'files')
+    failed = False
+    try:
+        api('remote', 'commit', {'id':job['id']})
+    except RuntimeError as error:
+        failed = 'changes rolled back' in str(error)
+    info = api('remote', 'status', {'id':job['id']})
+    check(failed and info['status'] == 'restored', 'A real file-apply failure automatically rolls back earlier changes')
+    check(info['progress']['state'] == 'failed' and info['progress']['failure']['component'] == 'plugins/csm-fixture/zzz-progress-blocker/nested.txt', 'Automatic rollback preserves the original failing file in the diagnosis')
+    check((SITES['remote'] / 'wp-content/plugins/csm-fixture/payload.txt').read_bytes() == original_payload, 'Failure reporting does not interfere with restoring original file bytes')
+finally:
+    if job:
+        discard_active('remote')
+    (source_dir / 'nested.txt').unlink()
+    source_dir.rmdir()
+    if blocker.exists():
+        blocker.unlink()
 
 print(f'\n{CHECKS} integration checks passed.', flush=True)

@@ -2,6 +2,10 @@
 defined('ABSPATH') || exit;
 
 final class CSM_Transport {
+    public static function ca_bundle(string $url): string {
+        return (string)apply_filters('csm_ca_bundle', defined('CSM_CA_BUNDLE') ? CSM_CA_BUNDLE : ABSPATH . WPINC . '/certificates/ca-bundle.crt', $url);
+    }
+
     public static function url(string $url): string {
         $parts = wp_parse_url($url);
         if (!$parts || empty($parts['host']) || !empty($parts['user']) || !empty($parts['pass']) || !empty($parts['query']) || !empty($parts['fragment'])) { throw new RuntimeException('Use the WordPress installation URL without credentials, query strings or fragments.'); }
@@ -30,8 +34,9 @@ final class CSM_Transport {
         $nonce_key = '_csm_nonce_' . $nonce;
         if (!add_option($nonce_key, time(), '', false)) { throw new RuntimeException('Request was already used.', 403); }
         $settings = get_option('_csm_settings', ['pull' => true, 'push' => false]);
-        if (in_array($action, ['export', 'manifest'], true) && empty($settings['pull'])) { throw new RuntimeException('Remote reads are disabled on this site.', 403); }
-        if (!in_array($action, ['export', 'manifest'], true) && empty($settings['push'])) { throw new RuntimeException('Remote writes are disabled. Enable incoming writes on the destination.', 403); }
+        if ($action === 'progress' && empty($settings['pull']) && empty($settings['push'])) { throw new RuntimeException('Remote access is disabled on this site.', 403); }
+        if (in_array($action, ['export', 'manifest', 'media', 'media_hashes'], true) && empty($settings['pull'])) { throw new RuntimeException('Remote reads are disabled on this site.', 403); }
+        if (!in_array($action, ['export', 'manifest', 'media', 'media_hashes', 'progress'], true) && empty($settings['push'])) { throw new RuntimeException('Remote writes are disabled. Enable incoming writes on the destination.', 403); }
         $params = json_decode(base64_decode($params, true), true, 64, JSON_THROW_ON_ERROR);
         if ($action === 'receive') {
             if ($hash !== 'stream') { throw new RuntimeException('Expected a stream upload.'); }
@@ -42,8 +47,9 @@ final class CSM_Transport {
         return json_decode($body, true, 64, JSON_THROW_ON_ERROR);
     }
 
-    public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null): array {
+    public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0): array {
         if (!extension_loaded('curl')) { throw new RuntimeException('The PHP cURL extension is required.'); }
+        CSM_Log::secret($peer['key']);
         $url = add_query_arg('trickle', $action, self::url($peer['url']));
         $ch = curl_init($url); $response = ''; $status = 0; $bytes = 0;
         $body = $upload ? '' : CSM_Support::json($data);
@@ -52,17 +58,20 @@ final class CSM_Transport {
         $headers[] = 'Accept: ' . ($download ? 'application/octet-stream' : 'application/json');
         $headers[] = 'Cache-Control: no-store';
         $headers[] = 'User-Agent: Trickle/' . CSM_VERSION . ' (WordPress site migration)';
-        $options = [CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => 30, CURLOPT_TIMEOUT => 0, CURLOPT_FOLLOWLOCATION => false,
+        $options = [CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => $timeout ?: 30, CURLOPT_TIMEOUT => $timeout, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_HEADERFUNCTION => static function ($curl, $line) use (&$status) { if (preg_match('#^HTTP/\S+\s+(\d+)#', $line, $m)) { $status = (int)$m[1]; } return strlen($line); },
             CURLOPT_WRITEFUNCTION => static function ($curl, $chunk) use ($download, &$response, &$bytes, &$status) {
-                if ($download && $status === 200) { CSM_Support::write($download, $chunk); $bytes += strlen($chunk); }
+                if ($download && $status === 200) { CSM_Support::write($download, $chunk); $bytes += strlen($chunk); CSM_Progress::update(['bytes' => $bytes]); }
                 elseif (strlen($response) < 1048576) { $response .= $chunk; }
                 return strlen($chunk);
             },
         ];
-        $ca = apply_filters('csm_ca_bundle', defined('CSM_CA_BUNDLE') ? CSM_CA_BUNDLE : '');
+        $ca = self::ca_bundle($peer['url']);
         if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
+        $context = ['operation' => $action, 'site' => $peer['url'], 'transfer_id' => $data['id'] ?? null,
+            'ca_source' => $ca === ABSPATH . WPINC . '/certificates/ca-bundle.crt' ? 'WordPress CA bundle' : ($ca ? 'Custom CA bundle (' . basename($ca) . ')' : 'System CA bundle')];
+        if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Outgoing request started', $context); }
         $upload_error = null;
         if ($upload) {
             $buffer = ''; $initialized = false;
@@ -83,14 +92,20 @@ final class CSM_Transport {
         }
         curl_setopt_array($ch, $options);
         $ok = curl_exec($ch); $error = curl_error($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        unset($options); curl_close($ch);
-        if ($upload_error) { throw $upload_error; }
-        if ($ok === false) { throw new RuntimeException('Connection failed: ' . $error); }
-        if ($download && $status === 200) { return ['bytes' => $bytes]; }
+        $context += ['http_status' => $status, 'curl_errno' => curl_errno($ch), 'ssl_verify_result' => curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT), 'duration_ms' => (int)round(curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000)];
+        unset($options, $ch);
+        if ($upload_error) { CSM_Log::write('error', 'Source stream failed', $context + ['error' => $upload_error->getMessage()]); throw $upload_error; }
+        if ($ok === false) {
+            CSM_Log::write('error', 'Outgoing connection failed', $context + ['error' => $error]);
+            throw new RuntimeException('Connection failed: ' . $error . (($context['curl_errno'] === 60) ? '. The sending site could not verify the remote certificate chain. Check its CA bundle; TLS verification is enabled. See Diagnostics below.' : ''));
+        }
+        if ($download && $status === 200) { CSM_Log::write('info', 'Stream downloaded', $context + ['bytes' => $bytes]); return ['bytes' => $bytes]; }
         $parsed = json_decode($response, true);
         if ($status !== 200 || !is_array($parsed) || empty($parsed['ok'])) {
+            CSM_Log::write('error', 'Remote request rejected', $context + ['error' => $parsed['error'] ?? 'Unexpected or non-JSON response; response body omitted.']);
             throw new RuntimeException($parsed['error'] ?? ('Endpoint returned HTTP ' . $status . '. Check firewall rules, redirects and upload/time limits. Response: ' . substr(wp_strip_all_tags($response), 0, 240)));
         }
+        if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Outgoing request completed', $context); }
         return $parsed['data'] ?? [];
     }
 }

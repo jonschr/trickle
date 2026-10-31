@@ -1,0 +1,15 @@
+{
+  "name": "Trickle",
+  "slug": "trickle",
+  "version": "0.1.7",
+  "author": "Elodin",
+  "homepage": "https://github.com/jonschr/trickle",
+  "requires": "6.4",
+  "requires_php": "8.1",
+  "tested": "7.1.4",
+  "download_url": "https://github.com/jonschr/trickle/releases/download/0.1.7/trickle-0.1.7.zip",
+  "sections": {
+    "description": "Selective WordPress push and pull migrations controlled from either site. Transfer selected database tables, plugins, themes and media using verified streams, with destination rollback and cascading media comparison.",
+    "changelog": "<h4>0.1.7</h4><ul><li>Enable Plugin Update Checker with a static JSON feed, matching the Guest Key update method.</li><li>Register update checks in dashboard, cron, AJAX, REST and WP-CLI requests.</li><li>Use versioned GitHub release ZIPs and identify the custom update source to WordPress.</li></ul><h4>0.1.6</h4><ul><li>Add cached year, month and file comparisons for changed or missing media, with push, pull and rollback support.</li></ul>"
+  }
+}
