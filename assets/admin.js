@@ -1,10 +1,11 @@
-/* global CSM */
+/* global CSM, CSMTransferProgress */
 (() => {
     'use strict';
     const $ = id => document.getElementById(`csm-${id}`);
     let connectionState = CSM.state, sites = null, session = CSM.state.session, busy = false, summary = null, replacementRules = [], remoteUpdate = null;
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
+    const transferMeter = new CSMTransferProgress($('transfer-meter'));
     const tableSort = {key:'source_bytes', descending:true};
     const componentKinds = ['tables', 'plugins', 'themes', 'media'];
     function setPanelOpen(kind, open) {
@@ -54,14 +55,15 @@
     }
     let progressStamp = '', progressChangedAt = Date.now();
     function renderActivity(detail) {
+        transferMeter.update(detail);
         if (!detail?.phase) { $('activity').hidden = true; return; }
         const failed = detail.failure;
         const component = failed?.component || (detail.state === 'running' ? detail.component : '');
-        const count = detail.unit ? `${detail.count.toLocaleString()}${detail.total == null ? '' : ' of ' + detail.total.toLocaleString()} ${detail.unit} processed` : '';
+        const count = detail.unit && detail.unit !== 'bytes' ? `${detail.count.toLocaleString()}${detail.total == null ? '' : ' of ' + detail.total.toLocaleString()} ${detail.unit} processed` : '';
         const stamp = `${detail.run}:${detail.updated}`;
         if (stamp !== progressStamp) { progressStamp = stamp; progressChangedAt = Date.now(); }
         const updated = detail.state === 'running' && Date.now() - progressChangedAt > 15000 ? 'No recent progress reported; the current operation may still be running.' : '';
-        $('activity').textContent = [failed ? `Failed while ${failed.phase.toLowerCase()}` : detail.phase, component, count, detail.bytes ? `${bytes(detail.bytes)} streamed` : '', failed?.error, detail.poll_error, updated].filter(Boolean).join(' · ');
+        $('activity').textContent = [failed ? `Failed while ${failed.phase.toLowerCase()}` : detail.phase, component, count, detail.bytes && detail.unit !== 'bytes' ? `${bytes(detail.bytes)} streamed` : '', failed?.error, detail.poll_error, updated].filter(Boolean).join(' · ');
         $('activity').hidden = false;
     }
     async function transferRequest(op, data) {
@@ -76,8 +78,8 @@
             if (!stopped) timer = setTimeout(poll, 1000);
         };
         const action = transferAction();
-        $('action-title').textContent = op === 'commit' ? (action === 'Push' ? 'Pushing…' : 'Pulling…') : op === 'rollback' ? 'Restoring destination…' : `Preparing ${action.toLowerCase()}…`;
-        $('progress').hidden = false; $('progress').removeAttribute('value');
+        transferMeter.setPhase(op === 'commit' ? 'apply' : op === 'rollback' ? 'recover' : op === 'preflight' ? 'preflight' : 'transfer');
+        $('action-title').textContent = ['commit','transfer'].includes(op) ? (action === 'Push' ? 'Pushing…' : 'Pulling…') : op === 'rollback' ? 'Restoring destination…' : `Preparing ${action.toLowerCase()}…`;
         $('activity').hidden = false; $('activity').textContent = 'Waiting for progress from the server…';
         timer = setTimeout(poll, 300);
         try {
@@ -85,17 +87,20 @@
             do {
                 try { result = await api(op, data); retries = 0; }
                 catch (error) {
-                    if (op !== 'transfer' || retries >= 3 || !/network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
+                    if (!['preflight','transfer'].includes(op) || retries >= 3 || !/Another transfer is running|stream is still being built|network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
                     message('Connection interrupted. Retrying…');
                     await new Promise(resolve => setTimeout(resolve, 1000 * ++retries));
                     result = {continue:true};
                 }
-                if (result.continue && result.progress) { summary = result; renderActivity(result.progress); }
-            } while (op === 'transfer' && result.continue);
+                if (result.progress) renderActivity({...result.progress, ...(result.timeline ? {timeline:result.timeline} : {})});
+                else transferMeter.update(result);
+                if (result.continue) summary = result;
+            } while (['preflight','transfer'].includes(op) && result.continue);
             return result;
         }
         catch (error) {
             stopped = true;
+            if (/Another transfer is running|stream is still being built/i.test(error.message)) { error.pending = true; throw error; }
             try { summary = await api('status', {id:data.id}); showSummary(); renderActivity(await api('progress', {id:data.id})); }
             catch (_) { /* Preserve the original failure when the destination is unreachable. */ }
             if (summary?.status !== 'applied') $('action-title').textContent = summary?.error || summary?.progress?.failure ? (op === 'commit' ? `${action} failed` : op === 'rollback' ? 'Restore failed' : 'Preparation failed') : `Check ${action.toLowerCase()} status`;
@@ -111,7 +116,7 @@
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
-        finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; document.querySelector('.csm').setAttribute('aria-busy', 'false'); if ($('feedback').textContent === 'Working… Keep this page open.') feedback('Done.'); $('progress').hidden = true; lockSelection(); updateSelection(); }
+        finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; document.querySelector('.csm').setAttribute('aria-busy', 'false'); if ($('feedback').textContent === 'Working… Keep this page open.') feedback('Done.'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
         document.querySelectorAll('#csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-sync-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
@@ -425,6 +430,7 @@
         renderPreview();
     }
     async function finishTransfer(result, route) {
+        transferMeter.finish(result.status);
         const finished = await api('finish', {id:route.id});
         summary = null; session = null; renderPreview();
         for (const id of ['apply','rollback','discard','retained-note','activity']) $(id).hidden = true;
@@ -440,6 +446,7 @@
         try { await load(true); }
         catch (_) { message(''); feedback('Complete. Reload to refresh the inventory.'); return; }
         message('');
+        $('action-title').textContent = $('completion-title').textContent;
         const warnings = [finished.cleanup_warning];
         if (result.health && !result.health.verified) warnings.push('Check the site; its health check was inconclusive.');
         if (result.activation_missing?.length) warnings.push(`Could not activate ${result.activation_missing.length} missing plugin${result.activation_missing.length === 1 ? '' : 's'}. See Diagnostics.`);
@@ -688,13 +695,21 @@
                 session = {view_url:destination().home || dest, plugin_version:sites.local.plugin_version, id:summary.id, remote_id:$('remote-site').value, direction:direction(), source:source().url, destination:dest, selection, automatic:true};
             } else summary = await api('status', {id:session.id});
             const route = {...session};
+            transferMeter.begin(summary.timeline || {id:session.id,elapsed:0,components:{},streams:{},selected:[],ready:false});
+            transferMeter.update(summary);
             if (['applied','restored'].includes(summary.status)) { await finishTransfer(summary, route); return; }
             if (summary.status === 'applying') {
+                transferMeter.setPhase('apply');
                 summary = await api('recover', {id:session.id});
                 await finishTransfer(summary, route); return;
             }
             showSummary();
-            for (const kind of summary.pending) {
+            const pending = [...summary.pending];
+            for (const kind of pending) {
+                message('Preparing source streams…');
+                summary = await transferRequest('preflight', {id:session.id,kind});
+            }
+            for (const kind of pending) {
                 message(`Verifying ${kind}…`);
                 summary = await transferRequest('transfer', {id:session.id, kind}); showSummary();
             }
@@ -702,12 +717,13 @@
             summary = await transferRequest('commit', {id:session.id});
             await finishTransfer(summary, route);
         } catch (error) {
+            if (error.pending || /Another transfer is running|stream is still being built/i.test(error.message)) { message('Transfer is still running. Reconnecting…'); return; }
             if (session) {
                 const route = {...session};
                 try {
                     const recovered = await api('recover', {id:session.id, cancel:true});
                     if (['applied','restored'].includes(recovered.status)) await finishTransfer(recovered, route);
-                    else { session = null; summary = null; await load(); message('Destination unchanged.'); }
+                    else { transferMeter.finish('cancelled'); session = null; summary = null; await load(); message('Destination unchanged.'); }
                 } catch (_) { message('Recovery will retry when this page reconnects.'); }
             }
             throw error;
@@ -718,6 +734,7 @@
     $('rollback').addEventListener('click', () => run(migrate));
     $('discard').addEventListener('click', () => run(async () => {
         await api('recover', {id:session.id, cancel:true});
+        transferMeter.finish('cancelled');
         session = null; summary = null; renderPreview();
         for (const id of ['apply','rollback','discard','activity']) $(id).hidden = true;
         $('stage').hidden = false; await load(); message('Transfer cancelled. Destination unchanged.');
@@ -745,6 +762,7 @@
         else feedback('Destination restored.');
     });
     else if (connectionState.selected || session) run(() => load());
+    setInterval(() => transferMeter.render(), 1000);
     setInterval(() => { if (!busy && session?.automatic && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
     let checkingProgress = false;
     setInterval(async () => {

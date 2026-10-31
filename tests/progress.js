@@ -1,0 +1,27 @@
+/* Deterministic checks of the shipped timing/progress model, without simulated network writes. */
+const assert = require('node:assert/strict');
+const {TransferProgress,duration} = require('../assets/transfer-progress.js');
+let now = 0;
+const meter = new TransferProgress(null, () => now);
+const timeline = {id:'test',elapsed:0,ready:true,components:{database:100,plugins:30,themes:20,media:50},streams:{database:{size:100,received:0},files:{size:100,received:0}}};
+meter.begin(timeline); meter.setPhase('transfer');
+now=4000; meter.update({timeline:{...timeline,streams:{database:{size:100,received:50},files:{size:100,received:0}}}});
+assert.equal(meter.metrics().percent,25);assert.equal(meter.metrics().eta,12);
+now=6000; meter.update({timeline:{...timeline,streams:{database:{size:100,received:100},files:{size:100,received:0}}}});
+assert.equal(meter.metrics().percent,50);assert(meter.metrics().eta<8);
+now=9000; meter.update({timeline:{...timeline,streams:{database:{size:100,received:100},files:{size:100,received:50}}}});
+assert.equal(meter.metrics().percent,75);assert(meter.metrics().eta>0);
+now=26000;assert.equal(meter.metrics().eta,null);assert.equal(meter.metrics().stalled,true);
+meter.setPhase('apply');assert.equal(meter.metrics().eta,null);
+meter.update({phase:'Replacing file',count:0,total:10,unit:'files'});
+now=30000;meter.update({phase:'Replacing file',count:5,total:10,unit:'files'});
+assert.equal(meter.metrics().eta,4);
+meter.update({phase:'Checking frontend health',count:0,total:null,unit:''});assert.equal(meter.metrics().eta,null);
+for(let i=0;i<25;i++)meter.update({events:[],phase:'Replacing file',component:`plugins/plugin/file-${i}.php`,count:i,total:30,unit:'files',updated:i+1});
+const events=Array.from({length:25},(_,i)=>({id:String(i),phase:'Exporting file',component:`plugins/x/${i}.php`,updated:i}));
+meter.update({phase:'Exporting file',events});meter.update({phase:'Exporting file',events});assert.equal(meter.events.length,12);assert.equal(meter.events[0].id,'13');
+meter.finish('applied');assert.equal(meter.metrics().percent,100);const elapsed=meter.metrics().elapsed;now+=10000;assert.equal(meter.metrics().elapsed,elapsed);assert.equal(meter.metrics().eta,null);
+meter.begin({...timeline,id:'another',ready:false,elapsed:25});assert.equal(meter.metrics().percent,null);assert.equal(meter.metrics().elapsed,25);assert.equal(meter.events.length,0);
+meter.update({timeline:{...timeline,id:'another',components:{database:0,plugins:0,themes:0,media:0}}});assert(Number.isFinite(meter.metrics().percent));
+assert.equal(duration(3661),'1h 1m');assert.equal(duration(65),'1m 05s');assert.equal(duration(-1),'0s');
+console.log('Progress model checks passed: payload weighting, live ETA, stalls, phase estimates, bounded history, completion, resume and zero payloads.');

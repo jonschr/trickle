@@ -40,8 +40,13 @@ try:
  payload=random.Random(712).randbytes(1600000);(P[S]/'large.bin').write_bytes(payload)
  selection={'plugins':[NAME],'themes':[],'tables':[],'media':'none'}
  first=ev(D,'echo wp_json_encode(CSM_Controller::execute("prepare",["site"=>"https://trickle-qa-a.localhost:8453","direction"=>"pull","selection"=>json_decode('+repr(json.dumps(selection))+',true)]));')
+ planned=execute('preflight',{'kind':'files'})
+ check(planned['timeline']['ready'] and planned['timeline']['components']['plugins']==len(payload)+len('source'),'Preflight measures only changed plugin payloads without an extra file-content pass')
+ check(planned['timeline']['streams']['files']['received']==0 and (P[D]/'code.txt').read_text()=='destination','Preflight prepares the snapshot without sending or replacing destination data')
  part=execute('transfer',{'kind':'files'})
  check(part['continue'] and part['checkpoint']['offset']==524288 and not part['ready'],'First HTTP operation checkpoints exactly one bounded segment')
+ check('state' not in part and ev(D,'$r=get_option("_csm_recents");echo wp_json_encode(reset($r)["status"]);')=='staging','Intermediate checkpoints omit redundant UI state while keeping the active recent entry')
+ check(part['timeline']['streams']['files']['received']==524288,'Timeline exposes acknowledged compressed bytes for resumable progress')
  state=ev(D,'$c=get_option("_csm_control");echo wp_json_encode(CSM_Segments::state(CSM_Support::job($c["id"]),"files",$c["bundles"]["files"]));')
  check(state['offset']==524288,'Checkpoint survives a completely new PHP process')
  corrupt=ev(D,'$c=get_option("_csm_control");$ok=false;try{CSM_Segments::receive(CSM_Support::job($c["id"]),"files",$c["bundles"]["files"],524288,"corrupt",str_repeat("0",64));}catch(Throwable $e){$ok=true;}echo wp_json_encode([$ok,CSM_Segments::state(CSM_Support::job($c["id"]),"files",$c["bundles"]["files"])["offset"]]);')
@@ -51,6 +56,7 @@ try:
  (P[S]/'code.txt').write_text('source changed after snapshot')
  done=cli('resume')
  check(done['ready'] and done['files']==2 and done['unchanged_files']==1,'Resume completes only outstanding bytes and skips identical component file contents')
+ detail=execute('progress');check(0<len(detail['events'])<=12 and all('phase' in event and 'updated' in event for event in detail['events']),'Progress retains a bounded timestamped activity list across segment requests')
  check(done['preview']['counts']=={'add':1,'replace':1,'delete':1,'unchanged':1},'Preview distinguishes additions, replacements, obsolete deletions and unchanged files')
  maintenance=ev(D,'''$seen=[];$probe=static function($name,$old,$new)use(&$seen){if($name!=='_csm_maintenance')return;$c=curl_init(home_url('/'));curl_setopt_array($c,[CURLOPT_RETURNTRANSFER=>true,CURLOPT_CAINFO=>CSM_Transport::ca_bundle(home_url('/')),CURLOPT_TIMEOUT=>10]);curl_exec($c);$seen[]=curl_getinfo($c,CURLINFO_RESPONSE_CODE);};add_action('updated_option',$probe,10,3);add_action('added_option',static function($name,$value)use($probe){$probe($name,null,$value);},10,2);$s=CSM_Controller::session();$r=CSM_Controller::execute('commit',['id'=>$s['id']]);echo wp_json_encode([$r['status'],$seen,get_option('_csm_maintenance',null)]);''')
  check(maintenance==['applied',[503],None],'Normal visitors see maintenance during apply and maintenance clears afterward')
@@ -77,6 +83,7 @@ try:
  # Both directions use the same segmented transport.
  pushed=cli('push','--remote=https://trickle-qa-a.localhost:8453','--plugins='+NAME)
  check(pushed['ready'] and pushed['files']==2 and pushed['unchanged_files']==1,'Push uses checkpoints and incremental components too')
+ push_plan=execute('preflight',{'kind':'files'});check(push_plan['timeline']['ready'] and push_plan['timeline']['streams']['files']['received']==push_plan['timeline']['streams']['files']['size'],'Push reports the same measured timeline and verified checkpoints')
  cli('apply','--yes');check((P[S]/'code.txt').read_text()=='destination' and not (P[S]/'large.bin').exists(),'Push applies new code and destination-only code removal')
  finish(True);check((P[S]/'large.bin').read_bytes()==payload,'Push rollback restores destination-only files')
  # Valid syntax can still fail during normal plugin bootstrap; isolate recovery and restore.
@@ -91,6 +98,7 @@ try:
  before=ev(D,'global $wpdb;echo wp_json_encode($wpdb->get_row("SELECT id,payload,HEX(binary_data) AS binary_data FROM wp_csm_fixture WHERE id=1",ARRAY_A));')
  db=cli('pull','--remote=https://trickle-qa-a.localhost:8453','--tables=wp_csm_fixture')
  check(db['ready'] and db['tables']==1 and db['rows']>0,'Database-only pull stages through checkpointed transport')
+ db_plan=execute('status')['timeline'];check(db_plan['components']['database']>0 and db_plan['selected']==['database'],'Database timeline reports serialized payload size without inventing file totals')
  cli('apply','--yes');finish(True)
  after=ev(D,'global $wpdb;echo wp_json_encode($wpdb->get_row("SELECT id,payload,HEX(binary_data) AS binary_data FROM wp_csm_fixture WHERE id=1",ARRAY_A));')
  check(before==after,'Database rollback restores the original row including binary and serialized values')

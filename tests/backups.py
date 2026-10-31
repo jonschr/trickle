@@ -31,13 +31,14 @@ def migrate(n,direction='pull'):
  result=op('commit',{'id':id});op('finish',{'id':id})
  return id,result
 for x in ROOT:
- assert ev(x,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job")&&!get_option("_csm_backups",[]));')
+ assert ev(x,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job"));')
  assert not P[x].exists()
 settings={x:ev(x,'echo wp_json_encode(get_option("_csm_settings"));') for x in ROOT};recents=ev(D,'echo wp_json_encode(get_option("_csm_recents",[]));');history=ev(D,'echo wp_json_encode(get_option("_csm_history",[]));')
+original_backups={x:ev(x,'echo wp_json_encode(get_option("_csm_backups",[]));') for x in ROOT};original_active={x:ev(x,'echo wp_json_encode(get_option("active_plugins"));') for x in ROOT}
 try:
  for x in ROOT:
   P[x].mkdir();(P[x]/(NAME+'.php')).write_text('<?php\n/* Plugin Name: Backup fixture */\n');(P[x]/'code.txt').write_text('0');(P[x]/'unchanged.txt').write_text('original')
-  wp(x,'eval','global $wpdb;$wpdb->query("CREATE TABLE wp_trickle_backup_fixture (id int PRIMARY KEY, v int, doubled int AS (v*2) STORED) ENGINE=InnoDB");$wpdb->insert("wp_trickle_backup_fixture",["id"=>1,"v"=>0]);update_option("_csm_settings",["pull"=>true,"push"=>true],false);')
+  wp(x,'eval','global $wpdb;$wpdb->query("CREATE TABLE wp_trickle_backup_fixture (id int PRIMARY KEY, v int, doubled int AS (v*2) STORED) ENGINE=InnoDB");$wpdb->insert("wp_trickle_backup_fixture",["id"=>1,"v"=>0]);update_option("_csm_backups",[],false);update_option("_csm_settings",["pull"=>true,"push"=>true],false);')
  ids=[]
  for n in range(1,5):
   if n==3:(P[S]/'later.txt').write_text('introduced later')
@@ -126,6 +127,8 @@ finally:
  except Exception as e:print('Recovery cleanup:',str(e)[:200])
  for x in ROOT:
   wp(x,'eval','foreach(get_option("_csm_backups",[]) as $id){CSM_Plugin::discard(CSM_Support::job($id));}global $wpdb;$wpdb->query("DROP TABLE IF EXISTS wp_trickle_backup_fixture");wp_clear_scheduled_hook("trickle_fixture_ordinary");')
+  wp(x,'option','update','_csm_backups',json.dumps(original_backups[x]),'--format=json')
+  wp(x,'option','update','active_plugins',json.dumps(original_active[x]),'--format=json')
   if settings[x] is False:wp(x,'option','delete','_csm_settings')
   else:wp(x,'option','update','_csm_settings',json.dumps(settings[x]),'--format=json')
   shutil.rmtree(P[x],ignore_errors=True)

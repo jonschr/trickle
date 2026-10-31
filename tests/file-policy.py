@@ -35,9 +35,10 @@ for s in SITES:
  for n in NAMES:assert not path(s,n,'').exists()
 settings={s:ev(s,'echo wp_json_encode(get_option("_csm_settings"));') for s in SITES}
 recents=ev(SITES[1],'echo wp_json_encode(get_option("_csm_recents",[]));')
+backups={s:ev(s,'echo wp_json_encode(get_option("_csm_backups",[]));') for s in SITES}
 try:
  for s in SITES:
-  wp(s,'eval',"update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
+  wp(s,'eval',"update_option('_csm_backups',[],false);update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
   for n in NAMES:
    write(s,n,n+'.php','<?php\n/* Plugin Name: Trickle policy fixture */\n')
    write(s,n,'code.txt','source' if s==SITES[0] else 'destination')
@@ -120,6 +121,8 @@ finally:
   cli('discard','--yes')
  wp(SITES[1],'option','update','_csm_recents',json.dumps(recents),'--format=json')
  for s in SITES:
+  wp(s,'eval','foreach(get_option("_csm_backups",[]) as $id){CSM_Plugin::discard(CSM_Support::job($id));}')
+  wp(s,'option','update','_csm_backups',json.dumps(backups[s]),'--format=json')
   if settings[s] is False:wp(s,'option','delete','_csm_settings')
   else:wp(s,'option','update','_csm_settings',json.dumps(settings[s]),'--format=json')
   for n in NAMES:shutil.rmtree(path(s,n,''),ignore_errors=True)

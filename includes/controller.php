@@ -160,7 +160,7 @@ final class CSM_Controller {
         }
         catch (Throwable $e) {
             if ($action !== 'logs') { CSM_Log::write('error', 'Dashboard/CLI operation failed', $context + ['error' => $e->getMessage()]); }
-            if (in_array($action, ['transfer', 'commit', 'rollback'], true)) {
+            if (in_array($action, ['preflight', 'transfer', 'commit', 'rollback'], true)) {
                 CSM_Progress::fail($e->getMessage());
                 $control = get_option('_csm_control');
                 $progress = $control ? self::progress($control) : [];
@@ -173,10 +173,28 @@ final class CSM_Controller {
         finally { if ($locked) { CSM_Support::unlock(); } }
     }
 
+    private static function timeline(array $control): array {
+        $streams = []; $components = ['database' => 0, 'plugins' => 0, 'themes' => 0, 'media' => 0];
+        foreach (CSM_Plugin::kinds($control['selection']) as $kind) {
+            $bundle = $control['bundles'][$kind] ?? null;
+            $streams[$kind] = ['size' => $bundle['size'] ?? null, 'received' => $control['checkpoints'][$kind]['offset'] ?? 0];
+            foreach ($bundle['components'] ?? [] as $component => $size) { if (isset($components[$component])) { $components[$component] += $size; } }
+        }
+        return ['id' => $control['id'], 'started' => $control['created'], 'elapsed' => max(0, microtime(true) - $control['created']), 'components' => $components, 'streams' => $streams,
+            'selected' => array_keys(array_filter(['database' => !empty($control['selection']['tables']), 'plugins' => !empty($control['selection']['plugins']), 'themes' => !empty($control['selection']['themes']), 'media' => ($control['selection']['media'] ?? 'none') !== 'none'])),
+            'ready' => !in_array(null, array_column($streams, 'size'), true)];
+    }
+
     private static function progress(array $control): array {
+        return self::activity($control) + ['timeline' => self::timeline($control)];
+    }
+
+    private static function activity(array $control): array {
         $local = CSM_Progress::read($control['id']);
         try { self::assert_remote($control['peer']); }
         catch (Throwable $e) { return $local + ['poll_error' => $e->getMessage()]; }
+        // Once all source snapshots exist, a pull's receiving/apply work runs entirely on this site.
+        if ($control['direction'] === 'pull' && !array_diff(CSM_Plugin::kinds($control['selection']), array_keys($control['bundles'] ?? []))) { return $local; }
         try { $remote = CSM_Transport::request($control['peer'], 'progress', ['id' => $control['id']], null, null, 5); }
         catch (Throwable $e) { return $local + ['poll_error' => 'Remote progress is unavailable; the transfer may still be running.']; }
         // Match operations, rather than comparing timestamps from two different server clocks.
@@ -186,10 +204,10 @@ final class CSM_Controller {
         return !empty($remote['component']) ? $remote : $local;
     }
 
-    private static function segment_step(array $control, string $kind): array {
+    private static function segment_step(array $control, string $kind, bool $preflight = false): array {
         if (!in_array($kind, CSM_Plugin::kinds($control['selection']), true)) { throw new RuntimeException('Invalid stream kind.'); }
         $peer = $control['peer']; $pull = $control['direction'] === 'pull'; $id = $control['id'];
-        CSM_Progress::start($id, 'Preparing resumable ' . $kind . ' stream');
+        CSM_Progress::start($id, (empty($control['bundles'][$kind]) ? 'Preparing ' : 'Transferring ') . $kind . ' stream');
         if (empty($control['bundles'][$kind])) {
             $selection = $control['exports'][$kind] ?? null;
             if (!$selection) {
@@ -207,8 +225,13 @@ final class CSM_Controller {
             $control['bundles'][$kind] = $pull ? CSM_Transport::request($peer, 'bundle', ['id' => $id, 'kind' => $kind, 'selection' => $selection, 'progress_run' => CSM_Progress::run()]) : CSM_Segments::bundle($id, $kind, $selection);
             update_option('_csm_control', $control, false);
         }
+        if ($preflight) {
+            $summary = $pull ? CSM_Plugin::summary(CSM_Support::job($id)) : CSM_Transport::request($peer, 'status', ['id' => $id]);
+            return $summary + ['timeline' => self::timeline($control)];
+        }
         $bundle = $control['bundles'][$kind];
         $state = $pull ? CSM_Segments::state(CSM_Support::job($id), $kind, $bundle) : CSM_Transport::request($peer, 'segment_state', ['id' => $id, 'kind' => $kind, 'bundle' => $bundle]);
+        CSM_Progress::update(['phase' => 'Transferring ' . $kind . ' stream', 'component' => $kind, 'count' => $state['offset'], 'total' => $bundle['size'], 'unit' => 'bytes', 'bytes' => $state['offset']], true);
         $bytes = '';
         if ($state['offset'] < $bundle['size']) {
             if ($pull) {
@@ -220,8 +243,11 @@ final class CSM_Controller {
         }
         $summary = $pull ? CSM_Segments::receive(CSM_Support::job($id), $kind, $bundle, $state['offset'], $bytes, hash('sha256', $bytes))
             : CSM_Transport::request($peer, 'segment_data', ['id' => $id, 'kind' => $kind, 'bundle' => $bundle, 'offset' => $state['offset'], 'sha256' => hash('sha256', $bytes)], (static function () use ($bytes) { yield $bytes; })());
-        self::remember($control, $summary);
-        return $summary + ['health' => $control['health'] ?? null, 'media_comparison' => $control['media_comparison'] ?? null, 'state' => self::state()];
+        $control['checkpoints'][$kind] = $summary['checkpoint']; update_option('_csm_control', $control, false);
+        // Keep checkpoint replies small; recent settings and full UI state change only when staging finishes.
+        $state = [];
+        if (empty($summary['continue'])) { self::remember($control, $summary); $state = ['state' => self::state()]; }
+        return $summary + ['timeline' => self::timeline($control), 'health' => $control['health'] ?? null, 'media_comparison' => $control['media_comparison'] ?? null] + $state;
     }
 
     private static function operate(string $action, array $data): array {
@@ -359,10 +385,11 @@ final class CSM_Controller {
             if ($current['status'] === 'staging' && !empty($data['cancel'])) { self::operate('discard', ['id' => $id]); return ['status' => 'cancelled', 'state' => self::state()]; }
             return $current + ['state' => self::state()];
         }
-        if (in_array($action, ['transfer', 'commit'], true)) { self::assert_remote($peer); CSM_Updates::assert_job($control); }
+        if (in_array($action, ['preflight', 'transfer', 'commit'], true)) { self::assert_remote($peer); CSM_Updates::assert_job($control); }
         if ($action === 'commit') { $version = CSM_Transport::request($peer, 'manifest'); self::assert_remote($peer, $version); CSM_Updates::assert_version($version['plugin_version'] ?? null); }
         if ($action === 'preview') { return $pull ? CSM_Plugin::preview_page(CSM_Support::job($id), (int)($data['offset'] ?? 0)) : CSM_Transport::request($peer, 'preview', ['id' => $id, 'offset' => (int)($data['offset'] ?? 0)]); }
         if ($action === 'progress') { return self::progress($control); }
+        if ($action === 'preflight') { return self::segment_step($control, $data['kind'] ?? '', true); }
         if ($action === 'transfer' && !empty($control['segmented'])) { return self::segment_step($control, $data['kind'] ?? ''); }
         if ($action === 'transfer') {
             $kind = $data['kind'] ?? '';
@@ -424,6 +451,7 @@ final class CSM_Controller {
         } elseif ($action === 'status') {
             $summary = $pull ? CSM_Plugin::summary(CSM_Support::job($id)) : CSM_Transport::request($peer, 'status', ['id' => $id]);
             $summary['progress'] = self::progress($control);
+            $summary['timeline'] = self::timeline($control);
             return $summary + ['health' => $control['health'] ?? null, 'media_comparison' => $control['media_comparison'] ?? null, 'state' => self::state()];
         } else { throw new RuntimeException('Unknown operation.'); }
         self::remember($control, $summary);

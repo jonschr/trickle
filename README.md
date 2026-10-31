@@ -1,4 +1,4 @@
-# Trickle 0.1.12 — preview
+# Trickle 0.1.13 — preview
 
 A shared WordPress plugin for selective push/pull migrations, controlled from the local site's **Tools → Trickle** page. Install the same ZIP at both ends.
 
@@ -13,8 +13,10 @@ A shared WordPress plugin for selective push/pull migrations, controlled from th
 - Reuse the exact settings of the latest 20 transfers, including remote, direction, component selections, explicit replacement rules with enabled flags, and changed-media cutoff. Recent entries keep timestamps and status, not additional backup copies.
 - Use the same transfer controller from the dashboard or WP-CLI; agent presets can plan or complete a transfer in one command, while advanced CLI commands support separate staging and apply.
 - Send one gzip-compressed database stream and one gzip-compressed file stream per transfer, when those components are selected. On matching current versions, each selected logical stream is retained as an immutable private gzip file on the source, then moved in checksummed 512 KB HTTP segments. Both ends need temporary disk space; this trades source storage for network resumability.
-- Start a dashboard push/pull with one click: stage privately, verify checksums and apply automatically. Unchanged plugin/theme contents are compared using cached hashes and are not retransmitted.
+- Start a dashboard push/pull with one click: stage privately, verify checksums and apply automatically. Unchanged plugin/theme contents are compared using cached hashes and are not retransmitted. When all selected plugin/theme component digests match, a compact token pins the source inventory instead of paging per-file manifests through the controller. Source metadata and destination contents are still checked independently.
 - Keep three destination backups, independently restorable from the separate **Backups** page. Completed transfers release their staging data without blocking the next task.
+
+The dashboard prepares both selected source streams before sending. A segmented bar shows measured Database, Plugins, Themes and Media payload sizes, with an elapsed timer, a live remaining-time estimate and a timestamped recent-activity list. Database size is the uncompressed serialized stream; file sizes exclude unchanged payloads and protected paths. The bar uses payload-weighted staging estimates because plugins, themes and media share one compressed file stream. Compressed bytes acknowledged by the receiver drive the transfer ETA; measured replacement-step counts can produce a separate step ETA. Preparation, verification, stalls and health checks show their phase instead of a made-up countdown. Only a successfully applied transfer shows completion. Timers/history survive active-session reloads; ETA recalibrates from fresh observations.
 
 Progress reports the current relative plugin/theme/media path or database table, processed counts, and streamed bytes. The dashboard polls about once per second; quick components may pass between updates. A failure retains its phase, exact component and error, including through automatic rollback. Progress snapshots live outside the webroot and are read without the transfer mutation lock. A hosting timeout can leave only the last reported activity; that does not prove which operation caused the timeout.
 
@@ -24,9 +26,9 @@ Self-connections are excluded from the saved-site selector and rejected by the c
 
 ## Installation and use
 
-1. Upload `trickle-0.1.12.zip` through Plugins → Add Plugin on both sites and activate it.
+1. Upload `trickle-0.1.13.zip` through Plugins → Add Plugin on both sites and activate it.
    Activation installs `wp-content/mu-plugins/0-trickle-loader.php`. That directory must be writable. The loader isolates streaming/recovery requests and the Trickle dashboard from ordinary plugins and theme code, so a broken active plugin need not block rollback. Inventory requests load ordinary plugins so their vendor update filters still work. A failed inventory request does not hide an existing transfer's recovery controls. Other must-use plugins and host firewalls still run. The loader is dormant when Trickle is deactivated. Opening the Trickle dashboard after an update refreshes an outdated loader when file modifications are allowed; CLI-only updates can reactivate Trickle to refresh it. File apply remains blocked until the expected loader is installed.
-2. Open Tools → Trickle on the remote site. Reads are allowed by default; incoming remote writes are disabled by default. Enable incoming writes if you want to push into this site.
+2. Open Tools → Trickle on the remote site. Authenticated remote reads and incoming writes are both allowed by default on a fresh installation. Either can be disabled under Connection & access; saved permission choices are preserved.
 3. Use **Copy connection code** at the top of the remote Trickle page, then paste both lines into the local site's connection panel. A complete code connects automatically: the visible site URL followed by its private key. Check the URL before pasting. Permission checkboxes save automatically. Treat the code like a password; do not put the key in a URL or support ticket. Older base64 connection codes are still accepted.
 4. Select the saved remote site, then push or pull, review source/destination versions, and select components. A single saved remote is selected automatically. With several, the dashboard remembers the selected site. Selecting a child theme also selects its parent.
 5. Select **Push** or **Pull**. Trickle stages and verifies the selected streams, then replaces the destination automatically. Git inclusion still requires confirmation.
@@ -213,7 +215,7 @@ All remote requests are HTTP POSTs to the WordPress installation URL with a dedi
 | `rollback` | JSON transfer ID | Restore result | Incoming writes |
 | `discard` | JSON transfer ID | Cleanup result | Incoming writes |
 
-Control requests carry a SHA-256 body digest and an HMAC-SHA256 signature. `X-CSM-Time`, `X-CSM-Nonce`, `X-CSM-Hash`, `X-CSM-Params`, and `X-CSM-Signature` authenticate requests. Timestamps have a five-minute window; nonces are single-use. Stream uploads authenticate their transfer ID/kind in signed headers and rely on verified TLS plus final stream/file digests for body integrity. Connection secrets never appear in request URLs. Redirects are not followed. The user agent is `Trickle/0.1.12 (WordPress site migration)`. The signed parameters include the controlling Trickle version; transfer actions reject a mismatch.
+Control requests carry a SHA-256 body digest and an HMAC-SHA256 signature. `X-CSM-Time`, `X-CSM-Nonce`, `X-CSM-Hash`, `X-CSM-Params`, and `X-CSM-Signature` authenticate requests. Timestamps have a five-minute window; nonces are single-use. Stream uploads authenticate their transfer ID/kind in signed headers and rely on verified TLS plus final stream/file digests for body integrity. Connection secrets never appear in request URLs. Redirects are not followed. The user agent is `Trickle/0.1.13 (WordPress site migration)`. The signed parameters include the controlling Trickle version; transfer actions reject a mismatch.
 
 Database streams contain schema records and base64-encoded row values. They are logical data streams, not SQL files to execute wholesale. The receiver validates schemas and constructs its own inserts. The source uses one InnoDB repeatable-read snapshot, reading bounded batches with primary-key pagination where available. Tables without primary keys use offset pagination. Ordinary serialized strings, arrays, objects and references are handled without instantiating objects; unsupported custom serialization that requires replacement stops the import. Binary columns are not searched/replaced.
 

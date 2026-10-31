@@ -13,7 +13,7 @@ final class CSM_Updates {
     }
 
     public static function capabilities(): array {
-        $settings = get_option('_csm_settings', []);
+        $settings = CSM_Access::settings();
         return ['remote_update' => 1, 'remote_updates_allowed' => !empty($settings['updates']),
             'can_update_trickle' => !empty($settings['updates']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write']))];
     }

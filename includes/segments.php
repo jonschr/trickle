@@ -32,14 +32,18 @@ final class CSM_Segments {
             self::write_json($path . '.owner', ['credential' => CSM_Access::owner()]);
             ignore_user_abort(true);
             $selection = CSM_Files::selection($selection); CSM_Database::validate($selection['tables'] ?? []);
-            $generator = $kind === 'database' ? CSM_Database::stream($selection) : CSM_Files::stream($selection);
+            $components = ['database' => 0, 'plugins' => 0, 'themes' => 0, 'media' => 0];
+            $source = $kind === 'database' ? CSM_Database::stream($selection) : CSM_Files::stream($selection, $components);
+            $generator = (static function () use ($source, $kind, &$components) {
+                foreach ($source as $chunk) { if ($kind === 'database') { $components['database'] += strlen($chunk); } yield $chunk; }
+            })();
             $fp = fopen($path . '.part', 'wb'); if (!$fp) { throw new RuntimeException('Cannot build private source stream.'); }
             chmod($path . '.part', 0600); $hash = hash_init('sha256'); $size = 0;
             try {
                 foreach (CSM_Support::gzip($generator) as $bytes) { CSM_Support::write($fp, $bytes); hash_update($hash, $bytes); $size += strlen($bytes); }
             } finally { fclose($fp); }
             if (!rename($path . '.part', $path)) { throw new RuntimeException('Cannot retain source stream.'); }
-            $info = ['credential' => CSM_Access::owner(), 'size' => $size, 'sha256' => hash_final($hash), 'selection' => $digest, 'created' => time()];
+            $info = ['credential' => CSM_Access::owner(), 'size' => $size, 'sha256' => hash_final($hash), 'selection' => $digest, 'created' => time(), 'components' => $components];
             self::write_json($meta, $info); return $info;
         } finally { flock($lock, LOCK_UN); fclose($lock); }
     }

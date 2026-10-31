@@ -36,7 +36,7 @@ master=ev(S,'echo wp_json_encode(get_option("_csm_key"));');peer='--remote=https
 with tempfile.TemporaryDirectory(prefix='trickle-remote-update-') as tmp:
  tmp=Path(tmp);config=tmp/'config.json';events=tmp/'activation-events.jsonl';good=tmp/'valid.zip';bad=tmp/'wrong.zip'
  package_url=f'https://updates.example.test/trickle-{VERSION}.zip'
- files=[ROOT/n for n in ['trickle.php','update.json','README.md']]
+ files=[ROOT/n for n in ['trickle.php','update.json','README.md','AI-USAGE.md']]
  for folder in ['includes','assets','vendor']:files.extend(p for p in (ROOT/folder).rglob('*') if p.is_file() and not any(x.startswith('.') for x in p.relative_to(ROOT).parts))
  for path,wrong in [(good,False),(bad,True)]:
   with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:

@@ -20,8 +20,9 @@ final class CSM_Progress {
     public static function start(string $id, string $phase, ?string $run = null): void {
         $run ??= self::$current && self::$current['id'] === $id && self::$current['state'] === 'running' ? self::$current['run'] : bin2hex(random_bytes(8));
         if (!preg_match('/^[a-f0-9]{16}$/D', $run)) { throw new RuntimeException('Invalid progress operation.'); }
-        self::$current = ['id' => $id, 'run' => $run, 'started' => microtime(true), 'state' => 'running', 'phase' => $phase, 'component' => '', 'count' => 0, 'total' => null, 'unit' => '', 'bytes' => 0];
-        self::update([], true);
+        $events = self::read($id)['events'] ?? [];
+        self::$current = ['id' => $id, 'run' => $run, 'started' => microtime(true), 'state' => 'running', 'phase' => '', 'component' => '', 'count' => 0, 'total' => null, 'unit' => '', 'bytes' => 0, 'events' => $events];
+        self::update(['phase' => $phase], true);
         register_shutdown_function(static function () use ($id) {
             $error = error_get_last();
             if (self::$current && self::$current['id'] === $id && self::$current['state'] === 'running' && $error && in_array($error['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
@@ -32,7 +33,15 @@ final class CSM_Progress {
 
     public static function update(array $detail, bool $force = false): void {
         if (!self::$current) { return; }
+        $changed = false;
+        foreach (['phase', 'component', 'state'] as $key) { if (isset($detail[$key]) && $detail[$key] !== self::$current[$key]) { $changed = true; } }
         self::$current = array_replace(self::$current, $detail, ['updated' => microtime(true)]);
+        if ($changed || (!self::$current['events'] && $force)) {
+            $event = array_intersect_key(self::$current, array_flip(['updated', 'phase', 'component', 'state', 'failure']));
+            $event['id'] = substr(hash('sha256', CSM_Support::json($event)), 0, 20);
+            self::$current['events'][] = $event;
+            self::$current['events'] = array_slice(self::$current['events'], -12);
+        }
         if (!$force && microtime(true) - self::$written < .25) { return; }
         // A separate atomic file stays readable while the transfer owns the mutation lock or swaps wp_options.
         $path = self::path(self::$current['id']);

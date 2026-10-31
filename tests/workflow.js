@@ -8,7 +8,7 @@ function context(options={}) {
  const c={session:options.session || null,summary:null,sites:{local:{plugin_version:'test'}},previewId:'',previewItems:[],
   $:id=>{if(!controls.has(id))controls.set(id,{value:'remote',removeAttribute(){}});return controls.get(id);},
   currentSelection:()=>selection,destination:()=>({url:'https://destination.test'}),source:()=>({url:'https://source.test'}),direction:()=> 'pull',transferAction:()=> 'Pull',
-  showSummary(){},renderActivity(){},message(){},load:async()=>{},reviewGitFolders:async()=>[],
+  transferMeter:{begin(){},update(){},setPhase(){},finish(){}},showSummary(){},renderActivity(){},message(){},load:async()=>{},reviewGitFolders:async()=>[],
   finishTransfer:async(result,route)=>{finished.push([result.status,route.id]);c.session=null;},
   setTimeout:fn=>{if(fn.name!=='poll')fn();return 0;},clearTimeout(){},
   api:async(op,data)=>{
@@ -18,6 +18,7 @@ function context(options={}) {
    if(op==='prepare')return {id:'transfer',status:'staging',pending:['database','files']};
    if(op==='status')return options.status || {id:'transfer',status:'staging',pending:['files']};
    if(op==='progress')return {};
+   if(op==='preflight')return {id:'transfer',status:'staging',pending:['database','files']};
    if(op==='transfer')return {id:'transfer',status:'staging',pending:[],ready:true};
    if(op==='commit')return {id:'transfer',status:'applied'};
    if(op==='recover')return options.recovery || {status:'cancelled'};
@@ -29,10 +30,13 @@ function context(options={}) {
  return {c,calls,finished};
 }
 (async()=>{
- let x=context();await x.c.migrate();assert.deepEqual(x.calls,['review','prepare','transfer','transfer','commit']);assert.deepEqual(x.finished,[['applied','transfer']]);assert.equal(x.c.session,null);
+ let x=context();await x.c.migrate();assert.deepEqual(x.calls,['review','prepare','preflight','preflight','transfer','transfer','commit']);assert.deepEqual(x.finished,[['applied','transfer']]);assert.equal(x.c.session,null);
+ x=context({handler(op){if(op==='preflight')throw Error('Snapshot failed');}});await assert.rejects(()=>x.c.migrate(),/Snapshot failed/);assert.equal(x.calls.includes('commit'),false);assert.equal(x.calls.includes('transfer'),false);assert.equal(x.calls.at(-1),'recover');
+ x=context({handler(op){if(op==='preflight')throw Error('Another transfer is running on this site.');}});await x.c.migrate();assert.equal(x.calls.includes('recover'),false);assert.equal(x.c.session.id,'transfer');
  let drops=0;x=context({handler(op){if(op==='transfer' && drops++<2)throw Error('Network connection interrupted');}});await x.c.migrate();assert.equal(x.calls.filter(op=>op==='transfer').length,4);assert.equal(x.calls.filter(op=>op==='commit').length,1);
- x=context({session:{id:'retained',automatic:true,destination:'https://destination.test'},status:{status:'staging',pending:['files']}});await x.c.migrate();assert.deepEqual(x.calls,['status','transfer','commit']);
+ x=context({session:{id:'retained',automatic:true,destination:'https://destination.test'},status:{status:'staging',pending:['files']}});await x.c.migrate();assert.deepEqual(x.calls,['status','preflight','transfer','commit']);
  x=context({session:{id:'retained',automatic:true},status:{status:'applied'}});await x.c.migrate();assert.deepEqual(x.calls,['status']);assert.deepEqual(x.finished,[['applied','retained']]);
+ x=context({session:{id:'retained',automatic:true},status:{status:'applying'},handler(op){if(op==='recover')throw Error('Another transfer is running on this site.');}});await x.c.migrate();assert.deepEqual(x.calls,['status','recover']);assert.equal(x.c.session.id,'retained');
  x=context({session:{id:'retained',automatic:true},status:{status:'applying'},recovery:{status:'restored'}});await x.c.migrate();assert.deepEqual(x.calls,['status','recover']);assert.deepEqual(x.finished,[['restored','retained']]);
  x=context({handler(op){if(op==='commit')throw Error('Connection timed out');},status:{status:'applying'},recovery:{status:'restored'}});await assert.rejects(()=>x.c.migrate(),/timed out/);assert.equal(x.calls.filter(op=>op==='commit').length,1);assert.deepEqual(x.finished,[['restored','transfer']]);
  x=context({handler(op){if(op==='transfer')throw Error('Invalid PHP');}});await assert.rejects(()=>x.c.migrate(),/Invalid PHP/);assert.equal(x.calls.filter(op=>op==='transfer').length,1);assert.equal(x.calls.at(-1),'recover');assert.equal(x.c.session,null);

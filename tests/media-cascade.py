@@ -34,11 +34,12 @@ for s in ROOTS:
  assert not FIX[s].exists() and not MU[s].exists()
 settings={s:evaluate(s,'echo wp_json_encode(get_option("_csm_settings"));') for s in ROOTS}
 recents=evaluate(DEST,'echo wp_json_encode(get_option("_csm_recents",[]));')
+backups={s:evaluate(s,'echo wp_json_encode(get_option("_csm_backups",[]));') for s in ROOTS}
 try:
  for s in ROOTS:
   FIX[s].mkdir()
   MU[s].write_text("<?php\nadd_filter('upload_dir',static function($u){$u['basedir']=WP_CONTENT_DIR.'/uploads/trickle-cascade-fixture';$u['baseurl']=content_url('/uploads/trickle-cascade-fixture');$u['path']=$u['basedir'];$u['url']=$u['baseurl'];$u['error']=false;return $u;});\n")
-  wp(s,'eval',"update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
+  wp(s,'eval',"update_option('_csm_backups',[],false);update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
   for rel,data in {'2030/01/a.jpg':b'first','2030/01/b.jpg':b'second','2030/02/c.jpg':b'third','2031/01/d.jpg':b'fourth','logo.svg':b'<svg/>','custom/styles/x.css':b'body{}'}.items():write(s,rel,data)
  # Source fixture mutations are old enough for metadata caches to be reusable.
  time.sleep(3.1)
@@ -99,6 +100,8 @@ finally:
   wp(DEST,'option','update','_csm_recents',json.dumps(recents),'--format=json')
   for s in ROOTS:
    wp(s,'eval',"$root=wp_upload_dir()['basedir'];if($root!==WP_CONTENT_DIR.'/uploads/trickle-cascade-fixture')throw new RuntimeException('Wrong fixture root');$path=CSM_Support::private_dir().'/media-hashes-'.substr(hash('sha256',$root),0,16).'.json';if(is_file($path))unlink($path);")
+   wp(s,'eval','foreach(get_option("_csm_backups",[]) as $id){CSM_Plugin::discard(CSM_Support::job($id));}')
+   wp(s,'option','update','_csm_backups',json.dumps(backups[s]),'--format=json')
    if settings[s] is False:wp(s,'option','delete','_csm_settings')
    else:wp(s,'option','update','_csm_settings',json.dumps(settings[s]),'--format=json')
    MU[s].unlink(missing_ok=True)

@@ -58,6 +58,10 @@ final class CSM_Components {
         $local = static fn($query) => self::inventory($query);
         $source = $pull ? $remote : $local; $destination = $pull ? $local : $remote;
         $src = $source(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]); $dst = $destination(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]);
+        // Matching component digests let the source reuse its pinned inventory without paging it through the controller.
+        if ($src['components'] === $dst['components']) {
+            return ['same' => base64_encode(gzencode(CSM_Support::json(['component_token' => $src['token']]), 3)), 'matched' => $src['files'], 'fallback' => false];
+        }
         $dest = []; $same = [];
         // Page inventories so a component with thousands of files never exceeds a control response.
         for ($offset = 0; $offset < $dst['files']; $offset += 500) { $page = $destination(['level' => 'files', 'selection' => $selection, 'token' => $dst['token'], 'offset' => $offset]); $dest += $page['files']; }
@@ -78,6 +82,12 @@ final class CSM_Components {
         $bytes = base64_decode($plan, true); $raw = $bytes === false ? false : @gzdecode($bytes, 32 * 1024 * 1024);
         $files = $raw === false ? null : json_decode($raw, true);
         if (!is_array($files)) { throw new RuntimeException('Invalid unchanged-file plan.'); }
+        if (array_key_exists('component_token', $files)) {
+            if (count($files) !== 1 || !is_string($files['component_token']) || !preg_match('/^[a-f0-9]{64}$/D', $files['component_token'])) { throw new RuntimeException('Invalid component inventory token.'); }
+            $cache = self::read($selection);
+            if (!hash_equals($cache['token'] ?? '', $files['component_token'])) { throw new RuntimeException('Component inventory changed. Retry preparation.'); }
+            return $cache['files'];
+        }
         return $files;
     }
 

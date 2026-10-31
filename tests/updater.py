@@ -15,7 +15,7 @@ state=json.loads(probe.stdout)
 assert state=={'home':'https://trickle-qa-c.localhost:8453','idle':True}
 metadata=json.loads((root/'update.json').read_text())
 parts=metadata['version'].split('.');parts[-1]=str(int(parts[-1])+1);future='.'.join(parts)
-files=[root/'trickle.php',root/'update.json',root/'README.md']
+files=[root/name for name in ['trickle.php','update.json','README.md','AI-USAGE.md']]
 for name in ['assets','includes','vendor']:
     files.extend(p for p in (root/name).rglob('*') if p.is_file() and not any(x.startswith('.') for x in p.relative_to(root).parts))
 for p in files:

@@ -27,6 +27,17 @@ VERSION=ev('echo wp_json_encode(CSM_VERSION);')
 settings=ev('echo wp_json_encode(get_option("_csm_settings"));');tokens=ev('echo wp_json_encode(get_option("_csm_tokens",[]));')
 master=ev('echo wp_json_encode(get_option("_csm_key"));');job=None;bundle=secrets.token_hex(16)
 try:
+ wp('eval',"delete_option('_csm_settings');")
+ status,r=request('manifest',master)
+ check(status==200 and r['data']['incoming_writes'] and r['data']['can_receive'],'Fresh installation permits authenticated reads and advertises incoming writes')
+ check(not r['data']['remote_updates_allowed'] and not r['data']['can_update_trickle'],'Migration defaults do not enable authenticated plugin updates')
+ status,r=request('prepare',master,{'selection':{'tables':['wp_csm_fixture']}});job=r['data']['id']
+ check(status==200,'Fresh installation accepts authenticated destination preparation without saving permissions')
+ request('discard',master,{'id':job});job=None
+ ui=wp('--user=admin','eval',"""ob_start();CSM_Plugin::page();$html=ob_get_clean();echo wp_json_encode([preg_match('/id="csm-allow-read"[^>]*checked/',$html)===1,preg_match('/id="csm-allow-write"[^>]*checked/',$html)===1]);""")
+ check(json.loads(ui)==[True,True],'Fresh dashboard shows both migration permissions enabled')
+ wp('eval',"update_option('_csm_settings',['pull'=>false,'push'=>false,'updates'=>false],false);")
+ check(request('manifest',master)[0]==403 and request('prepare',master,{'selection':{'tables':['wp_csm_fixture']}})[0]==403,'Explicitly disabled permissions remain disabled')
  wp('eval',"update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
  issued=[ev("echo wp_json_encode(CSM_Access::issue('Test workstation',true,"+('true' if write else 'false')+",1));") for write in [False,True,True]]
  keys=[i['pairing'].splitlines()[1] for i in issued];read,write,other=keys

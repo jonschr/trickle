@@ -242,8 +242,9 @@ final class CSM_Files {
         }
     }
 
-    public static function stream(array $selection): Generator {
+    public static function stream(array $selection, ?array &$component_sizes = null): Generator {
         $selection = self::selection($selection);
+        $component_sizes = ['plugins' => 0, 'themes' => 0, 'media' => 0];
         $started = time(); $count = 0; $hash = hash_init('sha256');
         $same = CSM_Components::unchanged($selection);
         $parents = [];
@@ -261,6 +262,7 @@ final class CSM_Files {
             if (!$fp) { throw new RuntimeException('Cannot read file: ' . $relative); }
             try {
                 $stat = fstat($fp); $size = $stat['size'];
+                $component_sizes[str_starts_with($relative, 'uploads/') ? 'media' : explode('/', $relative)[0]] += $size;
                 $line = CSM_Support::json(['type' => 'file', 'path' => $relative, 'size' => $size, 'mtime' => $stat['mtime'], 'mode' => ($stat['mode'] & 0111) ? 0755 : 0644]);
                 hash_update($hash, $line); yield $line;
                 $filehash = hash_init('sha256'); $remaining = $size;

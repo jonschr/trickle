@@ -3,6 +3,8 @@ defined('ABSPATH') || exit;
 
 /** Separately revocable, scoped connection keys; the original administrator key remains compatible. */
 final class CSM_Access {
+    public static function settings(): array { return get_option('_csm_settings', ['pull' => true, 'push' => true, 'updates' => false]); }
+
     public static function id(string $key): string { return substr(hash('sha256', $key), 0, 24); }
 
     public static function list(): array {
@@ -36,13 +38,13 @@ final class CSM_Access {
 
     public static function authorize(array $token, string $action): void {
         if ($action === 'update_trickle') {
-            $settings = get_option('_csm_settings', []);
+            $settings = self::settings();
             if (empty($settings['updates']) || empty($token['write'])) { throw new RuntimeException('Enable authenticated Trickle updates on the remote site and use an administrator or read/write key.', 403); }
             $GLOBALS['_csm_credential'] = $token; return;
         }
         $reads = ['export', 'manifest', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'bundle', 'bundle_chunk', 'bundle_discard'];
         $status = ['backups', 'version', 'update_info', 'progress', 'status', 'preview', 'segment_state'];
-        $settings = get_option('_csm_settings', ['pull' => true, 'push' => false]);
+        $settings = self::settings();
         $read = !empty($settings['pull']) && !empty($token['read']); $write = !empty($settings['push']) && !empty($token['write']);
         if (in_array($action, ['version', 'update_info'], true) && !empty($settings['updates']) && !empty($token['write'])) { $GLOBALS['_csm_credential'] = $token; return; }
         if (in_array($action, $reads, true) ? !$read : (in_array($action, $status, true) ? !$read && !$write : !$write)) {
