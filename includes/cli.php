@@ -93,6 +93,9 @@ final class CSM_CLI {
      * [--include-git=<paths>]
      * : Explicit per-transfer Git overrides; --yes never grants these.
      *
+     * [--transport=<mode>]
+     * : stream (default) or chunks; both resume retained snapshots.
+     *
      * [--format=<format>]
      * : table or json.
      */
@@ -317,13 +320,16 @@ final class CSM_CLI {
      * : Comma-separated source table names, or all.
      *
      * [--media=<mode>]
-     * : none, all, changed, uploaded, selected, or compare. Default: none.
+     * : none, all, changed, uploaded, selected, or compare (alias for all). Default: none. All skips matching files.
      *
      * [--rehash-files]
      * : Recalculate plugin/theme content hashes instead of trusting metadata caches.
      *
+     * [--force-media]
+     * : Retransfer matching media files too; requires --media=all.
+     *
      * [--rehash-media]
-     * : Recalculate all media content hashes for --media=compare instead of reusing cached hashes.
+     * : Recalculate media hashes for --media=all instead of reusing cached hashes.
      *
      * [--media-ids=<ids>]
      * : Comma-separated attachment IDs for selected media.
@@ -361,6 +367,9 @@ final class CSM_CLI {
      * [--yes]
      * : Confirm application without an interactive prompt.
      *
+     * [--transport=<mode>]
+     * : stream (default) or chunks; both resume retained snapshots.
+     *
      * [--format=<format>]
      * : table or json.
      */
@@ -384,13 +393,16 @@ final class CSM_CLI {
      * : Comma-separated source table names, or all.
      *
      * [--media=<mode>]
-     * : none, all, changed, uploaded, selected, or compare. Default: none.
+     * : none, all, changed, uploaded, selected, or compare (alias for all). Default: none. All skips matching files.
      *
      * [--rehash-files]
      * : Recalculate plugin/theme content hashes instead of trusting metadata caches.
      *
+     * [--force-media]
+     * : Retransfer matching media files too; requires --media=all.
+     *
      * [--rehash-media]
-     * : Recalculate all media content hashes for --media=compare instead of reusing cached hashes.
+     * : Recalculate media hashes for --media=all instead of reusing cached hashes.
      *
      * [--media-ids=<ids>]
      * : Comma-separated attachment IDs for selected media.
@@ -428,6 +440,9 @@ final class CSM_CLI {
      * [--yes]
      * : Confirm application without an interactive prompt.
      *
+     * [--transport=<mode>]
+     * : stream (default) or chunks; both resume retained snapshots.
+     *
      * [--format=<format>]
      * : table or json.
      */
@@ -438,7 +453,7 @@ final class CSM_CLI {
         if (!empty($assoc['recent'])) {
             $recent = CSM_Controller::recent($assoc['recent']);
             if ($recent['direction'] !== $direction) { throw new RuntimeException('This recent transfer uses the other direction; use trickle ' . $recent['direction'] . '.'); }
-            if (array_intersect(array_keys($assoc), ['remote', 'plugins', 'themes', 'tables', 'media', 'rehash-files', 'rehash-media', 'media-ids', 'uploaded-after', 'uploaded-before', 'since', 'keep-destination-plugins', 'skip-replace', 'skip-default-replacements', 'replacements'])) { throw new RuntimeException('Use --recent alone to reuse exact settings, or specify a new remote and selection.'); }
+            if (array_intersect(array_keys($assoc), ['remote', 'plugins', 'themes', 'tables', 'media', 'transport', 'force-media', 'rehash-files', 'rehash-media', 'media-ids', 'uploaded-after', 'uploaded-before', 'since', 'keep-destination-plugins', 'skip-replace', 'skip-default-replacements', 'replacements'])) { throw new RuntimeException('Use --recent alone to reuse exact settings, or specify a new remote and selection.'); }
             $peer = CSM_Controller::peer($recent['remote_id']); $selection = $recent['selection'];
         } else {
             $peers = CSM_Controller::peers();
@@ -448,7 +463,8 @@ final class CSM_CLI {
             if ($automated) { $assoc += CSM_Presets::resolve($assoc['preset'], $inventory); }
             $source = $inventory[$direction === 'push' ? 'local' : 'remote'];
             if (($assoc['media'] ?? '') === 'uploaded' && empty($source['media_dates'])) { throw new RuntimeException('Update Trickle on the source site before transferring by upload date.'); }
-            $selection = ['sync_active_plugins' => !isset($assoc['keep-destination-plugins']), 'media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'file_verify' => isset($assoc['rehash-files']), 'media_verify' => isset($assoc['rehash-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
+            $selection = ['transport' => $assoc['transport'] ?? 'stream', 'sync_active_plugins' => !isset($assoc['keep-destination-plugins']), 'media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'file_verify' => isset($assoc['rehash-files']), 'media_verify' => isset($assoc['rehash-media']), 'media_force' => isset($assoc['force-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
+            if ($selection['media_force'] && !in_array($selection['media'], ['all','compare'], true)) { throw new RuntimeException('--force-media requires --media=all.'); }
             foreach (['plugins', 'themes', 'tables'] as $kind) {
                 $selection[$kind] = ($assoc[$kind] ?? '') === 'all' ? array_column(array_filter($source[$kind], static fn($item) => empty($item['protected'])), 'id') : self::csv($assoc[$kind] ?? '');
             }
@@ -484,6 +500,7 @@ final class CSM_CLI {
                 $selection['since'] = $stamp;
             } elseif ($selection['media'] === 'changed') { $selection['since'] = $inventory['history'][$direction . ':' . $peer['url']] ?? 0; }
         }
+        if (!in_array($selection['transport'] ?? 'stream', ['stream','chunks'], true)) { throw new RuntimeException('Choose --transport=stream or --transport=chunks.'); }
         if ($automated) {
             $plan = CSM_Presets::plan($assoc['preset'], $peer, $inventory, $selection, self::csv($assoc['include-git'] ?? ''));
             if (isset($assoc['dry-run']) || !isset($assoc['yes'])) {
@@ -504,6 +521,7 @@ final class CSM_CLI {
             }
         } catch (Throwable $e) {
             if (!$automated) { throw $e; }
+            if ($e instanceof CSM_Network_Error) { self::$failure_context += ['recovery'=>'retained', 'retry_after'=>$e->retry_after]; throw $e; }
             try {
                 $recovery = CSM_Controller::execute('recover', ['id' => $session['id'], 'cancel' => true]);
                 self::$failure_context['recovery'] = $recovery['status'];

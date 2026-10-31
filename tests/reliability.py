@@ -38,7 +38,7 @@ try:
   wp(x,'eval',"update_option('_csm_backups',[],false);update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
  (P[D]/'obsolete.txt').write_text('old code')
  payload=random.Random(712).randbytes(1600000);(P[S]/'large.bin').write_bytes(payload)
- selection={'plugins':[NAME],'themes':[],'tables':[],'media':'none'}
+ selection={'transport':'chunks','plugins':[NAME],'themes':[],'tables':[],'media':'none'}
  first=ev(D,'echo wp_json_encode(CSM_Controller::execute("prepare",["site"=>"https://trickle-qa-a.localhost:8453","direction"=>"pull","selection"=>json_decode('+repr(json.dumps(selection))+',true)]));')
  planned=execute('preflight',{'kind':'files'})
  check(planned['timeline']['ready'] and planned['timeline']['components']['plugins']==len(payload)+len('source'),'Preflight measures only changed plugin payloads without an extra file-content pass')
@@ -73,7 +73,7 @@ try:
  # Source syntax and compatibility checks fail while live destination is untouched.
  (P[S]/(NAME+'.php')).write_text('<?php\n/* Plugin Name: Reliability fixture */\nfunction invalid( {')
  err=cli('pull','--remote=https://trickle-qa-a.localhost:8453','--plugins='+NAME,fail=True)
- check('PHP syntax check failed' in err and (P[D]/'code.txt').read_text()=='destination','Invalid PHP is rejected during staging before destination code changes')
+ check('PHP parse error on destination PHP ' in err and (P[D]/'code.txt').read_text()=='destination','Invalid PHP is rejected during staging before destination code changes')
  finish()
  (P[S]/(NAME+'.php')).write_text('<?php\n/* Plugin Name: Reliability fixture\nRequires PHP: 99.0\n*/\n')
  err=cli('pull','--remote=https://trickle-qa-a.localhost:8453','--plugins='+NAME,fail=True)

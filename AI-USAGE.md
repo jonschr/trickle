@@ -52,7 +52,7 @@ For a database pull that includes users, use the intended **local administrator*
 
 Execution stages, checks and applies, then releases the active session while retaining a destination backup. Repeated `run` commands need no manual discard. Success reports `ok: true`, `action: "transfer"`, `completed: true`, `status: "applied"`, source/destination URLs, counts, `backup_id`, health and missing-activation information. Confirm health and report any `activation_missing` or cleanup warning; a completed transfer with an unverified health result is not proof that every application feature works.
 
-Trickle workflow errors return `ok: false`, `code`, `error`, the known transfer ID and recovery status, and exit nonzero. JSON plan/execution/error objects carry `schema_version: 1`; tolerate extra fields. Normal WordPress/WP-CLI bootstrap or argument errors can still appear on stderr before Trickle runs. Do not blindly replay a write after an unknown response.
+Trickle workflow errors return `ok: false`, `code`, `error`, the known transfer ID and recovery status, and exit nonzero. JSON plan/execution/error objects carry `schema_version: 1`; tolerate extra fields. Normal WordPress/WP-CLI bootstrap or argument errors can still appear on stderr before Trickle runs. Do not blindly replay a write after an unknown response. Resumable streaming is the default; use `--transport=chunks` for bounded 512 KB requests. Both modes verify complete snapshots before apply. Transient reads/transfer steps use bounded backoff; apply is never blindly retried. A network failure in `run` retains staging and reports `recovery: "retained"`; honor `retry_after` before `resume`, then inspect/apply the same transfer. Do not start a second transfer over that checkpoint.
 
 ## Protection and recovery
 
@@ -74,3 +74,5 @@ wp trickle apply --yes --format=json
 These advanced commands keep the retained session, unlike `run`. Use them when exact staged file changes need inspection before apply. `preview` paginates verified file changes; database tables are still full replacements, not row merges. Preserve the session's original remote/direction and check its status before choosing resume/apply/restore. If an unrelated broken plugin blocks WordPress bootstrap, skip that specific plugin with WordPress's `--skip-plugins=<id>`; do not skip Trickle or all plugins.
 
 Trickle's CLI does not grant permission to send messages, publish code, or migrate a different site. Use the user's actual task scope, project instructions and displayed URLs.
+
+For media, `--media=all` includes the whole library but skips identical files through the year/month/file checksum cascade. Add `--rehash-media` to verify contents without trusting the cache. Use `--force-media` only when explicitly asked to retransfer matching media too. Force preserves Git/environment exclusions. Saved transfers retain this choice.

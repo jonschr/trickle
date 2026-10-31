@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Sequential pulls, independent backups and crash recovery on disposable QA-A/C."""
-import json,subprocess,shutil,ssl,http.client
+import json,subprocess,shutil,ssl,http.client,time
 from pathlib import Path
 S='trickle-qa-a';D='trickle-qa-c';NAME='trickle-backup-fixture';BASE=Path.home()/'Cove/Sites';ROOT={x:BASE/(x+'.localhost/public') for x in [S,D]};P={x:ROOT[x]/'wp-content/plugins'/NAME for x in ROOT};checks=0
 
@@ -34,6 +34,9 @@ for x in ROOT:
  assert ev(x,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job"));')
  assert not P[x].exists()
 settings={x:ev(x,'echo wp_json_encode(get_option("_csm_settings"));') for x in ROOT};recents=ev(D,'echo wp_json_encode(get_option("_csm_recents",[]));');history=ev(D,'echo wp_json_encode(get_option("_csm_history",[]));')
+original_cron=ev(D,'echo wp_json_encode(defined("DISABLE_WP_CRON")?DISABLE_WP_CRON:null);')
+# Frontend health checks must not spawn a competing cron while a crash is deliberately journalled.
+wp(D,'config','set','DISABLE_WP_CRON','true','--raw')
 original_backups={x:ev(x,'echo wp_json_encode(get_option("_csm_backups",[]));') for x in ROOT};original_active={x:ev(x,'echo wp_json_encode(get_option("active_plugins"));') for x in ROOT}
 try:
  for x in ROOT:
@@ -97,6 +100,10 @@ try:
  wp(D,'eval','wp_schedule_single_event(time()-10,"trickle_fixture_ordinary");')
  ca=Path.home()/'Library/Application Support/Caddy/pki/authorities/local/root.crt'
  c=http.client.HTTPSConnection(D+'.localhost',8453,context=ssl.create_default_context(cafile=str(ca)),timeout=90);c.request('POST','/wp-cron.php',headers={'User-Agent':'Trickle/QA recovery test'});r=c.getresponse();r.read();c.close()
+ # wp-cron can finish its HTTP response before bootstrap/recovery runs.
+ for _ in range(40):
+  if ev(D,'echo wp_json_encode(!get_option("_csm_active_job"));'):break
+  time.sleep(.1)
  check((P[D]/'code.txt').read_text()=='1' and ev(D,'echo wp_json_encode(!get_option("_csm_active_job"));'),'Cron automatically restores an abruptly interrupted replacement')
  check(ev(D,'echo wp_json_encode((bool)wp_next_scheduled("trickle_fixture_ordinary"));'),'Isolated recovery leaves other plugins’ scheduled events intact')
  status=op('status',{'id':staged['id']});check(status['status']=='restored','Controller reconnect discovers completed automatic recovery')
@@ -134,3 +141,5 @@ finally:
   shutil.rmtree(P[x],ignore_errors=True)
   shutil.rmtree(ROOT[x]/'wp-content/uploads'/NAME,ignore_errors=True)
  wp(D,'option','update','_csm_recents',json.dumps(recents),'--format=json');wp(D,'option','update','_csm_history',json.dumps(history),'--format=json')
+ if original_cron is None:wp(D,'config','delete','DISABLE_WP_CRON')
+ else:wp(D,'config','set','DISABLE_WP_CRON','true' if original_cron else 'false','--raw')

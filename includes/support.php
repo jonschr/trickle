@@ -96,7 +96,8 @@ final class CSM_Support {
     public static function lock(): string {
         $id = bin2hex(random_bytes(16));
         $fp = fopen(self::private_dir() . '/transfer.lock', 'c');
-        if (!$fp || !flock($fp, LOCK_EX | LOCK_NB)) { throw new RuntimeException('Another transfer is running on this site.'); }
+        if (!$fp) { throw new RuntimeException('Cannot open transfer lock.'); }
+        if (!flock($fp, LOCK_EX | LOCK_NB)) { fclose($fp); throw new CSM_Busy_Error('Another transfer is running on this site.'); }
         // Keep the OS lock alive for the duration of this PHP request, even across a fatal error.
         $GLOBALS['_csm_lock'] = $fp;
         return $id;

@@ -61,7 +61,7 @@ final class CSM_Plugin {
         global $wpdb;
         self::supported();
         $inventory = CSM_Files::inventory($refresh);
-        return array_merge($inventory, CSM_Database::identity(), CSM_Updates::capabilities(), ['file_modifications' => wp_is_file_mod_allowed('trickle'), 'active_plugins' => CSM_Activation::current(), 'installed_plugins' => array_keys(get_plugins()), 'trickle_plugin' => plugin_basename(CSM_FILE), 'can_receive' => !empty(CSM_Access::settings()['push']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write'])), 'segments' => 1, 'component_compare' => 1, 'file_policy' => 1, 'canonical_url' => (string)get_option('siteurl'), 'instance_fingerprint' => CSM_Controller::fingerprint(), 'media_compare' => 1, 'media_browsing' => 1, 'media_dates' => 1, 'replacement_rules' => 1, 'protocol' => 1, 'plugin_version' => CSM_VERSION, 'name' => get_bloginfo('name'), 'icon' => get_site_icon_url(64), 'prefix' => $wpdb->prefix,
+        return array_merge($inventory, CSM_Database::identity(), CSM_Updates::capabilities(), ['file_modifications' => wp_is_file_mod_allowed('trickle'), 'active_plugins' => CSM_Activation::current(), 'installed_plugins' => array_keys(get_plugins()), 'trickle_plugin' => plugin_basename(CSM_FILE), 'can_receive' => !empty(CSM_Access::settings()['push']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write'])), 'segments' => 1, 'resumable_stream' => 1, 'component_compare' => 1, 'file_policy' => 1, 'canonical_url' => (string)get_option('siteurl'), 'instance_fingerprint' => CSM_Controller::fingerprint(), 'media_compare' => 1, 'media_browsing' => 1, 'media_dates' => 1, 'replacement_rules' => 1, 'protocol' => 1, 'plugin_version' => CSM_VERSION, 'name' => get_bloginfo('name'), 'icon' => get_site_icon_url(64), 'prefix' => $wpdb->prefix,
             'wordpress' => get_bloginfo('version'), 'php' => PHP_VERSION, 'tables' => CSM_Database::inventory(), 'isolation' => self::loader_ready(), 'incoming_writes' => !empty(CSM_Access::settings()['push'])]);
     }
 
@@ -71,8 +71,13 @@ final class CSM_Plugin {
         try {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { throw new RuntimeException('POST required.', 405); }
             self::supported(); CSM_Support::long_request();
-            if (!in_array($action, ['manifest', 'version', 'update_info', 'update_trickle', 'backups', 'restore_backup', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'bundle', 'bundle_chunk', 'bundle_discard', 'segment_state', 'segment_data', 'export', 'prepare', 'receive', 'status', 'preview', 'progress', 'commit', 'rollback', 'discard'], true)) { throw new RuntimeException('Unknown action.', 404); }
+            if (!in_array($action, ['manifest', 'version', 'update_info', 'update_trickle', 'backups', 'restore_backup', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'component_manifest', 'bundle', 'bundle_stream', 'stream_data', 'bundle_chunk', 'bundle_discard', 'segment_state', 'segment_data', 'export', 'prepare', 'receive', 'status', 'preview', 'progress', 'commit', 'rollback', 'discard'], true)) { throw new RuntimeException('Unknown action.', 404); }
             $data = CSM_Transport::authenticate($action);
+            // Native upgrades may leave the previous MU loader until an administrator visits Trickle.
+            if (!self::loader_ready() && wp_is_file_mod_allowed('trickle')) {
+                try { self::install_loader(); }
+                catch (Throwable $error) { CSM_Log::write('error', 'Recovery loader refresh failed', ['error'=>$error->getMessage()]); }
+            }
             if (((in_array($action, ['export', 'bundle'], true) && ($data['kind'] ?? '') === 'files') || ($action === 'prepare' && in_array('files', self::kinds($data['selection'] ?? []), true))) && (($data['selection']['file_policy'] ?? 0) !== 1)) { throw new RuntimeException('Update Trickle on both sites before transferring files with Git and environment-file protection.'); }
             if (in_array($action, ['commit', 'rollback', 'restore_backup'], true)) { ignore_user_abort(true); }
             if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Authenticated incoming request', ['operation' => $action, 'transfer_id' => $data['id'] ?? null]); }
@@ -95,6 +100,24 @@ final class CSM_Plugin {
                 nocache_headers(); header('Content-Type: application/octet-stream'); echo $bytes; exit;
             }
             if ($action === 'bundle_discard') { CSM_Segments::cleanup_source($data['id'] ?? ''); self::respond([]); }
+            if ($action === 'bundle_stream') {
+                $offset = $data['offset'] ?? -1;
+                if (!is_int($offset)) { throw new RuntimeException('Invalid source offset.'); }
+                $generator = CSM_Segments::source($data['id'] ?? '', $data['kind'] ?? '', $offset, $data['bundle'] ?? []);
+                $generator->rewind();
+                while (ob_get_level()) { ob_end_clean(); }
+                nocache_headers(); header('Content-Type: application/octet-stream'); header('Content-Length: ' . ($data['bundle']['size'] - $offset)); header('X-Accel-Buffering: no');
+                $streaming = true; $out = fopen('php://output', 'wb');
+                foreach ($generator as $bytes) { CSM_Support::write($out, $bytes); flush(); if (connection_aborted()) { break; } }
+                fclose($out); exit;
+            }
+            if ($action === 'component_manifest') {
+                $raw = CSM_Support::json(CSM_Components::manifest($data));
+                if (strlen($raw) > 32 * 1024 * 1024) { throw new RuntimeException('Component manifest exceeds its size limit.'); }
+                $bytes = gzencode($raw, 3);
+                while (ob_get_level()) { ob_end_clean(); }
+                nocache_headers(); header('Content-Type: application/octet-stream'); header('Content-Length: ' . strlen($bytes)); echo $bytes; exit;
+            }
             if ($action === 'component_hashes') { self::respond(CSM_Components::inventory($data)); }
             if ($action === 'file_policy') { self::respond(['git_folders' => CSM_Files::git_folders($data['selection'] ?? [])]); }
             if ($action === 'media_hashes') { self::respond(CSM_Media::inventory($data)); }
@@ -125,6 +148,14 @@ final class CSM_Plugin {
                 $bytes = file_get_contents('php://input', false, null, 0, CSM_Segments::SIZE + 1);
                 self::respond(CSM_Segments::receive($job, $data['kind'] ?? '', $data['bundle'] ?? [], (int)($data['offset'] ?? -1), $bytes, $data['sha256'] ?? ''));
             }
+            if ($action === 'stream_data') {
+                CSM_Updates::assert_job($job);
+                if (!is_int($data['offset'] ?? null)) { throw new RuntimeException('Invalid destination offset.'); }
+                CSM_Progress::start($job['id'], 'Receiving resumable stream', $data['progress_run'] ?? null);
+                $fp = fopen('php://input', 'rb');
+                try { self::respond(CSM_Segments::receive_stream($job, $data['kind'] ?? '', $data['bundle'] ?? [], $data['offset'], $fp)); }
+                finally { fclose($fp); }
+            }
             if ($action === 'receive') {
                 $fp = fopen('php://input', 'rb');
                 try { $job = self::receive($job, $data['kind'] ?? '', $fp, $data['progress_run'] ?? null); }
@@ -139,14 +170,14 @@ final class CSM_Plugin {
             CSM_Log::write('error', 'Incoming request failed', ['operation' => $action, 'error' => $e->getMessage()]);
             CSM_Progress::fail($e->getMessage());
             if ($streaming) { error_log('Trickle export stopped: ' . $e->getMessage()); exit; }
-            self::respond([], $e->getMessage(), in_array($e->getCode(), [403, 404, 405], true) ? $e->getCode() : 400);
+            self::respond($e instanceof CSM_Network_Error ? ['retryable'=>true, 'retry_after'=>$e->retry_after, 'busy'=>$e instanceof CSM_Busy_Error] : [], $e->getMessage(), $e instanceof CSM_Busy_Error ? 409 : (in_array($e->getCode(), [403, 404, 405], true) ? $e->getCode() : 400));
         }
     }
 
     public static function respond(array $data, string $error = '', int $status = 200): never {
         while (ob_get_level()) { ob_end_clean(); }
         nocache_headers(); status_header($status); header('Content-Type: application/json; charset=utf-8');
-        echo CSM_Support::json($error ? ['ok' => false, 'error' => $error] : ['ok' => true, 'data' => $data]); exit;
+        echo CSM_Support::json($error ? ['ok' => false, 'error' => $error] + $data : ['ok' => true, 'data' => $data]); exit;
     }
 
     public static function prune_nonces(): void {
@@ -254,6 +285,23 @@ final class CSM_Plugin {
         return ['new' => $new, 'paths' => $paths];
     }
 
+    private static function compatibility_error(array $job, array $file, string $problem): RuntimeException {
+        $parts = explode('/', $file['path']);
+        $kind = ['plugins' => 'plugin', 'themes' => 'theme'][$parts[0]] ?? 'file';
+        $name = $kind === 'file' ? basename($file['path']) : $parts[1];
+        if ($kind !== 'file') {
+            foreach ($job['files'] as $candidate) {
+                $path = explode('/', $candidate['path']);
+                if ($path[0] !== $parts[0] || ($path[1] ?? '') !== $parts[1]) { continue; }
+                if (($kind === 'theme' && count($path) === 3 && $path[2] === 'style.css') || ($kind === 'plugin' && count($path) <= 3 && str_ends_with($candidate['path'], '.php'))) {
+                    $header = get_file_data(!empty($candidate['unchanged']) ? CSM_Files::destination($candidate['path'], $job['selection']) : $candidate['stage'], ['name' => $kind === 'theme' ? 'Theme Name' : 'Plugin Name']);
+                    if (trim($header['name'])) { $name = wp_strip_all_tags($header['name']); break; }
+                }
+            }
+        }
+        return new RuntimeException(ucfirst($kind) . ' "' . $name . '": ' . $problem . '. Update or deselect this ' . $kind . ', then retry. File: ' . $file['path'] . '.');
+    }
+
     public static function preview(array $job): array {
         $plan = self::changes($job); $items = []; $counts = ['add' => 0, 'replace' => 0, 'delete' => 0, 'unchanged' => 0]; $backup = 0; $signature = [];
         foreach ($job['files'] as $file) { if (!empty($file['unchanged'])) { $counts['unchanged']++; } }
@@ -270,14 +318,15 @@ final class CSM_Plugin {
         foreach ($job['files'] as $file) {
             if (!empty($file['unchanged'])) { continue; }
             $parts = explode('/', $file['path']);
+            if (str_ends_with($file['path'], '.php') || ($parts[0] === 'themes' && count($parts) === 3 && $parts[2] === 'style.css')) { CSM_Progress::update(['phase' => 'Checking PHP compatibility', 'component' => $file['path']]); }
             if (($parts[0] === 'plugins' && count($parts) <= 3 && str_ends_with($file['path'], '.php')) || ($parts[0] === 'themes' && count($parts) === 3 && $parts[2] === 'style.css')) {
                 $headers = get_file_data($file['stage'], ['php' => 'Requires PHP', 'wp' => 'Requires at least']);
-                if ($headers['php'] && version_compare(PHP_VERSION, $headers['php'], '<')) { throw new RuntimeException($file['path'] . ' requires PHP ' . $headers['php'] . '; destination uses ' . PHP_VERSION); }
+                if ($headers['php'] && version_compare(PHP_VERSION, $headers['php'], '<')) { throw self::compatibility_error($job, $file, 'requires PHP ' . $headers['php'] . '; destination uses PHP ' . PHP_VERSION); }
                 if ($headers['wp'] && version_compare(get_bloginfo('version'), $headers['wp'], '<')) { throw new RuntimeException($file['path'] . ' requires WordPress ' . $headers['wp']); }
             }
             if (str_ends_with($file['path'], '.php')) {
                 try { token_get_all(file_get_contents($file['stage']), TOKEN_PARSE); }
-                catch (ParseError $e) { throw new RuntimeException('PHP syntax check failed for ' . $file['path'] . ': ' . $e->getMessage()); }
+                catch (ParseError $e) { throw self::compatibility_error($job, $file, 'PHP parse error on destination PHP ' . PHP_VERSION . ' (line ' . $e->getLine() . ': ' . $e->getMessage() . ')'); }
             }
         }
         $free = disk_free_space(CSM_Support::private_dir());
@@ -481,7 +530,7 @@ final class CSM_Plugin {
             $data = json_decode(wp_unslash($_POST['data'] ?? '{}'), true, 64, JSON_THROW_ON_ERROR);
             $action = sanitize_key($_POST['op'] ?? '');
             self::respond(CSM_Controller::execute($action, $data));
-        } catch (Throwable $e) { CSM_Log::write('error', 'Dashboard request failed', ['operation' => $action ?? 'unknown', 'error' => $e->getMessage()]); self::respond([], $e->getMessage(), 400); }
+        } catch (Throwable $e) { CSM_Log::write('error', 'Dashboard request failed', ['operation' => $action ?? 'unknown', 'error' => $e->getMessage()]); self::respond($e instanceof CSM_Network_Error ? ['retry_exhausted'=>$e->exhausted, 'retry_after'=>$e->retry_after] : [], $e->getMessage(), 400); }
     }
 
     public static function pairing(): string { return site_url() . "\n" . get_option('_csm_key'); }

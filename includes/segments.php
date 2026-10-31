@@ -1,7 +1,7 @@
 <?php
 defined('ABSPATH') || exit;
 
-/** Immutable gzip streams with bounded, checksummed HTTP segments and durable offsets. */
+/** Immutable gzip snapshots with resumable streaming, bounded chunks and durable byte offsets. */
 final class CSM_Segments {
     public const SIZE = 524288;
 
@@ -19,7 +19,8 @@ final class CSM_Segments {
     public static function bundle(string $id, string $kind, array $selection): array {
         $path = self::path($id, $kind, '.source'); $meta = $path . '.json'; $digest = hash('sha256', CSM_Support::json($selection));
         $lock = fopen($path . '.lock', 'c');
-        if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) { throw new RuntimeException('Source stream is still being built. Retry preparation shortly.'); }
+        if (!$lock) { throw new RuntimeException('Cannot open source snapshot lock.'); }
+        if (!flock($lock, LOCK_EX | LOCK_NB)) { fclose($lock); throw new CSM_Busy_Error('Source stream is still being built. Retry preparation shortly.'); }
         try {
             if (is_file($meta)) {
                 $info = json_decode(file_get_contents($meta), true, 32, JSON_THROW_ON_ERROR);
@@ -55,6 +56,58 @@ final class CSM_Segments {
         $fp = fopen($path, 'rb'); if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Could not read source checkpoint.'); }
         try { $bytes = fread($fp, self::SIZE); if ($bytes === false || $bytes === '') { throw new RuntimeException('Source checkpoint is unreadable.'); } return $bytes; }
         finally { fclose($fp); }
+    }
+
+    public static function source(string $id, string $kind, int $offset, array $bundle): Generator {
+        self::validate_bundle($bundle); $path = self::path($id, $kind, '.source');
+        $meta = is_file($path . '.json') ? json_decode(file_get_contents($path . '.json'), true, 32, JSON_THROW_ON_ERROR) : [];
+        CSM_Access::assert_owner($meta);
+        if ($offset < 0 || $offset > $bundle['size'] || ($meta['size'] ?? null) !== $bundle['size'] || !hash_equals($meta['sha256'] ?? '', $bundle['sha256']) || !is_file($path) || filesize($path) !== $bundle['size']) { throw new RuntimeException('Source snapshot or offset does not match.'); }
+        $fp = fopen($path, 'rb');
+        if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Cannot open source snapshot.'); }
+        try {
+            while (!feof($fp)) {
+                $bytes = fread($fp, self::SIZE);
+                if ($bytes === false) { throw new RuntimeException('Cannot read source snapshot.'); }
+                if ($bytes !== '') { yield $bytes; }
+            }
+        } finally { fclose($fp); }
+    }
+
+    public static function pull(array $peer, array $job, string $kind, array $bundle): array {
+        $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
+        if ($state['offset'] < $bundle['size']) {
+            self::write_json($path . '.json', $bundle);
+            $fp = fopen($path, 'c+b');
+            if (!$fp || fseek($fp, $state['offset']) !== 0) { throw new RuntimeException('Cannot resume destination stream.'); }
+            chmod($path, 0600);
+            // Partial bytes survive a failed request; the complete snapshot digest is checked before parsing.
+            try { CSM_Transport::request($peer, 'bundle_stream', ['id'=>$job['id'], 'kind'=>$kind, 'offset'=>$state['offset'], 'bundle'=>$bundle], null, $fp, 0, $bundle['size'] - $state['offset']); }
+            finally { fflush($fp); fclose($fp); }
+        }
+        clearstatcache(true, $path); $next = is_file($path) ? filesize($path) : 0;
+        if ($next !== $bundle['size']) { throw new CSM_Network_Error('Connection failed: Incomplete snapshot stream. Resume from the saved offset.'); }
+        return self::receive($job, $kind, $bundle, $next, '', hash('sha256', ''));
+    }
+
+    public static function receive_stream(array $job, string $kind, array $bundle, int $offset, $input): array {
+        $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
+        if ($offset !== $state['offset']) { throw new RuntimeException('Destination offset changed. Refresh its checkpoint before resuming.'); }
+        self::write_json($path . '.json', $bundle);
+        $fp = fopen($path, 'c+b');
+        if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Cannot resume destination stream.'); }
+        chmod($path, 0600);
+        try {
+            while (!feof($input)) {
+                $bytes = fread($input, self::SIZE);
+                if ($bytes === false || ($bytes === '' && !feof($input))) { throw new CSM_Network_Error('Connection failed: Incoming stream interrupted.'); }
+                if ($offset + strlen($bytes) > $bundle['size']) { throw new RuntimeException('Snapshot stream exceeds its declared size.'); }
+                CSM_Support::write($fp, $bytes); $offset += strlen($bytes); fflush($fp);
+                CSM_Progress::update(['phase'=>'Receiving resumable stream', 'component'=>$kind, 'bytes'=>$offset, 'count'=>$offset, 'total'=>$bundle['size'], 'unit'=>'bytes']);
+            }
+        } finally { fclose($fp); }
+        if ($offset !== $bundle['size']) { throw new CSM_Network_Error('Connection failed: Incoming stream interrupted. Resume from the saved offset.'); }
+        return self::receive($job, $kind, $bundle, $offset, '', hash('sha256', ''));
     }
 
     private static function validate_bundle(array $bundle): void {
@@ -100,6 +153,11 @@ final class CSM_Segments {
         return CSM_Plugin::summary($job) + ['continue' => empty($job['received'][$kind]), 'checkpoint' => ['offset' => $next, 'size' => $bundle['size']]];
     }
 
+    public static function received_bytes(string $id, string $kind): int {
+        $path = self::path($id, $kind, '.incoming'); clearstatcache(true, $path);
+        return is_file($path) ? filesize($path) : 0;
+    }
+
     public static function assert_progress_owner(string $id): void {
         $job = get_option('_csm_job_' . $id);
         if ($job) { CSM_Access::assert_owner($job); return; }
@@ -112,7 +170,8 @@ final class CSM_Segments {
     public static function cleanup_source(string $id): void {
         foreach (['database', 'files'] as $kind) {
             $path = self::path($id, $kind, '.source'); $lock = fopen($path . '.lock', 'c');
-            if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) { throw new RuntimeException('Source stream is still being built. Retry cleanup shortly.'); }
+            if (!$lock) { throw new RuntimeException('Cannot open source snapshot lock.'); }
+            if (!flock($lock, LOCK_EX | LOCK_NB)) { fclose($lock); throw new CSM_Busy_Error('Source stream is still being built. Retry cleanup shortly.'); }
             try {
                 if (is_file($path . '.owner')) { CSM_Access::assert_owner(json_decode(file_get_contents($path . '.owner'), true, 32, JSON_THROW_ON_ERROR)); }
                 elseif (is_file($path . '.json')) { CSM_Access::assert_owner(json_decode(file_get_contents($path . '.json'), true, 32, JSON_THROW_ON_ERROR)); }

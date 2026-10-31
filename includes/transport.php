@@ -1,7 +1,35 @@
 <?php
 defined('ABSPATH') || exit;
 
+class CSM_Network_Error extends RuntimeException {
+    public int $retry_after = 0;
+    public bool $exhausted = false;
+}
+
+final class CSM_Busy_Error extends CSM_Network_Error {
+    public int $retry_after = 10;
+}
+
 final class CSM_Transport {
+    private static bool $retrying = false;
+
+    public static function retry(callable $operation): array {
+        if (self::$retrying || (defined('CSM_STOP_ON_ERROR') && CSM_STOP_ON_ERROR)) { return $operation(); }
+        self::$retrying = true;
+        try {
+            for ($attempt = 0, $busy = 0; ; ) {
+                try { return $operation(); }
+                catch (CSM_Network_Error $e) {
+                    $wait = $e instanceof CSM_Busy_Error ? max(1, $e->retry_after) : max($e->retry_after, $e->retry_after ? 30 * 2 ** $attempt : 2 ** $attempt);
+                    $exhausted = $e instanceof CSM_Busy_Error ? $busy++ >= 12 : $attempt++ >= 3;
+                    if ($exhausted || $wait > 30) { $e->retry_after = max($e->retry_after, $wait); $e->exhausted = true; throw $e; }
+                    CSM_Log::write('info', 'Connection interrupted; retrying safe transfer step', ['error'=>$e->getMessage(), 'duration_ms'=>$wait * 1000]);
+                    sleep($wait);
+                }
+            }
+        } finally { self::$retrying = false; }
+    }
+
     public static function ca_bundle(string $url): string {
         return (string)apply_filters('csm_ca_bundle', defined('CSM_CA_BUNDLE') ? CSM_CA_BUNDLE : ABSPATH . WPINC . '/certificates/ca-bundle.crt', $url);
     }
@@ -37,8 +65,8 @@ final class CSM_Transport {
         if (!add_option($nonce_key, time(), '', false)) { throw new RuntimeException('Request was already used.', 403); }
         CSM_Access::authorize($credential, $action);
         $params = json_decode(base64_decode($params, true), true, 64, JSON_THROW_ON_ERROR);
-        if (in_array($action, ['prepare', 'bundle', 'bundle_chunk', 'export', 'receive', 'segment_state', 'segment_data', 'commit'], true)) { CSM_Updates::assert_version($params['trickle_version'] ?? null); }
-        if (in_array($action, ['receive', 'segment_data'], true)) {
+        if (in_array($action, ['prepare', 'bundle', 'bundle_chunk', 'bundle_stream', 'component_manifest', 'export', 'receive', 'stream_data', 'segment_state', 'segment_data', 'commit'], true)) { CSM_Updates::assert_version($params['trickle_version'] ?? null); }
+        if (in_array($action, ['receive', 'stream_data', 'segment_data'], true)) {
             if ($hash !== 'stream') { throw new RuntimeException('Expected a stream upload.'); }
             return $params;
         }
@@ -52,33 +80,51 @@ final class CSM_Transport {
         $ch = curl_init($url); $ca = self::ca_bundle($url);
         $options = [CURLOPT_NOBODY => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Cache-Control: no-cache', 'User-Agent: Trickle/' . CSM_VERSION . ' health check']];
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Cache-Control: no-cache', 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' health check')]];
         if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
         if ($probe !== '') { $options[CURLOPT_HTTPHEADER][] = 'X-Trickle-Health: ' . $probe; }
         curl_setopt_array($ch, $options); $ok = curl_exec($ch); $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         return ['status' => $status, 'verified' => $ok !== false && $status >= 200 && $status < 300];
     }
 
-    public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0): array {
+    public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0, int $download_limit = 0): array {
+        $request = static fn()=>self::send($peer, $action, $data, $upload, $download, $timeout, $download_limit);
+        return !$upload && !$download && in_array($action, ['manifest','version','file_policy','component_hashes','media_hashes','status','segment_state'], true) ? self::retry($request) : $request();
+    }
+
+    private static function send(array $peer, string $action, array $data, ?Generator $upload, $download, int $timeout, int $download_limit): array {
         if (!extension_loaded('curl')) { throw new RuntimeException('The PHP cURL extension is required.'); }
         CSM_Log::secret($peer['key']);
         $url = add_query_arg('trickle', $action, self::url($peer['url']));
-        $ch = curl_init($url); $response = ''; $status = 0; $bytes = 0;
+        $cooldown = '_csm_cooldown_' . substr(hash('sha256', wp_parse_url($peer['url'], PHP_URL_HOST)), 0, 20);
+        $remaining = (int)get_option($cooldown, 0) - time();
+        if ($remaining > 0) { $e = new CSM_Network_Error('Remote server requested a pause. Retry in ' . $remaining . ' seconds.'); $e->retry_after = $remaining; throw $e; }
+        $ch = curl_init($url); $response = ''; $status = 0; $bytes = 0; $retry_after = 0;
+        $download_offset = $download ? ftell($download) : 0;
         $body = $upload ? '' : CSM_Support::json($data);
         $headers = self::headers($action, $peer['key'], $upload ? 'stream' : hash('sha256', $body), $upload ? $data : []);
         $headers[] = 'Content-Type: ' . ($upload ? 'application/octet-stream' : 'application/json');
         $headers[] = 'Accept: ' . ($download ? 'application/octet-stream' : 'application/json');
         $headers[] = 'Cache-Control: no-store';
-        $headers[] = 'User-Agent: Trickle/' . CSM_VERSION . ' (WordPress site migration)';
+        $headers[] = 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' (WordPress site migration)');
         $options = [CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => $timeout ?: 30, CURLOPT_TIMEOUT => $timeout, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_HEADERFUNCTION => static function ($curl, $line) use (&$status) { if (preg_match('#^HTTP/\S+\s+(\d+)#', $line, $m)) { $status = (int)$m[1]; } return strlen($line); },
-            CURLOPT_WRITEFUNCTION => static function ($curl, $chunk) use ($download, &$response, &$bytes, &$status) {
-                if ($download && $status === 200) { CSM_Support::write($download, $chunk); $bytes += strlen($chunk); CSM_Progress::update(['bytes' => $bytes]); }
+            CURLOPT_HEADERFUNCTION => static function ($curl, $line) use (&$status, &$retry_after) {
+                if (preg_match('#^HTTP/\S+\s+(\d+)#', $line, $m)) { $status = (int)$m[1]; $retry_after = 0; }
+                if (stripos($line, 'Retry-After:') === 0) { $value = trim(substr($line, 12)); $retry_after = ctype_digit($value) ? (int)$value : max(0, (strtotime($value) ?: time()) - time()); }
+                return strlen($line);
+            },
+            CURLOPT_WRITEFUNCTION => static function ($curl, $chunk) use ($download, $download_limit, $download_offset, &$response, &$bytes, &$status) {
+                if ($download && $status === 200) {
+                    if ($download_limit && $bytes + strlen($chunk) > $download_limit) { throw new RuntimeException('Downloaded stream exceeds its declared size limit.'); }
+                    CSM_Support::write($download, $chunk); $bytes += strlen($chunk); CSM_Progress::update(['bytes' => $download_offset + $bytes, 'count'=>$download_offset + $bytes]);
+                }
                 elseif (strlen($response) < 1048576) { $response .= $chunk; }
                 return strlen($chunk);
             },
         ];
+        // A retained snapshot should respond immediately; a stalled body can safely resume.
+        if ($download && $action === 'bundle_stream') { $options[CURLOPT_LOW_SPEED_LIMIT] = 1; $options[CURLOPT_LOW_SPEED_TIME] = 30; }
         $ca = self::ca_bundle($peer['url']);
         if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
         $context = ['operation' => $action, 'site' => $peer['url'], 'transfer_id' => $data['id'] ?? null,
@@ -105,17 +151,29 @@ final class CSM_Transport {
         curl_setopt_array($ch, $options);
         $ok = curl_exec($ch); $error = curl_error($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $context += ['http_status' => $status, 'curl_errno' => curl_errno($ch), 'ssl_verify_result' => curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT), 'duration_ms' => (int)round(curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000)];
+        if ($retry_after) { $context['retry_after'] = $retry_after; }
+        do_action('csm_request_complete', $action, $context, $bytes);
         unset($options, $ch);
         if ($upload_error) { CSM_Log::write('error', 'Source stream failed', $context + ['error' => $upload_error->getMessage()]); throw $upload_error; }
         if ($ok === false) {
             CSM_Log::write('error', 'Outgoing connection failed', $context + ['error' => $error]);
-            throw new RuntimeException('Connection failed: ' . $error . (($context['curl_errno'] === 60) ? '. The sending site could not verify the remote certificate chain. Check its CA bundle; TLS verification is enabled. See Diagnostics below.' : ''));
+            $class = in_array($context['curl_errno'], [7,18,28,35,52,55,56,92], true) ? CSM_Network_Error::class : RuntimeException::class;
+            throw new $class('Connection failed: ' . $error . (($context['curl_errno'] === 60) ? '. The sending site could not verify the remote certificate chain. Check its CA bundle; TLS verification is enabled. See Diagnostics below.' : ''));
         }
         if ($download && $status === 200) { CSM_Log::write('info', 'Stream downloaded', $context + ['bytes' => $bytes]); return ['bytes' => $bytes]; }
         $parsed = json_decode($response, true);
         if ($status !== 200 || !is_array($parsed) || empty($parsed['ok'])) {
             CSM_Log::write('error', 'Remote request rejected', $context + ['error' => $parsed['error'] ?? 'Unexpected or non-JSON response; response body omitted.']);
-            throw new RuntimeException($parsed['error'] ?? ('Endpoint returned HTTP ' . $status . '. Check firewall rules, redirects and upload/time limits. Response: ' . substr(wp_strip_all_tags($response), 0, 240)));
+            $message = $parsed['error'] ?? ('Endpoint returned HTTP ' . $status . '. Check firewall rules, redirects and upload/time limits.');
+            // Older sources returned an unclassified lock error while a disconnected build kept running.
+            $busy = $status !== 429 && (!empty($parsed['busy']) || ($action === 'bundle' && in_array($message, ['Another transfer is running on this site.', 'Source stream is still being built. Retry preparation shortly.'], true)));
+            if ($busy || !empty($parsed['retryable']) || in_array($status, [429,502,503,504], true)) {
+                $e = $busy ? new CSM_Busy_Error($message) : new CSM_Network_Error($message);
+                $e->retry_after = max($e->retry_after, $retry_after, (int)($parsed['retry_after'] ?? 0), $status === 429 ? 30 : 0);
+                if ($retry_after > 0 || (!$busy && $e->retry_after > 0)) { update_option($cooldown, time() + $e->retry_after, false); }
+                throw $e;
+            }
+            throw new RuntimeException($message);
         }
         if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Outgoing request completed', $context); }
         return $parsed['data'] ?? [];

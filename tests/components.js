@@ -6,13 +6,14 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../assets/admin.js'), 'utf8');
 const kinds = ['tables', 'plugins', 'themes', 'media'];
 const controls = {};
+controls.transport = {value:'stream'};
 controls['sync-active-plugins'] = {checked:true};
 for (const kind of kinds) {
     controls['enable-' + kind] = {checked:false, setAttribute(name, value) { this[name] = value; }};
     controls[kind + '-body'] = {hidden:true};
     controls['disclose-' + kind] = {setAttribute(name, value) { this[name] = value; }};
 }
-Object.assign(controls, {'media-mode':{value:'none'}, 'media-verify':{checked:false}, 'media-after':{value:''}, 'media-before':{value:''}, replace:{checked:true}, since:{value:''}});
+Object.assign(controls, {'media-mode':{value:'none'}, 'media-verify':{checked:false}, 'media-force':{checked:false}, 'media-after':{value:''}, 'media-before':{value:''}, replace:{checked:true}, since:{value:''}});
 const items = [
     {kind:'plugins', value:'one', checked:false},
     {kind:'plugins', value:'two', checked:false},
@@ -32,6 +33,8 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('    function setPanelOpen('), source.indexOf('    function resetComponents(')) + source.slice(source.indexOf('    function currentSelection('), source.indexOf('    function restoreSelection(')), context);
+assert.equal(context.currentSelection().transport, 'stream');
+controls.transport.value = 'chunks'; assert.equal(context.currentSelection().transport, 'chunks');
 assert.equal(context.currentSelection().sync_active_plugins, true);
 controls['sync-active-plugins'].checked = false;
 assert.equal(context.currentSelection().sync_active_plugins, false);
@@ -69,8 +72,16 @@ assert.equal(context.currentSelection().media_ids.length, 0);
 assert.equal(controls['media-body'].hidden, true);
 assert.equal(mediaRenders, 2);
 context.setComponent('media', true, true);
-controls['media-mode'].value = 'compare'; controls['media-verify'].checked = true;
+controls['media-mode'].value = 'all'; controls['media-verify'].checked = true;
 assert.equal(context.currentSelection().media_verify, true);
+assert.equal(context.currentSelection().media_force, false);
+controls['media-force'].checked = true;
+assert.equal(context.currentSelection().media_force, true);
+assert.equal(context.currentSelection().media_verify, false, 'Forced retransfers do not also request comparison');
+controls['media-mode'].value = 'selected';
+assert.equal(context.currentSelection().media_force, false, 'Narrow media selections cannot inherit force-all');
+controls['media-mode'].value = 'all';
 context.setComponent('media', false, true);
+assert.equal(context.currentSelection().media_force, false, 'Disabled media cannot inherit force-all');
 assert.equal(context.currentSelection().media_verify, false, 'Disabled media cannot leak a stale full-verification option');
 console.log('Component selection checks passed: defaults, independent collapse, protected plugin, enabled-empty state, disabled selection gating, and media toggles.');

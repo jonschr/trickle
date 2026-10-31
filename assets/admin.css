@@ -11,6 +11,7 @@
 }
 .csm * { box-sizing: border-box; }
 .csm [hidden] { display: none !important; }
+#csm-error { overflow-wrap: anywhere; }
 .csm ::selection { background: #c5d9ed; color: #1d2327; }
 .csm :is(button, input, textarea, select, summary):focus-visible { outline: 2px solid var(--csm-accent); outline-offset: 3px; box-shadow: none; }
 .csm :is(input, textarea) { caret-color: var(--csm-accent); }
@@ -124,6 +125,7 @@
     .csm-media-grid { grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 12px; }
 }
 .csm #csm-media-mode { display: block; width: min(100%, 570px); margin-top: 8px; }
+.csm #csm-media-force-wrap { margin-top: 14px; }
 .csm #csm-since-wrap { padding-top: 18px; }
 .csm #csm-since-wrap label { display: block; margin-bottom: 6px; }
 .csm-requirements { margin-top: 26px; color: var(--csm-muted); }

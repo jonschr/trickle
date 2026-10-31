@@ -77,7 +77,7 @@ try:
  finish(True)
  verified=cli('pull','--remote=https://trickle-qa-a.localhost:8453','--media=compare','--rehash-media')
  c=verified['media_comparison']
- check(cli('recent')[0]['selection']['media_verify'] is True and cli('recent')[0]['selection']['media']=='compare','Recent transfers retain comparison mode and full-verification setting')
+ check(cli('recent')[0]['selection']['media_verify'] is True and cli('recent')[0]['selection']['media']=='all','Recent transfers retain comparison mode and full-verification setting')
  check(c['source_hashing']['hashed_files']==8 and c['destination_hashing']['hashed_files']==7,'Explicit full verification bypasses cached file hashes')
  finish()
  # Paginated file manifests stay bounded, and invalid plans never widen the selected filesystem.

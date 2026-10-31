@@ -110,11 +110,17 @@ final class CSM_Files {
         return self::media_selection($selection);
     }
 
+    public static function compare_media(array $selection): bool {
+        return in_array($selection['media'] ?? 'none', ['all', 'compare'], true) && empty($selection['media_force']);
+    }
+
     public static function media_selection(array $selection): array {
         $mode = $selection['media'] ?? 'none';
         if (!in_array($mode, ['none', 'all', 'changed', 'selected', 'uploaded', 'compare'], true)) { throw new RuntimeException('Unknown media selection.'); }
         $selection['media'] = $mode;
-        $selection['media_verify'] = !empty($selection['media_verify']);
+        if (isset($selection['media_force']) && !is_bool($selection['media_force'])) { throw new RuntimeException('Force media retransfer must be true or false.'); }
+        $selection['media_force'] = in_array($mode, ['all', 'compare'], true) && !empty($selection['media_force']);
+        $selection['media_verify'] = self::compare_media($selection) && !empty($selection['media_verify']);
         $selection['since'] = max(0, (int)($selection['since'] ?? 0));
         if ($mode === 'changed' && !$selection['since']) { throw new RuntimeException('Choose a starting date or complete an initial media transfer first.'); }
         $selection['media_ids'] = array_values(array_unique(array_map('intval', $selection['media_ids'] ?? [])));

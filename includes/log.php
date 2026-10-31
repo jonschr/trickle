@@ -29,7 +29,7 @@ final class CSM_Log {
 
     public static function write(string $level, string $event, array $context = []): void {
         try {
-            $allowed = ['operation', 'site', 'transfer_id', 'direction', 'phase', 'component', 'http_status', 'curl_errno', 'ssl_verify_result', 'duration_ms', 'ca_source', 'error', 'tables', 'files', 'bytes'];
+            $allowed = ['operation', 'site', 'transfer_id', 'direction', 'phase', 'component', 'http_status', 'curl_errno', 'ssl_verify_result', 'duration_ms', 'retry_after', 'ca_source', 'error', 'tables', 'files', 'bytes'];
             $context = array_intersect_key($context, array_flip($allowed));
             foreach ($context as $key => $value) { $context[$key] = is_string($value) ? self::clean($value) : (is_scalar($value) || $value === null ? $value : '[omitted]'); }
             $entry = ['time' => gmdate('c'), 'level' => $level, 'event' => self::clean($event), 'context' => $context];

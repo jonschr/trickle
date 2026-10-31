@@ -42,7 +42,7 @@ final class CSM_Access {
             if (empty($settings['updates']) || empty($token['write'])) { throw new RuntimeException('Enable authenticated Trickle updates on the remote site and use an administrator or read/write key.', 403); }
             $GLOBALS['_csm_credential'] = $token; return;
         }
-        $reads = ['export', 'manifest', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'bundle', 'bundle_chunk', 'bundle_discard'];
+        $reads = ['export', 'manifest', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'component_manifest', 'bundle', 'bundle_stream', 'bundle_chunk', 'bundle_discard'];
         $status = ['backups', 'version', 'update_info', 'progress', 'status', 'preview', 'segment_state'];
         $settings = self::settings();
         $read = !empty($settings['pull']) && !empty($token['read']); $write = !empty($settings['push']) && !empty($token['write']);

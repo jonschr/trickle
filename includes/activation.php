@@ -13,6 +13,7 @@ final class CSM_Activation {
 
     public static function current(): array {
         $filter = $GLOBALS['_csm_active_plugins_filter'] ?? null;
+        if (!$filter && defined('CSM_ORIGINAL_ACTIVE_PLUGINS')) { return self::validate(CSM_ORIGINAL_ACTIVE_PLUGINS); }
         if ($filter) { remove_filter('option_active_plugins', $filter, PHP_INT_MAX); }
         try { return self::validate(get_option('active_plugins', [])); }
         finally { if ($filter) { add_filter('option_active_plugins', $filter, PHP_INT_MAX); } }

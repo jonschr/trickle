@@ -32,13 +32,19 @@
         const text = await response.text();
         let result;
         try { result = JSON.parse(text); } catch (_) { throw new Error(`Unexpected response (HTTP ${response.status}). Check the PHP log and firewall. ${text.replace(/<[^>]*>/g, '').slice(0, 160)}`); }
-        if (!result.ok) throw new Error(result.error || 'Request failed.');
+        if (!result.ok) { const error = new Error(result.error || 'Request failed.'); error.retryExhausted = !!result.retry_exhausted; error.retryAfter = result.retry_after || 0; throw error; }
         if (result.data?.nonce) CSM.nonce = result.data.nonce;
         if (Array.isArray(result.data?.state?.connections)) renderConnections(result.data.state);
         return result.data;
     }
     function message(text) { $('status').textContent = text; }
-    function fail(error) { $('error').textContent = error.message; $('error').hidden = false; feedback('Request failed. Open Diagnostics below for the connection and transfer log.'); if ($('diagnostics').open) refreshLogs(); }
+    function fail(error) {
+        $('error').innerHTML = `<p>${esc(error.message)}</p>`;
+        $('error').hidden = false;
+        $('error').scrollIntoView({block:'nearest'});
+        feedback('Request failed. Details are available in Diagnostics below.');
+        if ($('diagnostics').open) refreshLogs();
+    }
     function feedback(text) { $('feedback').textContent = text; $('feedback').hidden = !text; }
     let logEntries = [], loadingLogs = false;
     async function refreshLogs() {
@@ -87,9 +93,9 @@
             do {
                 try { result = await api(op, data); retries = 0; }
                 catch (error) {
-                    if (!['preflight','transfer'].includes(op) || retries >= 3 || !/Another transfer is running|stream is still being built|network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
+                    if (error.retryExhausted || !['preflight','transfer'].includes(op) || retries >= 3 || !/Another transfer is running|stream is still being built|network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
                     message('Connection interrupted. Retrying…');
-                    await new Promise(resolve => setTimeout(resolve, 1000 * ++retries));
+                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.max(error.retryAfter || 0, 2 ** retries++)));
                     result = {continue:true};
                 }
                 if (result.progress) renderActivity({...result.progress, ...(result.timeline ? {timeline:result.timeline} : {})});
@@ -119,7 +125,7 @@
         finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; document.querySelector('.csm').setAttribute('aria-busy', 'false'); if ($('feedback').textContent === 'Working… Keep this page open.') feedback('Done.'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
-        document.querySelectorAll('#csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-sync-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
+        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-sync-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
         lockReplacements();
     }
     const direction = () => $('direction').value;
@@ -214,7 +220,7 @@
         $('remote-site').disabled = busy || !!session || !connectionState.connections.length;
         $('recent').disabled = busy || !!session || !connectionState.recents.length;
         const mode = !sites && session?.selection ? session.selection.media : $('media-mode').value;
-        const media = mode === 'compare' ? 'Changed or missing media files' : mode === 'all' ? 'All media files' : mode === 'changed' ? 'Changed media files' : mode === 'uploaded' ? 'Attachments by upload date' : mode === 'selected' ? `${counts.media_ids} attachment${counts.media_ids === 1 ? '' : 's'} selected` : 'No media files';
+        const media = ['all','compare'].includes(mode) ? ((sites ? $('media-force').checked : session?.selection?.media_force) ? 'All media files · forced' : 'All media files') : mode === 'changed' ? 'Changed media files' : mode === 'uploaded' ? 'Attachments by upload date' : mode === 'selected' ? `${counts.media_ids} attachment${counts.media_ids === 1 ? '' : 's'} selected` : 'No media files';
         $('media-summary').textContent = media;
         $('selection-summary').textContent = `${counts.tables} table${counts.tables === 1 ? '' : 's'} · ${counts.plugins} plugin${counts.plugins === 1 ? '' : 's'} · ${counts.themes} theme${counts.themes === 1 ? '' : 's'} · ${media.toLowerCase()}`;
         const selected = counts.plugins + counts.themes + counts.tables > 0 || (mode !== 'none' && (mode !== 'selected' || counts.media_ids > 0));
@@ -265,7 +271,7 @@
     }
     function clearInventory() {
         sites = null; remoteUpdate = null; resetComponents(); $('sync-active-plugins').checked = true;
-        $('media-mode').value = 'none'; $('media-verify').checked = false; $('file-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
+        $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
         $('source').textContent = 'Loading source…'; $('destination').textContent = 'Loading destination…';
@@ -289,9 +295,10 @@
         $('replacement-status').textContent = !available ? 'Load both sites with the current Trickle version to preview and configure replacements.' : !$('replace').checked ? 'Find & replace is off. No replacement rules will run.' : `${replacementRules.filter(rule => rule.enabled).length} enabled rules. Replacement settings are locked once a transfer is staged.`;
     }
     function currentSelection() {
-        const selection = {enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:$('sync-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
+        const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:$('sync-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
         selection.file_verify = ($('enable-plugins').checked || $('enable-themes').checked) && !!$('file-verify')?.checked;
-        selection.media_verify = selection.media === 'compare' && !!$('media-verify')?.checked;
+        selection.media_force = selection.media === 'all' && !!$('media-force')?.checked;
+        selection.media_verify = selection.media === 'all' && !selection.media_force && !!$('media-verify')?.checked;
         for (const kind of ['plugins','themes','tables','media_ids']) selection[kind] = $('enable-' + (kind === 'media_ids' ? 'media' : kind)).checked ? [...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input => kind === 'media_ids' ? Number(input.value) : input.value) : [];
         if (sites?.replacements) selection.replacements = replacementRules.map(rule => ({...rule}));
         return selection;
@@ -311,8 +318,8 @@
             setComponent(kind, hasItems || (selection.enabled_components || []).includes(kind));
             if (Array.isArray(selection.expanded_components)) setPanelOpen(kind, $('enable-' + kind).checked && selection.expanded_components.includes(kind));
         }
-        $('file-verify').checked = !!selection.file_verify; $('sync-active-plugins').checked = selection.sync_active_plugins !== false;
-        $('media-mode').value = selection.media; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
+        $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('sync-active-plugins').checked = selection.sync_active_plugins !== false;
+        $('media-mode').value = selection.media === 'compare' ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
         renderReplacements(selection.replacements ?? sites.replacements?.[direction()] ?? []);
         renderMedia();
@@ -347,7 +354,7 @@
         $('media-page-status').textContent = `Showing ${media.length} of ${source().media_total} attachments`;
         $('media-more').hidden = !source().media_more || !source().media_browsing;
         $('media-mode').querySelector('option[value="uploaded"]').disabled = !source().media_dates;
-        $('media-mode').querySelector('option[value="compare"]').disabled = !sites.remote.media_compare;
+
         syncMediaSelection();
     }
     function mergeMedia(items) {
@@ -356,7 +363,7 @@
         source().media = [...media.values()].sort((a,b) => (Date.parse(b.uploaded) || 0) - (Date.parse(a.uploaded) || 0) || b.id - a.id);
     }
     async function loadSelectedMedia(selection) {
-        if (selection?.media === 'compare' && !sites.remote.media_compare) throw new Error('Update Trickle on both sites to compare media checksums.');
+        if (['all','compare'].includes(selection?.media) && !selection.media_force && !sites.remote.media_compare) throw new Error('Update Trickle on both sites to compare media checksums.');
         if (selection?.media === 'uploaded' && !source().media_dates) throw new Error('Update Trickle on the source site to reuse upload-date transfers.');
         const missing = (selection?.media_ids || []).filter(id => !source().media.some(item => item.id === id));
         if (missing.length && source().media_browsing) {
@@ -365,18 +372,19 @@
     }
     function renderMedia() {
         const mode = $('media-mode').value;
-        $('compare-wrap').hidden = mode !== 'compare';
+        $('media-force-wrap').hidden = mode !== 'all';
+        $('compare-wrap').hidden = mode !== 'all' || $('media-force').checked;
         $('since-wrap').hidden = mode !== 'changed'; $('media-browser').hidden = mode !== 'selected'; $('uploaded-wrap').hidden = mode !== 'uploaded';
         if (mode === 'uploaded') $('uploaded-note').textContent = !$('media-after').value && !$('media-before').value ? 'Choose at least one upload date. Dates are UTC and inclusive; the range covers the entire source library, including original files and image sizes.' : $('media-after').value && $('media-before').value && $('media-after').value > $('media-before').value ? 'The end date must be on or after the start date.' : 'Includes originals and generated image sizes for all attachments uploaded in this date range. Dates are UTC and inclusive.';
         if (mode === 'changed' && sites) {
             const stamp = sites.history?.[`${direction()}:${sites.remote.url}`];
             $('since').value = stamp ? new Date(stamp * 1000).toISOString().slice(0,19) : '';
-            $('watermark-note').textContent = stamp ? 'Uses the source server’s start time from the last applied media stream.' : 'No previous media transfer. Choose a UTC starting date or transfer all media first.';
+            $('watermark-note').textContent = stamp ? 'Uses the source server’s start time from the last applied media stream.' : 'Choose a UTC starting date.';
         }
         updateSelection();
     }
     function render() {
-        resetComponents(); $('media-mode').value = 'none';
+        resetComponents(); $('media-mode').value = 'none'; $('media-force').checked = false;
         if (session) $('direction').value = session.direction;
         labelRoute();
         $('workspace').hidden = false;
@@ -590,8 +598,9 @@
         });
     });
     $('direction').addEventListener('change', () => { if (sites) { $('media-mode').value = 'none'; $('replace').checked = true; $('recent').value = ''; render(); } });
-    for (const id of ['file-verify', 'media-verify', 'sync-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
+    for (const id of ['transport', 'file-verify', 'media-verify', 'sync-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
     $('media-mode').addEventListener('change', () => { mediaAnchor = null; renderMedia(); });
+    $('media-force').addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
     for (const id of ['media-after', 'media-before']) $(id).addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
     $('media-list').addEventListener('click', event => {
         const button = event.target.closest('button[data-media-id]');
@@ -717,6 +726,7 @@
             summary = await transferRequest('commit', {id:session.id});
             await finishTransfer(summary, route);
         } catch (error) {
+            if (error.retryExhausted && session) { session.retryAt = Date.now() + 1000 * Math.max(15, error.retryAfter || 0); message('Connection interrupted. Transfer saved; retrying after a pause…'); return; }
             if (error.pending || /Another transfer is running|stream is still being built/i.test(error.message)) { message('Transfer is still running. Reconnecting…'); return; }
             if (session) {
                 const route = {...session};
@@ -763,7 +773,7 @@
     });
     else if (connectionState.selected || session) run(() => load());
     setInterval(() => transferMeter.render(), 1000);
-    setInterval(() => { if (!busy && session?.automatic && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
+    setInterval(() => { if (!busy && session?.automatic && Date.now() >= (session.retryAt || 0) && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
     let checkingProgress = false;
     setInterval(async () => {
         if (busy || checkingProgress || !session || summary?.progress?.state !== 'running') return;

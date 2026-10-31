@@ -121,7 +121,9 @@ final class CSM_Database {
                 $text_columns = array_column(array_filter($columns, fn($column) => (bool)preg_match('/^(char|varchar|tinytext|text|mediumtext|longtext|enum|set|json)\b/i', $column['Type'])), 'Field');
                 $line = CSM_Support::json(['type' => 'table', 'name' => $table, 'schema' => $ddl[1], 'columns' => $names, 'text_columns' => $text_columns]);
                 hash_update($hash, $line); yield $line;
-                $keys = $wpdb->get_results('SHOW INDEX FROM ' . $quoted . " WHERE Key_name = 'PRIMARY' ORDER BY Seq_in_index", ARRAY_A);
+                $keys = $wpdb->get_results('SHOW INDEX FROM ' . $quoted . " WHERE Key_name = 'PRIMARY'", ARRAY_A);
+                if ($wpdb->last_error) { throw new RuntimeException($wpdb->last_error); }
+                usort($keys, static fn($a, $b) => (int)$a['Seq_in_index'] <=> (int)$b['Seq_in_index']);
                 $keys = array_column($keys, 'Column_name');
                 $last = null; $offset = 0;
                 do {

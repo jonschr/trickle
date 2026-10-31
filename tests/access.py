@@ -16,7 +16,7 @@ def request(action,key,data=None):
  digest=hashlib.sha256(body).hexdigest();params=base64.b64encode((json.dumps({'trickle_version':VERSION})+'\n').encode()).decode();sig=hmac.new(key.encode(),'\n'.join([action,stamp,nonce,digest,params]).encode(),hashlib.sha256).hexdigest()
  headers={'X-CSM-Key-Id':hashlib.sha256(key.encode()).hexdigest()[:24],'X-CSM-Time':stamp,'X-CSM-Nonce':nonce,'X-CSM-Hash':digest,'X-CSM-Params':params,'X-CSM-Signature':sig,'Content-Type':'application/json'}
  c=http.client.HTTPSConnection(HOST,8453,context=CTX,timeout=90);c.request('POST','/?trickle='+action,body,headers);r=c.getresponse();raw=r.read();status=r.status;c.close()
- if action=='bundle_chunk' and status==200:return status,raw
+ if action in ['bundle_chunk','bundle_stream'] and status==200:return status,raw
  return status,json.loads(raw)
 def check(ok,label):
  global checks
@@ -57,7 +57,13 @@ try:
  wp('eval',"update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
  request('discard',write,{'id':job});job=None
  data={'id':bundle,'kind':'database','selection':{'tables':['wp_csm_fixture'],'plugins':[],'themes':[],'media':'none'}}
- check(request('bundle',read,data)[0]==200,'Read key can build a private resumable source snapshot')
+ status,r=request('bundle',read,data);info=r['data']
+ check(status==200,'Read key can build a private resumable source snapshot')
+ stream={'id':bundle,'kind':'database','offset':0,'bundle':info}
+ check(request('bundle_stream',read,stream)[0]==200,'Owner can stream its pinned source snapshot')
+ check(request('bundle_stream',other,stream)[0]==403,'Different key cannot stream another connection snapshot')
+ check(request('bundle_stream',read,dict(stream,bundle=dict(info,sha256='0'*64)))[0]==400,'Streaming rejects a mismatched source snapshot digest')
+ check(request('stream_data',read,{})[0]==403,'Read-only keys cannot upload snapshot streams')
  check(request('bundle_chunk',read,{'id':bundle,'kind':'database','offset':0})[0]==200,'Owner can read its source snapshot')
  check(request('bundle_chunk',other,{'id':bundle,'kind':'database','offset':0})[0]==403,'Different key cannot read another connection snapshot')
  check(request('bundle_discard',other,{'id':bundle})[0]==403,'Different key cannot delete another connection snapshot')

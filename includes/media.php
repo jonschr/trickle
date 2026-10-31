@@ -154,7 +154,7 @@ final class CSM_Media {
             }
         }
         $delta = base64_encode(gzencode(CSM_Support::json(['token' => $src['token'], 'buckets' => $buckets, 'paths' => $paths]), 3));
-        if (strlen($delta) > 700000) { throw new RuntimeException('The changed-media selection is too large for one control request. Transfer all media or narrow the selection.'); }
+        if (strlen($delta) > 700000) { throw new RuntimeException('Media comparison is too large. Use Force retransfer or narrow the selection.'); }
         return ['delta' => $delta, 'stats' => $stats];
     }
 

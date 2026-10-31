@@ -50,7 +50,7 @@ final class CSM_Components {
         $raw = CSM_Support::json($cache); $temp = $path . '.' . bin2hex(random_bytes(8));
         if (file_put_contents($temp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($temp); throw new RuntimeException('Could not save component checksum cache.'); }
         chmod($temp, 0600); if (!rename($temp, $path)) { @unlink($temp); throw new RuntimeException('Could not save component checksum cache.'); }
-        return ['token' => $cache['token'], 'components' => $hashes, 'files' => count($files), 'hashed' => $hashed];
+        return ['token' => $cache['token'], 'components' => $hashes, 'component_counts' => array_map('count', $groups), 'component_groups' => 1, 'files' => count($files), 'hashed' => $hashed];
     }
 
     public static function compare(array $peer, bool $pull, array $selection): array {
@@ -60,19 +60,56 @@ final class CSM_Components {
         $src = $source(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]); $dst = $destination(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]);
         // Matching component digests let the source reuse its pinned inventory without paging it through the controller.
         if ($src['components'] === $dst['components']) {
-            return ['same' => base64_encode(gzencode(CSM_Support::json(['component_token' => $src['token']]), 3)), 'matched' => $src['files'], 'fallback' => false];
+            $plan = base64_encode(gzencode(CSM_Support::json(['component_token' => $src['token']]), 3));
+            return ['same' => $plan, 'folders' => $plan, 'matched' => $src['files'], 'fallback' => false];
         }
-        $dest = []; $same = [];
-        // Page inventories so a component with thousands of files never exceeds a control response.
-        for ($offset = 0; $offset < $dst['files']; $offset += 500) { $page = $destination(['level' => 'files', 'selection' => $selection, 'token' => $dst['token'], 'offset' => $offset]); $dest += $page['files']; }
-        for ($offset = 0; $offset < $src['files']; $offset += 500) {
-            $page = $source(['level' => 'files', 'selection' => $selection, 'token' => $src['token'], 'offset' => $offset]);
-            foreach ($page['files'] as $path => $file) { if (($dest[$path]['hash'] ?? null) === $file['hash']) { $same[$path] = $file; } }
+        $common = array_keys(array_intersect_key($src['components'], $dst['components'])); $same = []; $matching = [];
+        if (!empty($src['component_groups'])) {
+            foreach ($src['components'] as $id => $hash) { if (($dst['components'][$id] ?? null) === $hash) { $matching[] = $id; } }
+            $common = array_values(array_diff($common, $matching));
         }
-        $plan = base64_encode(gzencode(CSM_Support::json($same), 3));
-        // shortcut: exceptionally large equality plans use a full transfer; replace with server-side paged plans if needed.
-        if (strlen($plan) > 600000) { return ['same' => '', 'matched' => 0, 'fallback' => true]; }
-        return ['same' => $plan, 'matched' => count($same), 'fallback' => false];
+        $matched = array_sum(array_intersect_key($src['component_counts'] ?? [], array_flip($matching)));
+        $encode = static fn(array $files) => base64_encode(gzencode(CSM_Support::json($matching ? ['component_token'=>$src['token'], 'components'=>$matching, 'files'=>$files] : $files), 3));
+        $folders = $matching ? $encode([]) : '';
+        $counts = static fn(array $index) => isset($index['component_counts']) ? array_sum(array_intersect_key($index['component_counts'], array_flip($common))) : $index['files'];
+        // Never drop matching folders when differing folders require a full-transfer fallback.
+        if (!$common || max($counts($src), $counts($dst)) > 100000) { return ['same'=>$folders, 'folders'=>$folders, 'matched'=>$matched, 'fallback'=>(bool)$common]; }
+        $query = ['selection'=>$selection, 'components'=>$common];
+        $read = static function (array $index) use ($peer, $query): array {
+            $fp = fopen('php://temp', 'w+b');
+            try {
+                CSM_Transport::request($peer, 'component_manifest', $query + ['token'=>$index['token']], null, $fp, 0, 32 * 1024 * 1024);
+                rewind($fp); $raw = gzdecode(stream_get_contents($fp), 32 * 1024 * 1024);
+                $data = $raw === false ? null : json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+                if (!is_array($data) || ($data['token'] ?? '') !== $index['token'] || !is_array($data['files'] ?? null)) { throw new RuntimeException('Invalid component checksum manifest.'); }
+                return $data['files'];
+            } finally { fclose($fp); }
+        };
+        $local_files = self::manifest($query + ['token'=>($pull ? $dst : $src)['token']])['files'];
+        $remote_files = $read($pull ? $src : $dst);
+        $dest = $pull ? $local_files : $remote_files; $source_files = $pull ? $remote_files : $local_files;
+        foreach ($source_files as $path => $file) { if (($dest[$path]['hash'] ?? null) === $file['hash']) { $same[$path] = $file; } }
+        $plan = $encode($same);
+        // shortcut: oversized per-file plans resend differing folders; matching folder tokens remain compact.
+        if (strlen($plan) > 600000) { return ['same' => $folders, 'folders' => $folders, 'matched' => $matched, 'fallback' => true]; }
+        return ['same' => $plan, 'folders' => $folders, 'matched' => $matched + count($same), 'fallback' => false];
+    }
+
+    public static function selection(array $selection, array $comparison): array {
+        $selection['component_same'] = $comparison['same'];
+        // Large media plans may share this request; keep folder skips when per-file detail will not fit.
+        if (strlen(CSM_Support::json($selection)) > 950000) { $selection['component_same'] = $comparison['folders'] ?? ''; }
+        return $selection;
+    }
+
+    public static function manifest(array $query): array {
+        $selection = $query['selection'] ?? []; $cache = self::read($selection);
+        if (!is_string($query['token'] ?? null) || !hash_equals($cache['token'] ?? '', $query['token'])) { throw new RuntimeException('Component inventory changed. Retry preparation.'); }
+        $components = $query['components'] ?? null; $allowed = [];
+        foreach (['plugins','themes'] as $kind) { foreach ($selection[$kind] ?? [] as $id) { $allowed[] = $kind . '/' . $id; } }
+        if (!is_array($components) || !array_is_list($components) || array_filter($components, static fn($id)=>!is_string($id)) || array_diff($components, $allowed)) { throw new RuntimeException('Invalid component manifest selection.'); }
+        $files = array_filter($cache['files'], static fn($path)=>in_array(implode('/', array_slice(explode('/', $path), 0, 2)), $components, true), ARRAY_FILTER_USE_KEY);
+        return ['token'=>$cache['token'], 'files'=>$files];
     }
 
     public static function unchanged(array $selection): array {
@@ -83,10 +120,15 @@ final class CSM_Components {
         $files = $raw === false ? null : json_decode($raw, true);
         if (!is_array($files)) { throw new RuntimeException('Invalid unchanged-file plan.'); }
         if (array_key_exists('component_token', $files)) {
-            if (count($files) !== 1 || !is_string($files['component_token']) || !preg_match('/^[a-f0-9]{64}$/D', $files['component_token'])) { throw new RuntimeException('Invalid component inventory token.'); }
+            if (array_diff(array_keys($files), ['component_token','components','files']) || !is_string($files['component_token']) || !preg_match('/^[a-f0-9]{64}$/D', $files['component_token'])) { throw new RuntimeException('Invalid component inventory token.'); }
             $cache = self::read($selection);
             if (!hash_equals($cache['token'] ?? '', $files['component_token'])) { throw new RuntimeException('Component inventory changed. Retry preparation.'); }
-            return $cache['files'];
+            if (count($files) === 1) { return $cache['files']; }
+            $components = $files['components'] ?? null; $extra = $files['files'] ?? null; $allowed = [];
+            foreach (['plugins','themes'] as $kind) { foreach ($selection[$kind] ?? [] as $id) { $allowed[] = $kind . '/' . $id; } }
+            if (!is_array($components) || !array_is_list($components) || array_filter($components, static fn($id)=>!is_string($id)) || array_diff($components, $allowed) || !is_array($extra)) { throw new RuntimeException('Invalid unchanged component selection.'); }
+            foreach ($extra as $path => $file) { if (!is_string($path) || !isset($cache['files'][$path]) || $cache['files'][$path] !== $file) { throw new RuntimeException('Unchanged file does not match its source inventory.'); } }
+            return array_filter($cache['files'], static fn($path)=>in_array(implode('/', array_slice(explode('/', $path), 0, 2)), $components, true), ARRAY_FILTER_USE_KEY) + $extra;
         }
         return $files;
     }
