@@ -22,10 +22,10 @@ final class CSM_Media {
         return hash('sha256', CSM_Support::json($items));
     }
 
-    private static function build(bool $verify): array {
+    private static function build(bool $verify, array $selection = []): array {
         $previous = self::cached(); $groups = []; $now = time();
         $stats = ['scanned_files' => 0, 'hashed_files' => 0, 'years_reused' => 0, 'years_rebuilt' => 0, 'months_reused' => 0, 'months_rebuilt' => 0];
-        foreach (CSM_Files::paths(['plugins' => [], 'themes' => [], 'media' => 'all']) as [$relative, $path]) {
+        foreach (CSM_Files::paths(array_intersect_key($selection, array_flip(['skip_paths', 'git_overrides', 'protect_source_git'])) + ['plugins' => [], 'themes' => [], 'media' => 'all']) as [$relative, $path]) {
             $tail = substr($relative, 8); $parts = explode('/', $tail);
             $year = count($parts) > 1 ? $parts[0] : ''; $month = count($parts) > 2 ? $parts[1] : '';
             clearstatcache(true, $path); $stat = lstat($path);
@@ -93,7 +93,7 @@ final class CSM_Media {
     public static function inventory(array $query): array {
         $level = $query['level'] ?? '';
         if ($level === 'years') {
-            $index = self::build(!empty($query['verify'])); $items = [];
+            $index = self::build(!empty($query['verify']), $query['selection'] ?? []); $items = [];
             foreach ($index['years'] as $year => $item) { $items[] = ['name' => (string)$year, 'hash' => $item['hash']]; }
             return ['token' => $index['token'], 'items' => $items, 'stats' => $index['stats']];
         }
@@ -114,9 +114,9 @@ final class CSM_Media {
         return ['items' => $items, 'more' => count($files) > $offset + 500];
     }
 
-    public static function compare(array $peer, bool $pull, bool $verify): array {
-        $remote = static fn($query) => CSM_Transport::request($peer, 'media_hashes', $query);
-        $local = static fn($query) => self::inventory($query);
+    public static function compare(array $peer, bool $pull, bool $verify, array $selection = []): array {
+        $remote = static fn($query) => CSM_Transport::request($peer, 'media_hashes', $query + ['selection' => $selection]);
+        $local = static fn($query) => self::inventory($query + ['selection' => $selection]);
         $source = $pull ? $remote : $local; $destination = $pull ? $local : $remote;
         $src = $source(['level' => 'years', 'verify' => $verify]); $dst = $destination(['level' => 'years', 'verify' => $verify]);
         $stats = ['years_compared' => 0, 'years_skipped' => 0, 'months_compared' => 0, 'months_skipped' => 0, 'files_compared' => 0, 'files_selected' => 0, 'source_hashing' => $src['stats'], 'destination_hashing' => $dst['stats']];
@@ -158,7 +158,7 @@ final class CSM_Media {
         return ['delta' => $delta, 'stats' => $stats];
     }
 
-    public static function paths(string $encoded): Generator {
+    public static function paths(string $encoded, array $selection = []): Generator {
         if (strlen($encoded) > 700000) { throw new RuntimeException('Invalid media comparison plan.'); }
         $compressed = base64_decode($encoded, true); $raw = $compressed === false ? false : @gzdecode($compressed, 32 * 1024 * 1024);
         $plan = $raw === false ? null : json_decode($raw, true);
@@ -177,7 +177,7 @@ final class CSM_Media {
         }
         ksort($selected, SORT_STRING);
         foreach ($selected as $tail => $file) {
-            $relative = 'uploads/' . $tail; $path = CSM_Files::destination($relative, ['media' => 'compare']);
+            $relative = 'uploads/' . $tail; $path = CSM_Files::destination($relative, $selection + ['media' => 'compare'], !empty($selection['protect_source_git']));
             clearstatcache(true, $path); $stat = @lstat($path);
             if (!$stat || self::stamp($stat) !== $file['stamp']) { throw new RuntimeException('Media changed after comparison: ' . $tail . '. Retry the file stream.'); }
             yield [$relative, $path, $file['hash']];

@@ -31,6 +31,7 @@ def php(site, code):
 
 
 KEYS = {site: php(site, 'echo get_option("_csm_key");').strip() for site in SITES}
+VERSIONS = {site: php(site, 'echo CSM_VERSION;').strip() for site in SITES}
 
 
 def check(condition, text):
@@ -44,7 +45,7 @@ def check(condition, text):
 def headers(site, action, body, params=None):
     stamp, nonce = str(int(time.time())), secrets.token_hex(16)
     digest = 'stream' if params is not None else hashlib.sha256(body).hexdigest()
-    encoded = base64.b64encode((json.dumps(params or {}, separators=(',', ':')) + '\n').encode()).decode()
+    encoded = base64.b64encode((json.dumps({**(params or {}), 'trickle_version': VERSIONS[site]}, separators=(',', ':')) + '\n').encode()).decode()
     message = '\n'.join((action, stamp, nonce, digest, encoded))
     signature = hmac.new(KEYS[site].encode(), message.encode(), hashlib.sha256).hexdigest()
     return {'X-CSM-Time': stamp, 'X-CSM-Nonce': nonce, 'X-CSM-Hash': digest, 'X-CSM-Params': encoded, 'X-CSM-Signature': signature,
@@ -83,7 +84,7 @@ def api(site, action, data=None, stream=None, kind=None, chunked=False):
 
 
 def selection(**extra):
-    return {'tables': [], 'plugins': [], 'themes': [], 'media': 'none', 'media_ids': [], 'since': 0, 'replace': True, **extra}
+    return {'file_policy': 1, 'tables': [], 'plugins': [], 'themes': [], 'media': 'none', 'media_ids': [], 'since': 0, 'replace': True, **extra}
 
 
 def discard_active(site):
@@ -223,7 +224,7 @@ echo json_encode(['cookie'=>SECURE_AUTH_COOKIE.'='.$secure.'; '.LOGGED_IN_COOKIE
 '''))
 
 
-def admin(op, data=None):
+def admin_request(op, data=None):
     connection = http.client.HTTPSConnection(HOSTS['local'], 8453, context=CTX, timeout=120)
     payload = urlencode({'action':'csm_admin','nonce':login['nonce'],'op':op,'data':json.dumps(data or {})})
     connection.request('POST', '/wp-admin/admin-ajax.php', payload, {'Content-Type':'application/x-www-form-urlencoded','Cookie':login['cookie']})
@@ -246,6 +247,12 @@ def admin(op, data=None):
         login['cookie'] = '; '.join(key+'='+value for key,value in jar.items())
     return result['data']
 
+
+def admin(op, data=None):
+    while True:
+        result = admin_request(op, data)
+        if op != 'transfer' or not result.get('continue'):
+            return result
 
 pairing = base64.b64encode(json.dumps({'url':manifest['remote']['url'],'key':KEYS['remote']}).encode()).decode()
 connected = admin('connect', {'pairing':pairing})

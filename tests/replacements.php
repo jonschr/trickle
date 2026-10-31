@@ -30,3 +30,13 @@ $record = CSM_Support::replace(serialize(new Trickle_Replacement_Fixture()), $pa
 $actual = (array)unserialize($record, ['allowed_classes' => false]);
 $check($actual['url'] === 'https://destination.test/object' && empty($GLOBALS['trickle_replacement_wakeup']), 'Object records are rewritten without instantiation');
 echo "$checks replacement checks passed.\n";
+
+$src = ['url'=>'https://source.test/site','home'=>'https://source.test','root'=>'/srv/wp/','content'=>'/srv/wp/wp-content'];
+$dst = ['url'=>'https://target.test/site','home'=>'https://target.test','root'=>'/dev/wp/','content'=>'/dev/wp/wp-content'];
+$defaults = CSM_Database::replacement_pairs($src,$dst,[]);
+$check(CSM_Support::replace('http://source.test/site/a https://source.test/b //source.test/c',$defaults)==='https://target.test/site/a https://target.test/b //target.test/c','Default mappings cover HTTP, HTTPS and protocol-relative URLs');
+$json = '{"url":"https:\\/\\/source.test\\/site\\/a","other":12}';
+$check(json_decode(CSM_Support::replace($json,$defaults),true)['url']==='https://target.test/site/a','JSON escaped URLs are replaced without rewriting unrelated JSON');
+$nested = serialize(['json'=>$json,'url'=>'http://source.test/site/x']);
+$v=unserialize(CSM_Support::replace($nested,$defaults));
+$check(json_decode($v['json'],true)['url']==='https://target.test/site/a' && $v['url']==='https://target.test/site/x','Escaped URL replacements preserve enclosing serialization lengths');

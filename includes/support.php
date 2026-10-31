@@ -76,6 +76,19 @@ final class CSM_Support {
         return $job;
     }
 
+    public static function backup_dir(): string {
+        $home = getenv('HOME') ?: (function_exists('posix_getpwuid') ? (posix_getpwuid(posix_geteuid())['dir'] ?? '') : '');
+        if ($home && is_dir($home) && is_writable($home)) {
+            $path = rtrim($home, '/\\') . '/.trickle-backups/' . substr(hash_hmac('sha256', ABSPATH, wp_salt('auth')), 0, 24);
+            if (is_dir($path) || @mkdir($path, 0700, true)) {
+                $real = realpath($path);
+                $public = array_filter([realpath(ABSPATH), realpath($_SERVER['DOCUMENT_ROOT'] ?? '')]);
+                if ($real && !is_link($path) && is_writable($path) && !array_filter($public, static fn($root) => $real === $root || str_starts_with($real . '/', rtrim($root, '/') . '/'))) { chmod($path, 0700); return $path; }
+            }
+        }
+        return self::private_dir();
+    }
+
     public static function save(array $job): void {
         update_option('_csm_job_' . $job['id'], $job, false);
     }
@@ -108,6 +121,10 @@ final class CSM_Support {
 
     public static function replace(string $text, array $pairs): string {
         if (!$pairs) { return $text; }
+        // Match JSON slash escapes without decoding/re-encoding unrelated JSON formatting.
+        $escaped = [];
+        foreach ($pairs as $find => $replacement) { if (str_contains($find, '/') && !str_contains($find, '\\/')) { $escaped[str_replace('/', '\\/', $find)] = str_replace('/', '\\/', $replacement); } }
+        $pairs += $escaped;
         $replaced = strtr($text, $pairs);
         // Leave unrelated values byte-for-byte intact, including malformed legacy serialization.
         if ($replaced === $text) { return $text; }

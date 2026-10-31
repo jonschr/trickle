@@ -44,6 +44,15 @@ final class CSM_Database {
                 $rules[$find] = ['kind' => 'default', 'id' => $id, 'label' => $label, 'find' => $find, 'replace' => $destination[$id], 'enabled' => true];
             }
         }
+        foreach (['url', 'home'] as $id) {
+            $from = preg_replace('#^https?://#i', '//', $source[$id]);
+            $to = preg_replace('#^https?://#i', '//', $destination[$id]);
+            if (!str_starts_with($from, '//') || !str_starts_with($to, '//')) { continue; }
+            foreach (['http' => 'http:' . $from, 'https' => 'https:' . $from, 'relative' => $from] as $variant => $find) {
+                $replace = $variant === 'relative' ? $to : $destination[$id];
+                if (!isset($rules[$find])) { $rules[$find] = ['kind' => 'default', 'id' => $id . '_' . $variant, 'label' => ($id === 'url' ? 'WordPress URL' : 'Home URL') . ' (' . $variant . ')', 'find' => $find, 'replace' => $replace, 'enabled' => true]; }
+            }
+        }
         return array_values($rules);
     }
 
@@ -92,7 +101,7 @@ final class CSM_Database {
     public static function stream(array $selection): Generator {
         global $wpdb;
         $tables = self::validate($selection['tables'] ?? []);
-        yield CSM_Support::json(array_merge(['type' => 'header', 'version' => 1, 'kind' => 'database', 'prefix' => $wpdb->prefix, 'tables' => $tables], self::identity()));
+        yield CSM_Support::json(array_merge(['type' => 'header', 'version' => 1, 'kind' => 'database', 'prefix' => $wpdb->prefix, 'tables' => $tables, 'active_plugins' => CSM_Activation::current(), 'trickle_plugin' => plugin_basename(CSM_FILE)], self::identity()));
         CSM_Support::query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
         CSM_Support::query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
         $hash = hash_init('sha256');
@@ -157,6 +166,7 @@ final class CSM_Database {
         global $wpdb;
         $header = CSM_Support::line($fp);
         if (($header['type'] ?? '') !== 'header' || ($header['version'] ?? 0) !== 1 || ($header['kind'] ?? '') !== 'database') { throw new RuntimeException('Invalid database stream header.'); }
+        CSM_Activation::source($job, $header);
         $prefix = $header['prefix'];
         if (!$prefix || !is_array($header['tables']) || $header['tables'] !== $job['selection']['tables']) { throw new RuntimeException('Database stream does not match the selected tables.'); }
         $job['database'] = []; CSM_Support::save($job);
@@ -218,7 +228,7 @@ final class CSM_Database {
         foreach ($job['database'] ?? [] as $table) {
             if ($table['target'] !== $wpdb->options) { continue; }
             $staged = CSM_Support::ident($table['stage']);
-            // Keep the destination identity, credentials, local environment and plugin activation state.
+            // Preserve destination settings during table swap; activation is applied separately before the health check.
             $names = $connection_only ? [] : ['siteurl', 'home', 'active_plugins', 'cron', 'blog_public', 'upload_path', 'upload_url_path'];
             CSM_Support::query($wpdb->prepare('DELETE FROM ' . $staged . ' WHERE option_name LIKE %s', $wpdb->esc_like('_csm_') . '%'));
             foreach ($names as $name) { CSM_Support::query($wpdb->prepare('DELETE FROM ' . $staged . ' WHERE option_name = %s', $name)); }

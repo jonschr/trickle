@@ -6,6 +6,7 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../assets/admin.js'), 'utf8');
 const kinds = ['tables', 'plugins', 'themes', 'media'];
 const controls = {};
+controls['sync-active-plugins'] = {checked:true};
 for (const kind of kinds) {
     controls['enable-' + kind] = {checked:false, setAttribute(name, value) { this[name] = value; }};
     controls[kind + '-body'] = {hidden:true};
@@ -31,6 +32,9 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(source.slice(source.indexOf('    function setPanelOpen('), source.indexOf('    function resetComponents(')) + source.slice(source.indexOf('    function currentSelection('), source.indexOf('    function restoreSelection(')), context);
+assert.equal(context.currentSelection().sync_active_plugins, true);
+controls['sync-active-plugins'].checked = false;
+assert.equal(context.currentSelection().sync_active_plugins, false);
 context.setComponent('plugins', true, true);
 assert.equal(items.filter(item => item.kind === 'plugins' && item.checked).length, 2);
 assert.equal(items.find(item => item.protected).checked, false);

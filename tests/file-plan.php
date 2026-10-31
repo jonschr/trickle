@@ -4,13 +4,14 @@ if (!defined('ABSPATH') || realpath(ABSPATH) !== realpath(getenv('HOME').'/Cove/
 $component = 'trickle-plan-fixture';
 $root = WP_PLUGIN_DIR.'/'.$component;
 if (file_exists($root)) { throw new RuntimeException('Fixture already exists.'); }
+$original_backups = get_option('_csm_backups', []); update_option('_csm_backups', [], false);
 $checks=0;$jobs=[];$stage=CSM_Support::private_dir().'/file-plan-test-'.bin2hex(random_bytes(4));
 $check=static function(bool $ok,string $label)use(&$checks):void{if(!$ok)throw new RuntimeException($label);$checks++;echo "PASS $label\n";};
 $make=static function()use($root,$stage,$component,&$jobs):array{
  wp_mkdir_p($root);wp_mkdir_p($stage);
  file_put_contents($root.'/a.txt','original-a');chmod($root.'/a.txt',0600);touch($root.'/a.txt',1600000000);
  file_put_contents($root.'/obsolete.txt','original-obsolete');
- $summary=CSM_Plugin::prepare(['plugins'=>[$component]]);$jobs[]=$summary['id'];$job=CSM_Support::job($summary['id']);
+ $summary=CSM_Plugin::prepare(['plugins'=>[$component],'sync_active_plugins'=>false]);$jobs[]=$summary['id'];$job=CSM_Support::job($summary['id']);
  foreach(['a','b','c'] as $name){
   $p=$stage.'/'.$name;file_put_contents($p,'new-'.$name);
   $job['files'][]=['path'=>'plugins/'.$component.'/'.$name.'.txt','stage'=>$p,'size'=>filesize($p),'mtime'=>1700000000,'mode'=>0644,'sha256'=>hash_file('sha256',$p)];
@@ -27,7 +28,7 @@ try{
  $check($result['status']==='applied'&&file_get_contents($root.'/a.txt')==='new-a'&&file_get_contents($root.'/b.txt')==='new-b','Applies replacement and new files');
  $check(!file_exists($root.'/obsolete.txt'),'Removes obsolete component files');
  $check($writes>0&&$writes<=3,'Saves recovery state at most three times, independent of file count');
- $planpath=CSM_Support::private_dir().'/'.$job['id'].'-backup/operations.json';$plan=file_get_contents($planpath);
+ $planpath=$job['backup_dir'].'/operations.json';$plan=file_get_contents($planpath);
  $ops=json_decode($plan,true);
  $check(count($ops)===4&&$job['ops']===[]&&hash_equals($job['ops_hash'],hash('sha256',$plan)),'Complete checksummed plan includes all replaced, new and obsolete files');
  $check((fileperms($planpath)&0777)===0600,'Recovery plan is private');
@@ -43,7 +44,7 @@ try{
  CSM_Plugin::discard(CSM_Support::job($job['id']));
  $job=$make();$injected=false;
  $break=static function($sql)use(&$injected,$job,$stage){
-  if(!$injected&&str_starts_with($sql,'UPDATE ')&&str_contains($sql,'_csm_job_'.$job['id'])){$injected=true;unlink($stage.'/c');}
+  if(!$injected&&str_contains($sql,'applying')&&str_starts_with($sql,'UPDATE ')&&str_contains($sql,'_csm_job_'.$job['id'])){$injected=true;unlink($stage.'/c');}
   return $sql;
  };
  add_filter('query',$break);$failed=false;
@@ -64,4 +65,5 @@ try{
  if(isset($watch))remove_filter('query',$watch);if(isset($break))remove_filter('query',$break);if(isset($reject))remove_filter('query',$reject);
  foreach($jobs as $id){if(!get_option('_csm_job_'.$id))continue;$j=CSM_Support::job($id);if(in_array($j['status'],['applying','applied'],true))CSM_Plugin::rollback($j);CSM_Plugin::discard(CSM_Support::job($id));}
  CSM_Support::remove_tree($root);CSM_Support::remove_tree($stage);
+ update_option('_csm_backups', $original_backups, false);
 }

@@ -1,0 +1,19 @@
+/* Execute the real compatibility UI helpers without a WordPress site. */
+const assert = require('node:assert/strict');
+const fs = require('node:fs'), vm = require('node:vm'), path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../assets/admin.js'), 'utf8');
+const controls = {};
+for (const id of ['trickle-versions','trickle-version-status','trickle-update-status','check-remote-update','update-remote']) controls[id] = {classList:{toggle(name,on){this[name]=on;}}};
+const c = {$:id=>controls[id],sites:null,session:null,busy:false,remoteUpdate:null};vm.createContext(c);
+vm.runInContext(source.slice(source.indexOf('    function transferVersionMatches('),source.indexOf('    const transferDate')),c);
+c.renderVersionStatus();assert.equal(controls['trickle-versions'].hidden,true);
+c.sites={local:{plugin_version:'0.1.9'},remote:{plugin_version:'0.1.8',remote_update:1,can_update_trickle:false}};
+c.renderVersionStatus();assert.equal(c.versionsMatch(),false);assert.match(controls['trickle-update-status'].textContent,/administrator or read\/write key/);assert.equal(controls['update-remote'].hidden,true);
+c.sites.remote.can_update_trickle=true;c.remoteUpdate={can_update_to_target:true,reason:'Matching release available'};c.renderVersionStatus();
+assert.equal(controls['update-remote'].hidden,false);assert.equal(controls['update-remote'].textContent,'Update remote Trickle to 0.1.9');
+c.busy=true;c.renderVersionStatus();assert.equal(controls['update-remote'].disabled,true);assert.equal(controls['check-remote-update'].disabled,true);
+c.busy=false;c.sites.remote.plugin_version='0.1.9';c.renderVersionStatus();assert.equal(c.versionsMatch(),true);assert.equal(controls['update-remote'].hidden,true);assert.match(controls['trickle-version-status'].textContent,/Versions match/);
+c.session={plugin_version:'0.1.8'};c.renderVersionStatus();assert.equal(c.transferVersionMatches(),false);assert.match(controls['trickle-update-status'].textContent,/older Trickle version/);
+c.session=null;c.sites.remote={plugin_version:'0.1.7'};c.remoteUpdate=null;c.renderVersionStatus();assert.equal(controls['check-remote-update'].hidden,true);assert.match(controls['trickle-update-status'].textContent,/Install this Trickle build/);
+c.sites.remote={plugin_version:'0.1.8',remote_update:1,can_update_trickle:true};c.remoteUpdate={can_update_to_target:false,reason:'Release unavailable'};c.renderVersionStatus();assert.equal(controls['update-remote'].hidden,true);assert.equal(controls['trickle-update-status'].textContent,'Release unavailable');
+console.log('Version UI checks passed: mismatches, permissions, eligible update, busy state, matched versions, stale transfer, legacy remote, and unavailable release.');

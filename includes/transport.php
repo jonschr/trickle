@@ -16,13 +16,15 @@ final class CSM_Transport {
 
     public static function headers(string $action, string $key, string $bodyhash, array $params = []): array {
         $time = (string)time(); $nonce = bin2hex(random_bytes(16));
+        $params['trickle_version'] = CSM_VERSION;
         $params = base64_encode(CSM_Support::json($params));
         $signature = hash_hmac('sha256', implode("\n", [$action, $time, $nonce, $bodyhash, $params]), $key);
-        return ['X-CSM-Time: ' . $time, 'X-CSM-Nonce: ' . $nonce, 'X-CSM-Hash: ' . $bodyhash, 'X-CSM-Params: ' . $params, 'X-CSM-Signature: ' . $signature, 'Expect:'];
+        return ['X-CSM-Key-Id: ' . CSM_Access::id($key), 'X-CSM-Time: ' . $time, 'X-CSM-Nonce: ' . $nonce, 'X-CSM-Hash: ' . $bodyhash, 'X-CSM-Params: ' . $params, 'X-CSM-Signature: ' . $signature, 'Expect:'];
     }
 
     public static function authenticate(string $action): array {
-        $key = get_option('_csm_key');
+        $credential = CSM_Access::credential($_SERVER['HTTP_X_CSM_KEY_ID'] ?? '');
+        $key = $credential['key'];
         $time = $_SERVER['HTTP_X_CSM_TIME'] ?? ''; $nonce = $_SERVER['HTTP_X_CSM_NONCE'] ?? '';
         $hash = $_SERVER['HTTP_X_CSM_HASH'] ?? ''; $params = $_SERVER['HTTP_X_CSM_PARAMS'] ?? '';
         $signature = $_SERVER['HTTP_X_CSM_SIGNATURE'] ?? '';
@@ -33,18 +35,28 @@ final class CSM_Transport {
         if (!hash_equals($expected, $signature)) { throw new RuntimeException('Authentication failed.', 403); }
         $nonce_key = '_csm_nonce_' . $nonce;
         if (!add_option($nonce_key, time(), '', false)) { throw new RuntimeException('Request was already used.', 403); }
-        $settings = get_option('_csm_settings', ['pull' => true, 'push' => false]);
-        if ($action === 'progress' && empty($settings['pull']) && empty($settings['push'])) { throw new RuntimeException('Remote access is disabled on this site.', 403); }
-        if (in_array($action, ['export', 'manifest', 'media', 'media_hashes'], true) && empty($settings['pull'])) { throw new RuntimeException('Remote reads are disabled on this site.', 403); }
-        if (!in_array($action, ['export', 'manifest', 'media', 'media_hashes', 'progress'], true) && empty($settings['push'])) { throw new RuntimeException('Remote writes are disabled. Enable incoming writes on the destination.', 403); }
+        CSM_Access::authorize($credential, $action);
         $params = json_decode(base64_decode($params, true), true, 64, JSON_THROW_ON_ERROR);
-        if ($action === 'receive') {
+        if (in_array($action, ['prepare', 'bundle', 'bundle_chunk', 'export', 'receive', 'segment_state', 'segment_data', 'commit'], true)) { CSM_Updates::assert_version($params['trickle_version'] ?? null); }
+        if (in_array($action, ['receive', 'segment_data'], true)) {
             if ($hash !== 'stream') { throw new RuntimeException('Expected a stream upload.'); }
             return $params;
         }
         $body = file_get_contents('php://input', false, null, 0, 1048577);
         if (strlen($body) > 1048576 || !hash_equals(hash('sha256', $body), $hash)) { throw new RuntimeException('Request body checksum mismatch.', 403); }
         return json_decode($body, true, 64, JSON_THROW_ON_ERROR);
+    }
+
+    public static function health(string $url, string $probe = ''): array {
+        $url = add_query_arg('trickle_health', bin2hex(random_bytes(8)), self::url($url));
+        $ch = curl_init($url); $ca = self::ca_bundle($url);
+        $options = [CURLOPT_NOBODY => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Cache-Control: no-cache', 'User-Agent: Trickle/' . CSM_VERSION . ' health check']];
+        if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
+        if ($probe !== '') { $options[CURLOPT_HTTPHEADER][] = 'X-Trickle-Health: ' . $probe; }
+        curl_setopt_array($ch, $options); $ok = curl_exec($ch); $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        return ['status' => $status, 'verified' => $ok !== false && $status >= 200 && $status < 300];
     }
 
     public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0): array {

@@ -2,6 +2,64 @@
 defined('ABSPATH') || exit;
 
 final class CSM_Files {
+    public static function excluded(string $relative): bool {
+        foreach (explode('/', strtolower($relative)) as $part) {
+            if (in_array($part, ['.git', '.gitignore', 'node_modules'], true) || str_starts_with($part, '.env') || preg_match('/\.env($|[._~-])/', $part)) { return true; }
+        }
+        return false;
+    }
+
+    public static function beneath(string $path, array $folders): bool {
+        foreach ($folders as $folder) { if ($path === $folder || str_starts_with($path, rtrim($folder, '/') . '/')) { return true; } }
+        return false;
+    }
+
+    private static function git_ancestor(string $path): bool {
+        while (true) {
+            if (file_exists($path . '/.git') || is_link($path . '/.git')) { return true; }
+            $parent = dirname($path); if ($parent === $path) { return false; } $path = $parent;
+        }
+    }
+
+    public static function git_folders(array $selection): array {
+        $result = [];
+        $scan = static function (string $path, string $relative) use (&$scan, &$result): void {
+            if (self::excluded($relative) || is_link($path) || !is_dir($path)) { return; }
+            // A .git file is a worktree/submodule marker, just as a .git directory is a repository marker.
+            if (file_exists($path . '/.git') || is_link($path . '/.git')) { $result[] = $relative; }
+            foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { if ($file->isDir() && !$file->isLink()) { $scan($file->getPathname(), $relative . '/' . $file->getFilename()); } }
+        };
+        foreach (['plugins', 'themes'] as $kind) {
+            foreach ($selection[$kind] ?? [] as $id) {
+                self::safe_relative($id);
+                if (str_contains($id, '/')) { throw new RuntimeException('Invalid component ID.'); }
+                $root = self::root($kind, $id);
+                if (self::git_ancestor($root)) { $result[] = $kind; }
+                $scan($root . '/' . $id, $kind . '/' . $id);
+            }
+        }
+        if (($selection['media'] ?? 'none') !== 'none') { if (self::git_ancestor(self::root('uploads'))) { $result[] = 'uploads'; } $scan(self::root('uploads'), 'uploads'); }
+        $result = array_values(array_unique($result)); sort($result, SORT_STRING); return $result;
+    }
+
+    public static function skipped(string $relative, array $selection): bool {
+        return self::excluded($relative) || self::beneath($relative, $selection['skip_paths'] ?? []);
+    }
+
+    private static function assert_git_destination(string $relative, string $path, string $root, array $selection): void {
+        $kind = explode('/', $relative)[0];
+        if (self::git_ancestor(dirname($root)) && !in_array($kind, $selection['git_overrides'] ?? [], true)) { throw new RuntimeException('Git working directory protected: ' . $kind . '. Review and explicitly include it before transferring.'); }
+        $walk = is_dir($path) ? $path : dirname($path);
+        while (strlen($walk) >= strlen($root)) {
+            if (file_exists($walk . '/.git') || is_link($walk . '/.git')) {
+                $folder = explode('/', $relative)[0] . ($walk === $root ? '' : '/' . substr($walk, strlen($root) + 1));
+                if (!in_array($folder, $selection['git_overrides'] ?? [], true)) { throw new RuntimeException('Git working directory protected: ' . $folder . '. Review and explicitly include it before transferring.'); }
+            }
+            if ($walk === $root) { break; }
+            $walk = dirname($walk);
+        }
+    }
+
     public static function inventory(bool $refresh = false): array {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
         require_once ABSPATH . 'wp-admin/includes/update.php';
@@ -103,8 +161,9 @@ final class CSM_Files {
         return $path;
     }
 
-    public static function destination(string $relative, array $selection): string {
+    public static function destination(string $relative, array $selection, bool $check_git = true): string {
         self::safe_relative($relative);
+        if (self::skipped($relative, $selection)) { throw new RuntimeException('Excluded file or protected development folder: ' . $relative); }
         [$kind, $tail] = array_pad(explode('/', $relative, 2), 2, '');
         if (!in_array($kind, ['plugins', 'themes', 'uploads'], true) || !$tail) { throw new RuntimeException('Unsupported file location.'); }
         $first = explode('/', $tail)[0];
@@ -123,23 +182,27 @@ final class CSM_Files {
             if ($walk === $root) { break; }
             $walk = dirname($walk);
         }
+        if ($check_git) { self::assert_git_destination($relative, $path, $root, $selection); }
         return $path;
     }
 
-    private static function scan(string $path): Generator {
+    public static function scan(string $path, string $relative = '', array $selection = []): Generator {
+        if (self::skipped($relative, $selection)) { return; }
+        if (!empty($selection['protect_source_git']) && is_dir($path) && (file_exists($path . '/.git') || is_link($path . '/.git')) && !in_array($relative, $selection['git_overrides'] ?? [], true)) { return; }
         if (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: ' . basename($path)); }
         if (is_file($path)) { yield $path; return; }
         if (!is_dir($path)) { return; }
-        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname()); }
+        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname(), $relative . '/' . $file->getFilename(), $selection); }
     }
 
     public static function paths(array $selection): Generator {
         foreach (['plugins', 'themes'] as $kind) {
             foreach ($selection[$kind] as $id) {
+                if (self::skipped($kind . '/' . $id, $selection)) { continue; }
                 CSM_Progress::update(['phase' => 'Reading source component', 'component' => $kind . '/' . $id]);
                 $root = self::root($kind, $id); $count = 0;
                 if (!file_exists($root . '/' . $id)) { throw new RuntimeException('Selected source component is missing: ' . $id); }
-                foreach (self::scan($root . '/' . $id) as $file) {
+                foreach (self::scan($root . '/' . $id, $kind . '/' . $id, $selection) as $file) {
                     $relative = $kind . '/' . substr($file, strlen($root) + 1);
                     self::safe_relative($relative);
                     yield [$relative, $file]; $count++;
@@ -148,7 +211,7 @@ final class CSM_Files {
             }
         }
         $root = self::root('uploads');
-        if ($selection['media'] === 'compare') { yield from CSM_Media::paths($selection['media_delta'] ?? ''); return; }
+        if ($selection['media'] === 'compare') { foreach (CSM_Media::paths($selection['media_delta'] ?? '', $selection) as $entry) { if (!self::skipped($entry[0], $selection)) { yield $entry; } } return; }
         if (in_array($selection['media'], ['selected', 'uploaded'], true)) {
             $seen = [];
             foreach (self::attachment_ids($selection) as $id) {
@@ -161,18 +224,19 @@ final class CSM_Files {
                 foreach ($paths as $tail) {
                     if (!$tail || isset($seen[$tail])) { continue; }
                     $relative = 'uploads/' . ltrim(preg_replace('#^\./#', '', $tail), '/');
-                    $path = self::destination($relative, $selection);
+                    if (self::skipped($relative, $selection)) { continue; }
+                    $path = self::destination($relative, $selection, !empty($selection['protect_source_git']));
                     if (!is_file($path)) { throw new RuntimeException('Missing attachment file: ' . $tail); }
                     $seen[$tail] = true; yield [$relative, $path];
                 }
             }
         } elseif (in_array($selection['media'], ['all', 'changed'], true)) {
-            foreach (self::scan($root) as $file) {
+            foreach (self::scan($root, 'uploads', $selection) as $file) {
                 $relative = 'uploads/' . substr($file, strlen($root) + 1);
                 if ($selection['media'] === 'changed' && filemtime($file) < $selection['since']) { continue; }
                 // Exclude executables, hidden server configuration and common backup/cache directories.
                 if (preg_match('#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups|\.git)(/|$)#i', $relative)) { continue; }
-                try { self::destination($relative, $selection); } catch (RuntimeException $e) { continue; }
+                try { self::destination($relative, $selection, !empty($selection['protect_source_git'])); } catch (RuntimeException $e) { continue; }
                 yield [$relative, $file];
             }
         }
@@ -181,11 +245,17 @@ final class CSM_Files {
     public static function stream(array $selection): Generator {
         $selection = self::selection($selection);
         $started = time(); $count = 0; $hash = hash_init('sha256');
+        $same = CSM_Components::unchanged($selection);
         $parents = [];
         foreach ($selection['themes'] as $theme) { $parents[$theme] = wp_get_theme($theme)->get('Template'); }
-        yield CSM_Support::json(['type' => 'header', 'version' => 1, 'kind' => 'files', 'started' => $started, 'theme_parents' => $parents]);
+        yield CSM_Support::json(['type' => 'header', 'version' => 1, 'kind' => 'files', 'started' => $started, 'theme_parents' => $parents, 'active_plugins' => CSM_Activation::current(), 'trickle_plugin' => plugin_basename(CSM_FILE)]);
         foreach (self::paths($selection) as $entry) {
             [$relative, $path] = $entry;
+            if (isset($same[$relative])) {
+                if (!CSM_Components::verify($path, $same[$relative])) { throw new RuntimeException('Source file changed after comparison: ' . $relative . '. Retry preparation.'); }
+                $line = CSM_Support::json(['type' => 'file-same', 'path' => $relative, 'sha256' => $same[$relative]['hash'], 'size' => filesize($path), 'mtime' => filemtime($path)]);
+                hash_update($hash, $line); yield $line; $count++; continue;
+            }
             CSM_Progress::update(['phase' => 'Exporting file', 'component' => $relative, 'count' => $count, 'total' => null, 'unit' => 'files', 'bytes' => 0]);
             $fp = fopen($path, 'rb');
             if (!$fp) { throw new RuntimeException('Cannot read file: ' . $relative); }
@@ -214,8 +284,9 @@ final class CSM_Files {
     public static function stage($fp, array &$job): void {
         $header = CSM_Support::line($fp);
         if (($header['type'] ?? '') !== 'header' || ($header['version'] ?? 0) !== 1 || ($header['kind'] ?? '') !== 'files') { throw new RuntimeException('Invalid file stream.'); }
+        CSM_Activation::source($job, $header);
         foreach ($header['theme_parents'] ?? [] as $parent) {
-            if ($parent && !in_array($parent, $job['selection']['themes'], true) && !wp_get_theme($parent)->exists()) { throw new RuntimeException('Include the required parent theme: ' . $parent); }
+            if ($parent && (!in_array($parent, $job['selection']['themes'], true) || self::skipped('themes/' . $parent, $job['selection'])) && !wp_get_theme($parent)->exists()) { throw new RuntimeException('Include the required parent theme: ' . $parent); }
         }
         $dir = CSM_Support::private_dir() . '/' . $job['id'];
         if (!is_dir($dir) && !mkdir($dir, 0700)) { throw new RuntimeException('Cannot create transfer staging directory.'); }
@@ -225,9 +296,16 @@ final class CSM_Files {
             if (($record['type'] ?? '') === 'end') {
                 if (count($files) !== $record['files'] || !hash_equals(hash_final($hash), $record['sha256']) || fread($fp, 1) !== '') { throw new RuntimeException('Incomplete file stream or checksum failure.'); }
                 foreach (['plugins', 'themes'] as $kind) {
-                    foreach ($job['selection'][$kind] as $component) { if (empty($components[$kind . '/' . $component])) { throw new RuntimeException('Selected component was omitted from the file stream.'); } }
+                    foreach ($job['selection'][$kind] as $component) { if (!self::skipped($kind . '/' . $component, $job['selection']) && empty($components[$kind . '/' . $component])) { throw new RuntimeException('Selected component was omitted from the file stream.'); } }
                 }
                 $job['files'] = $files; $job['media_watermark'] = $header['started']; return;
+            }
+            if (($record['type'] ?? '') === 'file-same') {
+                $path = $record['path'] ?? ''; $target = self::destination($path, $job['selection']);
+                if (isset($seen[$path]) || !is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'], hash_file('sha256', $target))) { throw new RuntimeException('Unchanged destination file failed verification: ' . $path); }
+                $parts = explode('/', $path); $components[$parts[0] . '/' . $parts[1]] = true; $seen[$path] = true;
+                hash_update($hash, CSM_Support::json($record));
+                $files[] = ['path' => $path, 'sha256' => $record['sha256'], 'size' => filesize($target), 'unchanged' => true]; continue;
             }
             if (($record['type'] ?? '') !== 'file' || !is_int($record['size']) || $record['size'] < 0 || isset($seen[$record['path']])) { throw new RuntimeException('Invalid file header.'); }
             self::destination($record['path'], $job['selection']);

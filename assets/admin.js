@@ -2,7 +2,7 @@
 (() => {
     'use strict';
     const $ = id => document.getElementById(`csm-${id}`);
-    let connectionState = CSM.state, sites = null, session = CSM.state.session, busy = false, summary = null, replacementRules = [];
+    let connectionState = CSM.state, sites = null, session = CSM.state.session, busy = false, summary = null, replacementRules = [], remoteUpdate = null;
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
     const tableSort = {key:'source_bytes', descending:true};
@@ -80,7 +80,20 @@
         $('progress').hidden = false; $('progress').removeAttribute('value');
         $('activity').hidden = false; $('activity').textContent = 'Waiting for progress from the server…';
         timer = setTimeout(poll, 300);
-        try { return await api(op, data); }
+        try {
+            let result, retries = 0;
+            do {
+                try { result = await api(op, data); retries = 0; }
+                catch (error) {
+                    if (op !== 'transfer' || retries >= 3 || !/network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
+                    message('Connection interrupted. Retrying…');
+                    await new Promise(resolve => setTimeout(resolve, 1000 * ++retries));
+                    result = {continue:true};
+                }
+                if (result.continue && result.progress) { summary = result; renderActivity(result.progress); }
+            } while (op === 'transfer' && result.continue);
+            return result;
+        }
         catch (error) {
             stopped = true;
             try { summary = await api('status', {id:data.id}); showSummary(); renderActivity(await api('progress', {id:data.id})); }
@@ -94,14 +107,14 @@
         busy = true; $('error').hidden = true;
         document.querySelector('.csm').setAttribute('aria-busy', 'true');
         feedback('Working… Keep this page open.');
-        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => control.id !== 'csm-copy' && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-diagnostics'));
+        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => control.id !== 'csm-copy' && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
         finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; document.querySelector('.csm').setAttribute('aria-busy', 'false'); if ($('feedback').textContent === 'Working… Keep this page open.') feedback('Done.'); $('progress').hidden = true; lockSelection(); updateSelection(); }
     }
     function lockSelection() {
-        document.querySelectorAll('#csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
+        document.querySelectorAll('#csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-sync-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
         lockReplacements();
     }
     const direction = () => $('direction').value;
@@ -201,15 +214,34 @@
         $('selection-summary').textContent = `${counts.tables} table${counts.tables === 1 ? '' : 's'} · ${counts.plugins} plugin${counts.plugins === 1 ? '' : 's'} · ${counts.themes} theme${counts.themes === 1 ? '' : 's'} · ${media.toLowerCase()}`;
         const selected = counts.plugins + counts.themes + counts.tables > 0 || (mode !== 'none' && (mode !== 'selected' || counts.media_ids > 0));
         const validMediaDates = mode !== 'uploaded' || (!!($('media-after').value || $('media-before').value) && (!$('media-after').value || !$('media-before').value || $('media-after').value <= $('media-before').value));
-        $('stage').disabled = busy || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
+        $('stage').disabled = busy || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
+        $('apply').disabled = busy || !versionsMatch() || !transferVersionMatches();
+        renderVersionStatus();
         syncMediaSelection();
         for (const id of ['media-select-visible', 'media-clear', 'media-more']) $(id).disabled = busy || !!session;
         lockReplacements();
         $('apply').textContent = transferAction();
         if (!session) {
-            $('stage').textContent = `Prepare ${transferAction().toLowerCase()}`;
+            $('stage').textContent = transferAction();
             $('action-title').textContent = selected ? `Ready to ${transferAction().toLowerCase()}` : 'Choose what to transfer';
         }
+    }
+    function transferVersionMatches() { return !session || (!!sites && session.plugin_version === sites.local.plugin_version); }
+    function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version; }
+    function renderVersionStatus() {
+        $('trickle-versions').hidden = !sites;
+        if (!sites) return;
+        const same = versionsMatch(), local = sites.local.plugin_version, remote = sites.remote.plugin_version || 'unknown';
+        $('trickle-versions').classList.toggle('csm-version-mismatch', !same || !transferVersionMatches());
+        $('trickle-version-status').textContent = `Trickle — this site: ${local} · remote site: ${remote}${same ? ' · Versions match' : ' · Update required before transferring'}`;
+        const supported = sites.remote.remote_update === 1;
+        const mayUpdate = !!sites.remote.can_update_trickle;
+        $('check-remote-update').hidden = same || !supported;
+        $('check-remote-update').disabled = busy || !!session;
+        $('update-remote').hidden = same || !remoteUpdate?.can_update_to_target;
+        $('update-remote').disabled = busy || !!session;
+        $('update-remote').textContent = `Update remote Trickle to ${local}`;
+        $('trickle-update-status').textContent = !transferVersionMatches() ? 'This retained transfer was prepared with an older Trickle version. Discard and prepare again; rollback and recovery remain available.' : same ? 'Push and pull use the same Trickle version on both sites.' : session ? 'Versions changed during a retained transfer. Recovery remains available; discard and prepare again after aligning versions.' : !supported ? 'Install this Trickle build on the remote site once to enable remote updates.' : !mayUpdate ? 'Enable “Allow authenticated Trickle updates” on the remote site and use an administrator or read/write key.' : remoteUpdate ? remoteUpdate.reason : 'Check whether the remote JSON feed offers the version installed on this site. Newer remote versions require updating this site first.';
     }
     const transferDate = stamp => new Date(stamp * 1000).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
     function renderConnections(state) {
@@ -227,8 +259,8 @@
         if (state.connections.length || session) $('workspace').hidden = false;
     }
     function clearInventory() {
-        sites = null; resetComponents();
-        $('media-mode').value = 'none'; $('media-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
+        sites = null; remoteUpdate = null; resetComponents(); $('sync-active-plugins').checked = true;
+        $('media-mode').value = 'none'; $('media-verify').checked = false; $('file-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
         $('source').textContent = 'Loading source…'; $('destination').textContent = 'Loading destination…';
@@ -252,7 +284,8 @@
         $('replacement-status').textContent = !available ? 'Load both sites with the current Trickle version to preview and configure replacements.' : !$('replace').checked ? 'Find & replace is off. No replacement rules will run.' : `${replacementRules.filter(rule => rule.enabled).length} enabled rules. Replacement settings are locked once a transfer is staged.`;
     }
     function currentSelection() {
-        const selection = {enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
+        const selection = {enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:$('sync-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
+        selection.file_verify = ($('enable-plugins').checked || $('enable-themes').checked) && !!$('file-verify')?.checked;
         selection.media_verify = selection.media === 'compare' && !!$('media-verify')?.checked;
         for (const kind of ['plugins','themes','tables','media_ids']) selection[kind] = $('enable-' + (kind === 'media_ids' ? 'media' : kind)).checked ? [...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input => kind === 'media_ids' ? Number(input.value) : input.value) : [];
         if (sites?.replacements) selection.replacements = replacementRules.map(rule => ({...rule}));
@@ -273,6 +306,7 @@
             setComponent(kind, hasItems || (selection.enabled_components || []).includes(kind));
             if (Array.isArray(selection.expanded_components)) setPanelOpen(kind, $('enable-' + kind).checked && selection.expanded_components.includes(kind));
         }
+        $('file-verify').checked = !!selection.file_verify; $('sync-active-plugins').checked = selection.sync_active_plugins !== false;
         $('media-mode').value = selection.media; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
         renderReplacements(selection.replacements ?? sites.replacements?.[direction()] ?? []);
@@ -360,35 +394,91 @@
             summary = await api('status', {id:session.id});
             labelRoute();
             $('workspace').hidden = false; $('source').textContent = session.source; $('destination').textContent = session.destination;
+            if (['applied','restored'].includes(summary.status)) { const route = {...session}; await finishTransfer(summary, route); return; }
+            if (summary.status === 'applying') { summary = await api('recover', {id:session.id}); const route = {...session}; await finishTransfer(summary, route); return; }
             showSummary();
         }
         feedback(refresh ? 'Checking installed versions and available updates on both sites…' : 'Connecting and loading the site inventories…');
-        sites = inventory || await api('manifest', {refresh});
+        sites = inventory || await api('manifest', {refresh}); remoteUpdate = null;
         await loadSelectedMedia(session?.selection || preserve); render();
         if (preserve) restoreSelection(preserve);
         if (session && summary?.id !== session.id) { summary = await api('status', {id:session.id}); showSummary(); }
         $('connect-status').textContent = 'Paste a complete code to save or update the connection automatically.';
         feedback(refresh ? 'Versions refreshed on both sites.' : '');
         $('connection').open = false;
+        if (session?.automatic) await migrate();
     }
     function showSummary() {
-        if (!summary) return;
-        const applied = summary.status === 'applied', restored = summary.status === 'restored', failed = !!summary.error || !!summary.progress?.failure;
-        $('apply').hidden = !summary.ready || summary.status !== 'staging';
-        $('rollback').hidden = !['applied','applying'].includes(summary.status);
-        $('discard').hidden = false; $('stage').hidden = applied || summary.status === 'applying';
-        $('stage').hidden = summary.status !== 'staging' || summary.ready;
+        if (!summary || !session) return;
         const action = transferAction();
-        $('apply').textContent = action;
-        $('stage').textContent = summary.ready ? `Prepare ${action.toLowerCase()}` : 'Retry preparation';
-        $('action-title').textContent = applied ? `${action} complete` : restored ? (failed ? `${action} failed — destination restored` : 'Destination restored') : summary.status === 'applying' ? `${action === 'Push' ? 'Pushing' : 'Pulling'}…` : failed ? (summary.ready ? `${action} failed` : 'Preparation failed') : summary.ready ? `Ready to ${action.toLowerCase()}` : `Preparing ${action.toLowerCase()}`;
-        message(`${summary.tables} tables · ${summary.rows.toLocaleString()} rows · ${summary.files.toLocaleString()} files · ${bytes(summary.bytes)}. ${applied ? 'Rollback backup retained on the destination.' : restored ? 'The destination backup has been restored.' : 'Destination: ' + session.destination}`);
-        const comparison = summary.media_comparison;
-        $('media-comparison').hidden = !comparison;
-        if (comparison) $('media-comparison').textContent = `Media comparison: ${comparison.years_skipped} of ${comparison.years_compared} year folders matched · ${comparison.months_skipped} of ${comparison.months_compared} month folders matched · ${comparison.files_compared.toLocaleString()} individual files compared · ${comparison.files_selected.toLocaleString()} files selected.`;
+        $('apply').hidden = true;
+        $('rollback').hidden = summary.status !== 'applying';
+        $('discard').hidden = summary.status !== 'staging';
+        $('stage').hidden = summary.status !== 'staging';
+        $('stage').textContent = `Continue ${action.toLowerCase()}`;
+        $('action-title').textContent = summary.status === 'applied' ? `${action} complete` : summary.status === 'restored' ? 'Destination restored' : summary.status === 'applying' ? 'Recovering…' : `${action === 'Push' ? 'Pushing' : 'Pulling'}…`;
+        message(`${summary.tables} tables · ${summary.files.toLocaleString()} files · ${bytes(summary.bytes)}`);
+        $('media-comparison').hidden = true;
+        $('skipped-folders').hidden = !summary.skipped_folders?.length;
+        $('skipped-folders').textContent = summary.skipped_folders?.length ? 'Skipped: ' + summary.skipped_folders.join(', ') : '';
         renderActivity(summary.progress);
-        if (summary.error) { $('error').textContent = summary.error; $('error').hidden = false; }
+        renderPreview();
     }
+    async function finishTransfer(result, route) {
+        const finished = await api('finish', {id:route.id});
+        summary = null; session = null; renderPreview();
+        for (const id of ['apply','rollback','discard','retained-note','activity']) $(id).hidden = true;
+        $('stage').hidden = false;
+        $('completion').hidden = false;
+        $('completion-title').textContent = result.status === 'applied' ? `${route.direction === 'push' ? 'Push' : 'Pull'} complete` : 'Destination restored';
+        $('completion-detail').textContent = result.status === 'applied' ? (result.tables || result.files ? `${result.tables} tables · ${result.files.toLocaleString()} files · Backup saved` : 'Up to date · Backup saved') : 'Previous changes recovered.';
+        $('view-site').href = route.view_url || route.destination;
+        const backupUrl = new URL($('backup-link').href);
+        if (route.direction === 'push') backupUrl.searchParams.set('site', route.remote_id);
+        else backupUrl.searchParams.delete('site');
+        $('backup-link').href = backupUrl.href;
+        try { await load(true); }
+        catch (_) { message(''); feedback('Complete. Reload to refresh the inventory.'); return; }
+        message('');
+        const warnings = [finished.cleanup_warning];
+        if (result.health && !result.health.verified) warnings.push('Check the site; its health check was inconclusive.');
+        if (result.activation_missing?.length) warnings.push(`Could not activate ${result.activation_missing.length} missing plugin${result.activation_missing.length === 1 ? '' : 's'}. See Diagnostics.`);
+        feedback(warnings.filter(Boolean).join(' '));
+    }
+    let previewItems = [], previewId = '';
+    function renderPreview() {
+        const preview = summary?.preview;
+        $('preview').hidden = !preview;
+        if (!preview) { previewId = ''; previewItems = []; return; }
+        if (previewId !== summary.id) { previewId = summary.id; previewItems = preview.items; }
+        const c = preview.counts;
+        $('preview-summary').textContent = `${c.add} added · ${c.replace} replaced · ${c.delete} deleted · ${c.unchanged} unchanged files`;
+        $('preview-warnings').replaceChildren(...preview.warnings.map(text => { const p = document.createElement('p'); p.textContent = text; return p; }));
+        $('preview-files').innerHTML = previewItems.map(item => `<tr><td>${esc({add:'Add', replace:'Replace', delete:'Delete'}[item.action])}</td><th scope="row"><code>${esc(item.path)}</code></th><td>${bytes(item.before)}</td><td>${bytes(item.after)}</td></tr>`).join('') || '<tr><td colspan="4">No file changes.</td></tr>';
+        $('preview-count').textContent = `Showing ${previewItems.length} of ${preview.total} changes · deletions first · rollback files: ${bytes(preview.backup_bytes)}`;
+        $('preview-more').hidden = previewItems.length >= preview.total;
+    }
+    $('preview-more').addEventListener('click', () => run(async () => {
+        const page = await api('preview', {id:session.id, offset:previewItems.length});
+        previewItems = [...previewItems, ...page.items]; renderPreview();
+    }));
+    function renderKeys(keys) {
+        $('keys').innerHTML = keys.length ? '<ul class="csm-key-list">' + keys.map(key => `<li><span><strong>${esc(key.name)}</strong><small>${key.write ? 'Read and write' : 'Read only'} · expires ${esc(transferDate(key.expires))}</small></span><button type="button" class="button-link button-link-delete" data-revoke-key="${esc(key.id)}">Revoke</button></li>`).join('') + '</ul>' : '<p>No named connection keys.</p>';
+    }
+    $('issue-key').addEventListener('click', () => run(async () => {
+        const key = await api('issue_key', {name:$('key-name').value, read:true, write:$('key-write').checked, days:Number($('key-days').value)});
+        renderKeys(key.keys); $('new-code').value = key.pairing; $('new-key').hidden = false;
+        $('new-code').focus(); $('new-code').select();
+    }));
+    $('copy-key').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText($('new-code').value); $('copy-key').textContent = 'Code copied'; setTimeout(() => { $('copy-key').textContent = 'Copy new code'; }, 2000); }
+        catch (_) { $('new-code').focus(); $('new-code').select(); }
+    });
+    $('keys').addEventListener('click', event => {
+        const id = event.target.dataset.revokeKey; if (!id) return;
+        run(async () => { if (!confirm('Revoke this connection key immediately? Transfers using it will need an administrator connection to recover.')) return; renderKeys((await api('revoke_key', {id})).keys); });
+    });
+    renderKeys(CSM.keys || []);
     let copyResetTimer;
     $('copy').addEventListener('click', async () => {
         try {
@@ -412,24 +502,24 @@
         $('reveal').setAttribute('aria-expanded', String(show));
         $('reveal').textContent = show ? 'Hide connection code' : 'Show connection code';
     });
-    let savedPermissions = {pull:$('allow-read').checked, push:$('allow-write').checked};
-    for (const id of ['allow-read', 'allow-write']) $(id).addEventListener('change', () => run(async () => {
+    let savedPermissions = {pull:$('allow-read').checked, push:$('allow-write').checked, updates:$('allow-updates').checked};
+    for (const id of ['allow-read', 'allow-write', 'allow-updates']) $(id).addEventListener('change', () => run(async () => {
         $('permissions-status').textContent = 'Saving permissions…';
-        const settings = {pull:$('allow-read').checked, push:$('allow-write').checked};
+        const settings = {pull:$('allow-read').checked, push:$('allow-write').checked, updates:$('allow-updates').checked};
         try {
             const result = await api('settings', settings);
             savedPermissions = settings; $('pairing').value = result.pairing;
             $('permissions-status').textContent = 'Permissions saved automatically.';
             feedback('Permissions saved.');
         } catch (error) {
-            $('allow-read').checked = savedPermissions.pull; $('allow-write').checked = savedPermissions.push;
+            $('allow-read').checked = savedPermissions.pull; $('allow-write').checked = savedPermissions.push; $('allow-updates').checked = savedPermissions.updates;
             $('permissions-status').textContent = 'Save not confirmed. Previous values shown; reload to verify before retrying.';
             throw error;
         }
     }));
     $('rotate').addEventListener('click', () => run(async () => {
         if (!confirm('Rotate this site’s key? Existing connections to this site will need its new connection code.')) return;
-        const result = await api('settings', {pull:$('allow-read').checked, push:$('allow-write').checked, rotate:true}); $('pairing').value = result.pairing; feedback('Connection key rotated. Update any sites that connect to this site.');
+        const result = await api('settings', {pull:$('allow-read').checked, push:$('allow-write').checked, updates:$('allow-updates').checked, rotate:true}); $('pairing').value = result.pairing; renderKeys([]); $('new-key').hidden = true; feedback('Connection key rotated. Update any sites that connect to this site.');
     }));
     let connectTimer;
     function connectFromCode() {
@@ -463,6 +553,16 @@
         $('connect-status').textContent = $('remote-code').value.trim() ? 'Checking connection code…' : 'Paste a complete connection code to connect automatically.';
         connectTimer = setTimeout(connectFromCode, 600);
     });
+    $('check-remote-update').addEventListener('click', () => run(async () => {
+        remoteUpdate = await api('remote_update_info', {site:$('remote-site').value}); renderVersionStatus();
+    }));
+    $('update-remote').addEventListener('click', () => run(async () => {
+        if (!remoteUpdate?.can_update_to_target) return;
+        if (!confirm(`Update Trickle on ${sites.remote.url} from ${sites.remote.plugin_version} to ${sites.local.plugin_version}? This updates the migration plugin before any transfer begins.`)) return;
+        feedback('Updating remote Trickle through its configured JSON feed…');
+        await api('update_remote', {site:$('remote-site').value});
+        await load(true); feedback('Remote Trickle updated. Versions match; choose what to transfer.');
+    }));
     $('refresh').addEventListener('click', () => run(() => load(true)));
     $('remote-site').addEventListener('change', () => run(async () => {
         const chosen = $('remote-site').value;
@@ -483,6 +583,7 @@
         });
     });
     $('direction').addEventListener('change', () => { if (sites) { $('media-mode').value = 'none'; $('replace').checked = true; $('recent').value = ''; render(); } });
+    for (const id of ['file-verify', 'media-verify', 'sync-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
     $('media-mode').addEventListener('change', () => { mediaAnchor = null; renderMedia(); });
     for (const id of ['media-after', 'media-before']) $(id).addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
     $('media-list').addEventListener('click', event => {
@@ -559,43 +660,67 @@
         const rules = [...replacementRules]; rules.splice(Number(remove.dataset.removeRule), 1);
         renderReplacements(rules); $('recent').value = ''; $('add-replacement').focus();
     });
-    $('stage').addEventListener('click', () => run(async () => {
-        if (session) {
-            summary = await api('status', {id:session.id});
-            if (summary.status !== 'staging') throw new Error('Discard the previous transfer before starting another.');
-            for (const kind of summary.pending) {
-                message(`Retrying the ${kind} stream for ${session.destination}…`);
-                summary = await transferRequest('transfer', {id:session.id, kind});
+    async function reviewGitFolders(folders) {
+        const dialog = $('git-review');
+        $('git-folders').innerHTML = folders.map(item => `<label class="csm-git-folder"><input type="checkbox" value="${esc(item.path)}"><span><code>${esc(item.path)}</code><small>${item.source && item.destination ? 'Git repository on both sites' : item.destination ? 'Git repository on the destination' : 'Git repository on the source'} · skipped unless explicitly included</small></span></label>`).join('');
+        dialog.returnValue = 'cancel'; dialog.showModal();
+        return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'prepare' ? [...$('git-folders').querySelectorAll('input:checked')].map(input => input.value) : null), {once:true}));
+    }
+    $('git-folders').addEventListener('change', event => {
+        if (event.target.checked && !confirm(`Include ${event.target.value}? This can replace or delete actively developed destination code. Repository metadata, node_modules, .gitignore and environment files remain excluded.`)) event.target.checked = false;
+    });
+    async function migrate() {
+        $('completion').hidden = true;
+        try {
+            if (!session) {
+                previewId = ''; previewItems = [];
+                const selection = currentSelection();
+                const dest = destination().url;
+                let git_confirmed = [];
+                if (selection.plugins.length || selection.themes.length || selection.media !== 'none') {
+                    const review = await api('review', {site:$('remote-site').value, direction:direction(), selection});
+                    if (review.git_folders.length) {
+                        git_confirmed = await reviewGitFolders(review.git_folders);
+                        if (git_confirmed === null) return;
+                    }
+                }
+                summary = await api('prepare', {site:$('remote-site').value, direction:direction(), selection, git_confirmed, automatic:true});
+                session = {view_url:destination().home || dest, plugin_version:sites.local.plugin_version, id:summary.id, remote_id:$('remote-site').value, direction:direction(), source:source().url, destination:dest, selection, automatic:true};
+            } else summary = await api('status', {id:session.id});
+            const route = {...session};
+            if (['applied','restored'].includes(summary.status)) { await finishTransfer(summary, route); return; }
+            if (summary.status === 'applying') {
+                summary = await api('recover', {id:session.id});
+                await finishTransfer(summary, route); return;
             }
-            showSummary(); return;
+            showSummary();
+            for (const kind of summary.pending) {
+                message(`Verifying ${kind}…`);
+                summary = await transferRequest('transfer', {id:session.id, kind}); showSummary();
+            }
+            message(`${transferAction() === 'Push' ? 'Pushing' : 'Pulling'}…`);
+            summary = await transferRequest('commit', {id:session.id});
+            await finishTransfer(summary, route);
+        } catch (error) {
+            if (session) {
+                const route = {...session};
+                try {
+                    const recovered = await api('recover', {id:session.id, cancel:true});
+                    if (['applied','restored'].includes(recovered.status)) await finishTransfer(recovered, route);
+                    else { session = null; summary = null; await load(); message('Destination unchanged.'); }
+                } catch (_) { message('Recovery will retry when this page reconnects.'); }
+            }
+            throw error;
         }
-        const selection = currentSelection();
-        const dest = destination().url;
-        summary = await api('prepare', {site:$('remote-site').value, direction:direction(), selection});
-        session = {id:summary.id, remote_id:$('remote-site').value, direction:direction(), source:source().url, destination:dest, selection}; showSummary();
-        $('progress').hidden = false; $('progress').removeAttribute('value');
-        const kinds = [];
-        if (selection.tables.length) kinds.push('database');
-        if (selection.plugins.length || selection.themes.length || selection.media !== 'none') kinds.push('files');
-        for (const kind of kinds) {
-            message(`Receiving and verifying the ${kind} stream for ${dest}. Keep this page open.`);
-            summary = await transferRequest('transfer', {id:session.id, kind}); showSummary();
-        }
-    }));
-    $('apply').addEventListener('click', () => run(async () => {
-        if (!confirm(`${transferAction()} ${summary.tables} tables and ${summary.files} files from ${session.source} to ${session.destination}? Selected tables and plugin/theme directories will replace their destination versions.`)) return;
-        message(`${transferAction() === 'Push' ? 'Pushing' : 'Pulling'} to ${session.destination}…`); summary = await transferRequest('commit', {id:session.id}); showSummary();
-    }));
-    $('rollback').addEventListener('click', () => run(async () => {
-        if (!confirm(`Restore the pre-transfer backup on ${session.destination}? Changes made since the transfer will be overwritten.`)) return;
-        summary = await transferRequest('rollback', {id:session.id}); showSummary();
-    }));
+    }
+    $('stage').addEventListener('click', () => run(migrate));
+    $('apply').addEventListener('click', () => run(migrate));
+    $('rollback').addEventListener('click', () => run(migrate));
     $('discard').addEventListener('click', () => run(async () => {
-        if (!confirm('Delete this transfer’s staged data and rollback backup? Applied changes will remain.')) return;
-        await api('discard', {id:session.id}); session = null; summary = null;
-        $('activity').hidden = true;
-        for (const id of ['apply','rollback','discard']) $(id).hidden = true;
-        $('stage').hidden = false; $('stage').textContent = `Prepare ${transferAction().toLowerCase()}`; $('action-title').textContent = 'Choose what to transfer'; message('Previous transfer data and backup removed.'); await load();
+        await api('recover', {id:session.id, cancel:true});
+        session = null; summary = null; renderPreview();
+        for (const id of ['apply','rollback','discard','activity']) $(id).hidden = true;
+        $('stage').hidden = false; await load(); message('Transfer cancelled. Destination unchanged.');
     }));
     $('diagnostics').addEventListener('toggle', () => { if ($('diagnostics').open) refreshLogs(); });
     $('refresh-logs').addEventListener('click', refreshLogs);
@@ -614,7 +739,13 @@
         document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     renderConnections(connectionState); updateSelection();
-    if (connectionState.selected || session) run(() => load());
+    if (CSM.state.destination_recovery) run(async () => {
+        feedback('Recovering…'); await api('recover_destination');
+        if (connectionState.selected || session) await load();
+        else feedback('Destination restored.');
+    });
+    else if (connectionState.selected || session) run(() => load());
+    setInterval(() => { if (!busy && session?.automatic && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
     let checkingProgress = false;
     setInterval(async () => {
         if (busy || checkingProgress || !session || summary?.progress?.state !== 'running') return;

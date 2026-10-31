@@ -3,15 +3,25 @@ defined('ABSPATH') || exit;
 
 /** Manage saved sites and selective streamed transfers. */
 final class CSM_CLI {
-    private static function guard(callable $fn) {
+    private static array $failure_context = [];
+
+    private static function guard(callable $fn, array $assoc = []) {
         $https = $_SERVER['HTTPS'] ?? null;
         $_SERVER['HTTPS'] = wp_parse_url(get_option('siteurl'), PHP_URL_SCHEME) === 'https' ? 'on' : 'off';
         try { return $fn(); }
-        catch (Throwable $e) { WP_CLI::error($e->getMessage()); }
+        catch (Throwable $e) {
+            if (($assoc['format'] ?? '') === 'json') {
+                $session = CSM_Controller::session();
+                WP_CLI::line(wp_json_encode(['ok' => false, 'schema_version' => 1, 'code' => 'trickle_error', 'error' => $e->getMessage()] + self::$failure_context + ['transfer_id' => $session['id'] ?? null], JSON_UNESCAPED_SLASHES));
+                WP_CLI::halt(1);
+            }
+            WP_CLI::error($e->getMessage());
+        }
         finally { if ($https === null) { unset($_SERVER['HTTPS']); } else { $_SERVER['HTTPS'] = $https; } }
     }
 
     private static function output(array $data, array $assoc, array $fields = []): void {
+        if (!empty($data['activation_missing'])) { WP_CLI::warning('Source plugins unavailable for activation: ' . implode(', ', $data['activation_missing'])); }
         unset($data['state'], $data['nonce']);
         if (($assoc['format'] ?? '') === 'json') { WP_CLI::line(wp_json_encode($data, JSON_UNESCAPED_SLASHES)); return; }
         $rows = array_is_list($data) ? $data : [$data];
@@ -28,6 +38,89 @@ final class CSM_CLI {
      */
     public function sites($args, $assoc): void {
         self::guard(static fn() => self::output(CSM_Controller::state()['connections'], $assoc, ['id', 'name', 'url']));
+    }
+
+    /** List agent workflow presets.
+     *
+     * ## OPTIONS
+     *
+     * [--format=<format>]
+     * : table or json.
+     */
+    public function presets($args, $assoc): void {
+        self::guard(static fn() => self::output(array_values(CSM_Presets::catalog()), $assoc, ['id', 'name', 'direction', 'description']), $assoc);
+    }
+
+    /** Read inventories and capabilities without staging a transfer.
+     *
+     * ## OPTIONS
+     *
+     * [--remote=<site>]
+     * : Include this saved remote; omit for local inventory only.
+     *
+     * [--format=<format>]
+     * : table or json.
+     */
+    public function inventory($args, $assoc): void {
+        self::guard(static function () use ($assoc) {
+            $inventory = empty($assoc['remote']) ? ['local' => CSM_Plugin::manifest()] : CSM_Controller::inventory(CSM_Controller::peer($assoc['remote']));
+            unset($inventory['state'], $inventory['history']); $inventory['version_controlled'] = CSM_Presets::version_controlled();
+            $inventory['operator_guide'] = ['file' => dirname(CSM_FILE) . '/AI-USAGE.md', 'url' => plugins_url('AI-USAGE.md', CSM_FILE)];
+            if (($assoc['format'] ?? '') === 'json') { self::output($inventory, $assoc); return; }
+            self::output(array_map(static fn($site) => ['url' => $site['url'], 'plugin_version' => $site['plugin_version'], 'plugins' => count($site['plugins']), 'themes' => count($site['themes']), 'tables' => count($site['tables'])], array_values(array_intersect_key($inventory, array_flip(['local', 'remote'])))), $assoc, ['url', 'plugin_version', 'plugins', 'themes', 'tables']);
+        }, $assoc);
+    }
+
+    /** Plan or run a complete preset workflow, retaining its destination backup.
+     *
+     * ## OPTIONS
+     *
+     * <preset>
+     * : pull-db, pull-db-missing, or push-git.
+     *
+     * [--remote=<site>]
+     * : Saved remote ID, URL or unique name; required when several are saved.
+     *
+     * [--dry-run]
+     * : Return a read-only selection plan, even with --yes.
+     *
+     * [--yes]
+     * : Run the plan through verification and replacement; otherwise only plan.
+     *
+     * [--keep-destination-plugins]
+     * : Preserve destination activation instead of copying the full source list.
+     *
+     * [--include-git=<paths>]
+     * : Explicit per-transfer Git overrides; --yes never grants these.
+     *
+     * [--format=<format>]
+     * : table or json.
+     */
+    public function run($args, $assoc): void {
+        self::guard(static function () use ($args, $assoc) {
+            $preset = CSM_Presets::catalog()[$args[0]] ?? null;
+            if (!$preset) { throw new RuntimeException('Unknown preset. Use wp trickle presets.'); }
+            self::transfer($preset['direction'], $assoc + ['preset' => $args[0]], true);
+        }, $assoc);
+    }
+
+    /** Read a page of verified changes for the current staged transfer.
+     *
+     * ## OPTIONS
+     *
+     * [--offset=<offset>]
+     * : Start at this file-change offset; pages contain at most 200 items.
+     *
+     * [--format=<format>]
+     * : table or json.
+     */
+    public function preview($args, $assoc): void {
+        self::guard(static function () use ($assoc) {
+            $session = self::current();
+            $result = CSM_Controller::execute('preview', ['id' => $session['id'], 'offset' => (int)($assoc['offset'] ?? 0)]);
+            if (($assoc['format'] ?? '') === 'json') { self::output($result, $assoc); }
+            else { self::output($result['items'], $assoc, ['action', 'path', 'before', 'after']); }
+        }, $assoc);
     }
 
     /**
@@ -55,23 +148,77 @@ final class CSM_CLI {
     }
 
     /**
+     * Check or update remote Trickle to this site's version through its JSON feed.
+     *
+     * @subcommand update-remote
+     *
+     * ## OPTIONS
+     *
+     * [--remote=<site>]
+     * : Saved site ID, exact URL, or unique name.
+     *
+     * [--check]
+     * : Only inspect the published release and permission status.
+     *
+     * [--yes]
+     * : Confirm the plugin update without an interactive prompt.
+     *
+     * [--format=<format>]
+     */
+    public function update_remote($args, $assoc): void {
+        self::guard(static function () use ($assoc) {
+            if (empty($assoc['remote']) && count(CSM_Controller::peers()) !== 1) { throw new RuntimeException('Specify --remote before checking or updating a remote Trickle installation.'); }
+            $peer = CSM_Controller::peer($assoc['remote'] ?? '');
+            if (isset($assoc['check'])) { $result = CSM_Controller::execute('remote_update_info', ['site' => $peer['id']]); }
+            else { WP_CLI::confirm('Update Trickle on ' . $peer['url'] . ' to ' . CSM_VERSION . ' before migrating?', $assoc); $result = CSM_Controller::execute('update_remote', ['site' => $peer['id']]); }
+            self::output($result, $assoc, isset($assoc['check']) ? ['installed', 'target', 'release', 'can_update_to_target', 'reason'] : ['installed', 'updated']);
+        });
+    }
+
+    /**
      * Print this site's private connection code, or write it to a new private file.
      *
      * ## OPTIONS
+     *
+     * [--name=<name>]
+     * : Issue a separately revocable read key with this name, instead of the administrator key.
+     *
+     * [--write]
+     * : Also grant incoming writes to the named key; global site settings still apply.
+     *
+     * [--days=<days>]
+     * : Named-key lifetime from 1 to 90 days. Default: 30.
      *
      * [--output=<path>]
      * : Create a new file with permissions 0600 instead of printing the secret.
      */
     public function code($args, $assoc): void {
         self::guard(static function () use ($assoc) {
-            if (empty($assoc['output'])) { WP_CLI::line(CSM_Plugin::pairing()); return; }
+            $code = isset($assoc['name']) ? CSM_Access::issue($assoc['name'], true, isset($assoc['write']), (int)($assoc['days'] ?? 30))['pairing'] : CSM_Plugin::pairing();
+            if (empty($assoc['output'])) { WP_CLI::line($code); return; }
             $fp = @fopen($assoc['output'], 'xb');
             if (!$fp) { throw new RuntimeException('Cannot create the code file; choose a new writable path.'); }
             try {
                 if (!chmod($assoc['output'], 0600)) { throw new RuntimeException('Cannot make the code file private.'); }
-                CSM_Support::write($fp, CSM_Plugin::pairing() . "\n");
+                CSM_Support::write($fp, $code . "\n");
             } finally { fclose($fp); }
             WP_CLI::line('Connection code written to a private file.');
+        });
+    }
+
+    /** List named connection keys without their secrets.
+     *
+     * ## OPTIONS
+     *
+     * [--revoke=<id>]
+     * : Immediately revoke this key.
+     *
+     * [--format=<format>]
+     */
+    public function keys($args, $assoc): void {
+        self::guard(static function () use ($assoc) {
+            if (isset($assoc['revoke'])) { CSM_Access::revoke($assoc['revoke']); }
+            self::output(CSM_Access::list(), $assoc, ['id', 'name', 'read', 'write', 'expires']);
         });
     }
 
@@ -90,6 +237,39 @@ final class CSM_CLI {
                 $rows = array_map(static fn($r) => ['id' => $r['id'], 'date' => gmdate('c', $r['started_at']), 'direction' => $r['direction'], 'remote' => $r['remote_name'], 'status' => $r['status']], $rows);
             }
             self::output($rows, $assoc, ['id', 'date', 'direction', 'remote', 'status']);
+        });
+    }
+
+    /** List retained destination backups.
+     *
+     * ## OPTIONS
+     * [--remote=<site>]
+     * : Saved remote destination; omit for this site.
+     * [--format=<format>]
+     */
+    public function backups($args, $assoc): void {
+        self::guard(static fn() => self::output(CSM_Controller::execute('backups', ['site' => $assoc['remote'] ?? ''])['backups'], $assoc, ['id', 'created', 'source']));
+    }
+
+    /** Restore a retained destination backup.
+     *
+     * @subcommand restore-backup
+     *
+     * ## OPTIONS
+     * <id>
+     * : Backup ID from trickle backups.
+     * [--remote=<site>]
+     * : Saved remote destination; omit for this site.
+     * [--yes]
+     * : Confirm replacement of the included destination items.
+     * [--format=<format>]
+     */
+    public function restore_backup($args, $assoc): void {
+        self::guard(static function () use ($args, $assoc) {
+            $site = $assoc['remote'] ?? '';
+            $url = $site === '' ? site_url() : CSM_Controller::peer($site)['url'];
+            WP_CLI::confirm('Restore backup ' . $args[0] . ' on ' . $url . '? Later changes to its included items will be overwritten.', $assoc);
+            self::output(CSM_Controller::execute('restore_backup', ['site' => $site, 'id' => $args[0]]), $assoc);
         });
     }
 
@@ -139,6 +319,9 @@ final class CSM_CLI {
      * [--media=<mode>]
      * : none, all, changed, uploaded, selected, or compare. Default: none.
      *
+     * [--rehash-files]
+     * : Recalculate plugin/theme content hashes instead of trusting metadata caches.
+     *
      * [--rehash-media]
      * : Recalculate all media content hashes for --media=compare instead of reusing cached hashes.
      *
@@ -153,6 +336,12 @@ final class CSM_CLI {
      *
      * [--since=<time>]
      * : UTC ISO date/time or Unix timestamp for changed media; otherwise use the last media watermark.
+     *
+     * [--include-git=<paths>]
+     * : Explicitly include these comma-separated Git folders for this transfer only.
+     *
+     * [--keep-destination-plugins]
+     * : Preserve the destination active plugin list instead of copying the source list.
      *
      * [--skip-replace]
      * : Disable all database replacements, including custom rules.
@@ -197,6 +386,9 @@ final class CSM_CLI {
      * [--media=<mode>]
      * : none, all, changed, uploaded, selected, or compare. Default: none.
      *
+     * [--rehash-files]
+     * : Recalculate plugin/theme content hashes instead of trusting metadata caches.
+     *
      * [--rehash-media]
      * : Recalculate all media content hashes for --media=compare instead of reusing cached hashes.
      *
@@ -211,6 +403,12 @@ final class CSM_CLI {
      *
      * [--since=<time>]
      * : UTC ISO date/time or Unix timestamp for changed media; otherwise use the last media watermark.
+     *
+     * [--include-git=<paths>]
+     * : Explicitly include these comma-separated Git folders for this transfer only.
+     *
+     * [--keep-destination-plugins]
+     * : Preserve the destination active plugin list instead of copying the source list.
      *
      * [--skip-replace]
      * : Disable all database replacements, including custom rules.
@@ -235,21 +433,22 @@ final class CSM_CLI {
      */
     public function pull($args, $assoc): void { self::guard(static fn() => self::transfer('pull', $assoc)); }
 
-    private static function transfer(string $direction, array $assoc): void {
-        if (get_option('_csm_control')) { throw new RuntimeException('A transfer is retained. Use status, resume, apply, rollback or discard before starting another.'); }
+    private static function transfer(string $direction, array $assoc, bool $automated = false): void {
+        if (!$automated && get_option('_csm_control')) { throw new RuntimeException('A transfer is retained. Use status, resume, apply, rollback or discard before starting another.'); }
         if (!empty($assoc['recent'])) {
             $recent = CSM_Controller::recent($assoc['recent']);
             if ($recent['direction'] !== $direction) { throw new RuntimeException('This recent transfer uses the other direction; use trickle ' . $recent['direction'] . '.'); }
-            if (array_intersect(array_keys($assoc), ['remote', 'plugins', 'themes', 'tables', 'media', 'rehash-media', 'media-ids', 'uploaded-after', 'uploaded-before', 'since', 'skip-replace', 'skip-default-replacements', 'replacements'])) { throw new RuntimeException('Use --recent alone to reuse exact settings, or specify a new remote and selection.'); }
+            if (array_intersect(array_keys($assoc), ['remote', 'plugins', 'themes', 'tables', 'media', 'rehash-files', 'rehash-media', 'media-ids', 'uploaded-after', 'uploaded-before', 'since', 'keep-destination-plugins', 'skip-replace', 'skip-default-replacements', 'replacements'])) { throw new RuntimeException('Use --recent alone to reuse exact settings, or specify a new remote and selection.'); }
             $peer = CSM_Controller::peer($recent['remote_id']); $selection = $recent['selection'];
         } else {
             $peers = CSM_Controller::peers();
             if (empty($assoc['remote']) && count($peers) !== 1) { throw new RuntimeException('Specify --remote using a saved site ID, URL, or unique name.'); }
             $peer = CSM_Controller::peer($assoc['remote'] ?? array_key_first($peers));
-            $inventory = CSM_Controller::execute('manifest', ['site' => $peer['id']]);
+            $inventory = CSM_Controller::inventory($peer);
+            if ($automated) { $assoc += CSM_Presets::resolve($assoc['preset'], $inventory); }
             $source = $inventory[$direction === 'push' ? 'local' : 'remote'];
             if (($assoc['media'] ?? '') === 'uploaded' && empty($source['media_dates'])) { throw new RuntimeException('Update Trickle on the source site before transferring by upload date.'); }
-            $selection = ['media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'media_verify' => isset($assoc['rehash-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
+            $selection = ['sync_active_plugins' => !isset($assoc['keep-destination-plugins']), 'media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'file_verify' => isset($assoc['rehash-files']), 'media_verify' => isset($assoc['rehash-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
             foreach (['plugins', 'themes', 'tables'] as $kind) {
                 $selection[$kind] = ($assoc[$kind] ?? '') === 'all' ? array_column(array_filter($source[$kind], static fn($item) => empty($item['protected'])), 'id') : self::csv($assoc[$kind] ?? '');
             }
@@ -272,7 +471,7 @@ final class CSM_CLI {
                 }
             } elseif (isset($assoc['replacements']) || isset($assoc['skip-default-replacements'])) { throw new RuntimeException('Update Trickle on both sites before configuring replacement rules.'); }
             foreach ($source['themes'] as $theme) {
-                if (in_array($theme['id'], $selection['themes'], true) && $theme['parent']) { $selection['themes'][] = $theme['parent']; }
+                if ((!$automated || $assoc['preset'] !== 'push-git') && in_array($theme['id'], $selection['themes'], true) && $theme['parent']) { $selection['themes'][] = $theme['parent']; }
             }
             $selection['themes'] = array_values(array_unique($selection['themes']));
             foreach (self::csv($assoc['media-ids'] ?? '') as $id) {
@@ -285,14 +484,44 @@ final class CSM_CLI {
                 $selection['since'] = $stamp;
             } elseif ($selection['media'] === 'changed') { $selection['since'] = $inventory['history'][$direction . ':' . $peer['url']] ?? 0; }
         }
-        $summary = CSM_Controller::execute('prepare', ['site' => $peer['id'], 'direction' => $direction, 'selection' => $selection]);
-        foreach (CSM_Plugin::kinds($selection) as $kind) { $summary = CSM_Controller::execute('transfer', ['id' => $summary['id'], 'kind' => $kind]); }
-        $session = CSM_Controller::session();
-        if (isset($assoc['apply'])) {
-            WP_CLI::confirm('Apply the verified transfer to ' . $session['destination'] . '? Selected destination tables and files will be replaced.', $assoc);
-            $summary = CSM_Controller::execute('commit', ['id' => $summary['id']]);
+        if ($automated) {
+            $plan = CSM_Presets::plan($assoc['preset'], $peer, $inventory, $selection, self::csv($assoc['include-git'] ?? ''));
+            if (isset($assoc['dry-run']) || !isset($assoc['yes'])) {
+                self::output($plan, $assoc, ['preset', 'direction', 'source', 'destination', 'can_run']); return;
+            }
+            if (!$plan['can_run']) { throw new RuntimeException(implode(' ', array_column($plan['blockers'], 'message'))); }
+            if ($previous = CSM_Controller::session()) { CSM_Controller::execute('finish', ['id' => $previous['id']]); }
+            $assoc['apply'] = true;
         }
-        unset($summary['nonce']); self::output($summary + ['source' => $session['source'], 'destination' => $session['destination']], $assoc);
+        $summary = CSM_Controller::execute('prepare', ['site' => $peer['id'], 'direction' => $direction, 'selection' => $selection, 'git_confirmed' => self::csv($assoc['include-git'] ?? '')]);
+        $session = CSM_Controller::session();
+        if ($automated) { self::$failure_context = ['transfer_id' => $session['id'], 'source' => $session['source'], 'destination' => $session['destination']]; }
+        try {
+            foreach (CSM_Plugin::kinds($selection) as $kind) { do { $summary = CSM_Controller::execute('transfer', ['id' => $summary['id'], 'kind' => $kind]); } while (!empty($summary['continue'])); }
+            if (isset($assoc['apply'])) {
+                WP_CLI::confirm('Apply the verified transfer to ' . $session['destination'] . '? Selected destination tables and files will be replaced.', $assoc);
+                $summary = CSM_Controller::execute('commit', ['id' => $summary['id']]);
+            }
+        } catch (Throwable $e) {
+            if (!$automated) { throw $e; }
+            try {
+                $recovery = CSM_Controller::execute('recover', ['id' => $session['id'], 'cancel' => true]);
+                self::$failure_context['recovery'] = $recovery['status'];
+                if (in_array($recovery['status'], ['applied', 'restored'], true)) { CSM_Controller::execute('finish', ['id' => $session['id']]); }
+                if ($recovery['status'] !== 'applied') { throw $e; }
+                $summary = $recovery;
+            } catch (Throwable $recovery_error) {
+                self::$failure_context['recovery'] = self::$failure_context['recovery'] ?? 'unavailable';
+                throw $e;
+            }
+        }
+        if ($automated) {
+            $finished = CSM_Controller::session() ? CSM_Controller::execute('finish', ['id' => $session['id']]) : [];
+            $summary += ['ok' => true, 'schema_version' => 1, 'action' => 'transfer', 'completed' => true, 'preset' => $assoc['preset'], 'backup_id' => $summary['id']];
+            if (!empty($finished['cleanup_warning'])) { $summary['cleanup_warning'] = $finished['cleanup_warning']; }
+            self::$failure_context = [];
+        }
+        unset($summary['nonce']); self::output($summary + ['source' => $session['source'], 'destination' => $session['destination'], 'direction' => $direction], $assoc);
     }
 
     private static function csv(string $value): array { return array_values(array_unique(array_filter(array_map('trim', explode(',', $value)), static fn($item) => $item !== ''))); }
@@ -328,7 +557,7 @@ final class CSM_CLI {
         self::guard(static function () use ($assoc) {
             $session = self::current(); $summary = CSM_Controller::execute('status', ['id' => $session['id']]);
             if ($summary['status'] !== 'staging') { throw new RuntimeException('Only a staging transfer can resume its streams.'); }
-            foreach ($summary['pending'] as $kind) { $summary = CSM_Controller::execute('transfer', ['id' => $session['id'], 'kind' => $kind]); }
+            foreach ($summary['pending'] as $kind) { do { $summary = CSM_Controller::execute('transfer', ['id' => $session['id'], 'kind' => $kind]); } while (!empty($summary['continue'])); }
             self::output($summary + ['source' => $session['source'], 'destination' => $session['destination']], $assoc);
         });
     }

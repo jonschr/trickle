@@ -27,6 +27,13 @@ $mock=static function($pre,$options,$url)use(&$response,&$status,&$body,&$reques
 };
 add_filter('pre_http_request',$mock,10,3);
 try{
+ $loader=WPMU_PLUGIN_DIR.'/0-trickle-loader.php';$original_loader=file_get_contents($loader);$actor=get_current_user_id();
+ $admins=get_users(['role'=>'administrator','number'=>1]);wp_set_current_user($admins[0]->ID);
+ try{
+  file_put_contents($loader,$original_loader."\n// Simulated old loader\n");
+  ob_start();CSM_Plugin::page();ob_end_clean();
+  $check(CSM_Plugin::loader_ready(),'Dashboard refreshes an outdated recovery loader after update');
+ }finally{file_put_contents($loader,$original_loader);wp_set_current_user($actor);}
  $check($checker instanceof \YahnisElsts\PluginUpdateChecker\v5p7\Plugin\UpdateChecker && !($checker instanceof \YahnisElsts\PluginUpdateChecker\v5p7\Vcs\BaseChecker),'Uses the static JSON checker, not the GitHub repository API');
  $check($checker->metadataUrl==='https://raw.githubusercontent.com/jonschr/trickle/master/update.json'&&$checker->slug==='trickle'&&$checker->pluginFile===$plugin,'Feed URL, slug and plugin basename are correct');
  $header=get_file_data(CSM_FILE,['Version'=>'Version','UpdateURI'=>'Update URI','Requires'=>'Requires at least','PHP'=>'Requires PHP']);
