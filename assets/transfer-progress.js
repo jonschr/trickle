@@ -294,6 +294,30 @@
             const view=this.stages[selected] || {label:{preflight:'Preparation',transfer:'Transfer',verify:'Verification',apply:'Replacement',health:'Health check'}[selected],finished:terminal,detail:{},unreported:true};
             return {...view,stage:selected,live:selected===stage,terminal,activeStage:stage};
         }
+        pipelineRows() {
+            if (!this.timeline) return [];
+            const rows = [];
+            for (const [kind, stream] of Object.entries(this.timeline.streams || {})) {
+                const received = this.streamReceived(kind), known = stream.size > 0, verified = this.verified.has(kind);
+                const status = verified ? 'Verified' : this.phase === 'failed' ? 'Stopped' : this.phase === 'restored' ? 'Retained' : this.notice?.kind === 'retry' ? 'Retrying' : !known ? 'Preparing' : received >= stream.size ? 'Awaiting verification' : received > 0 ? 'Receiving' : 'Ready';
+                rows.push({name:kind === 'database' ? 'Database' : 'Files', detail:known ? `${size(received)} / ${size(stream.size)}` : 'Measuring stream', status, verified, percent:known ? Math.min(100, received / stream.size * 100) : null});
+            }
+            for (const [stage,name] of [['apply','Replace'],['health','Health']]) {
+                const snapshot = this.stages[stage], active = this.currentStage() === stage && this.frozen == null;
+                let status = !snapshot ? 'Not started' : active ? (stage === 'health' ? 'Checking' : 'Processing') : snapshot.finished ? 'Complete' : 'Pending';
+                if (stage === 'apply' && this.phase === 'complete') status = 'Complete';
+                if (stage === 'health' && (this.terminalHealth || this.phase === 'complete' || this.frozen != null && snapshot)) status = this.terminalHealth?.verified ? 'Passed' : 'Not confirmed';
+                if (this.phase === 'failed' && this.currentStage() === stage) status = 'Stopped';
+                if (['recover','restored'].includes(this.phase) && stage === 'apply') status = this.phase === 'restored' ? 'Restored' : 'Recovering';
+                const detail = snapshot?.detail || {};
+                const completed = stage === 'apply' && this.phase === 'complete';
+                const healthResult = stage === 'health' && this.terminalHealth;
+                const description = healthResult ? `Destination homepage${healthResult.status ? ' · HTTP ' + healthResult.status : ''}` : completed ? 'Destination updated' : detail.total > 0 ? `${Number(detail.count || 0).toLocaleString()} / ${Number(detail.total).toLocaleString()} ${detail.unit || 'items'}` : stage === 'health' ? 'Destination homepage' : 'After stream verification';
+                const percent = completed || healthResult?.verified ? 100 : healthResult ? null : detail.total > 0 ? Math.min(100, (detail.count || 0) / detail.total * 100) : null;
+                rows.push({name, detail:description, status, percent});
+            }
+            return rows;
+        }
         render() {
             const view=this.presentation();
             if (!this.root || !view || (typeof document!=='undefined' && document.hidden)) return;
@@ -308,7 +332,8 @@
             set('stage-result',resultText);el('stage-result').hidden=!resultText;
             const showSpeed=view.stage==='transfer'&&view.live&&!view.finished&&view.speed!=null;
             const showEta=view.live&&!view.finished&&view.eta!=null;
-            el('speed-stat').hidden=!showSpeed;el('eta-stat').hidden=!showEta;el('stats').hidden=!showSpeed&&!showEta;
+            el('speed-stat').hidden=!showSpeed;el('eta-stat').hidden=!showEta;el('stats').hidden=false;
+            set('telemetry-elapsed',duration(m.elapsed));
             set('speed',showSpeed?`${(view.speed/1e6).toFixed(1)} MB/s`:'');set('eta',showEta?`~${duration(Math.max(1,view.eta))}`:'');
             set('eta-label',view.verifying?'Verification remaining':view.stage==='transfer'?'Stream remaining':'Step remaining');
             set('badge',this.notice?.kind==='error'?'Stopped':this.notice?.kind==='retry'?'Retrying':this.frozen!=null?labels[this.phase]:m.stalled?'Awaiting update':'In progress');
@@ -342,6 +367,7 @@
             const unit=isTransfer?'bytes':view.stage==='health'?'checks':detail.unit||'items';
             const fraction=total>0?Math.max(0,Math.min(100,done/total*100)):null;
             const format=n=>unit==='bytes'?size(n):Number(n||0).toLocaleString();
+            el('received-stat').hidden=!isTransfer;set('received-stat-value',t.ready?`${size(m.received)} / ${size(m.total)}`:'Measuring…');
             el('windows-wrap').hidden=!windows;
             if(windows){set('window-label',windows.unit===16777216?'16 MiB windows':'512 KiB chunks');set('window-count',`${windows.complete} / ${windows.count} received`);}
             set('transfer-received',total?`${format(done)} of ${format(total)} ${unit==='bytes'?'received':unit}`:done?`${format(done)} ${unit} processed`:'Working…');
@@ -376,10 +402,19 @@
                 }
             }
             el('events-empty').hidden=latest.length>0;
+            const pipeline = this.pipelineRows(), pipelineSignature = JSON.stringify(pipeline);
+            if (pipelineSignature !== this.pipelineSignature) {
+                this.pipelineSignature = pipelineSignature; const root = el('pipeline'); root.replaceChildren();
+                for (const row of pipeline) {
+                    const item = document.createElement('div'), label = document.createElement('div'), name = document.createElement('strong'), note = document.createElement('small'), track = document.createElement('div'), fill = document.createElement('span'), status = document.createElement('span');
+                    item.className = 'csm-pipeline-row';item.dataset.verified=String(!!row.verified);name.textContent=row.name;note.textContent=row.detail;label.append(name,note);
+                    track.className='csm-pipeline-track';track.setAttribute('aria-hidden','true');fill.style.width=`${row.percent || 0}%`;track.append(fill);status.textContent=row.status;status.className='csm-pipeline-state';item.append(label,track,status);root.append(item);
+                }
+            }
             if(this.phase==='transfer')this.recordSample();
             if(total&&!this.chart&&typeof globalThis.CSMProgressChart==='function')this.chart=new globalThis.CSMProgressChart(el('chart'),el('chart-reading'));
             const style=getComputedStyle(el('stage-content'));
-            if(total)this.chart?.update(isTransfer?this.samples:[],this.phase,{stage:view.stage,unit,total,received:done,color:style.getPropertyValue('--stage-color').trim(),wash:style.getPropertyValue('--stage-wash').trim(),windows:isTransfer?this.byteRanges():[],offsets:Object.fromEntries(Object.entries(t.streams).map(([kind],i,a)=>[kind,a.slice(0,i).reduce((n,[,s])=>n+(s.size||0),0)]))});
+            if(total)this.chart?.update(isTransfer?this.samples:[],this.phase,{stage:view.stage,unit,total,received:done,color:style.getPropertyValue('--stage-color').trim(),wash:style.getPropertyValue('--stage-wash').trim(),pending:style.getPropertyValue('--chart-pending').trim(),verifiedColor:style.getPropertyValue('--chart-verified').trim(),grid:style.getPropertyValue('--chart-grid').trim(),tick:style.getPropertyValue('--chart-tick').trim(),boundary:style.getPropertyValue('--chart-boundary').trim(),errorColor:style.getPropertyValue('--chart-error').trim(),windows:isTransfer?this.byteRanges():[],offsets:Object.fromEntries(Object.entries(t.streams).map(([kind],i,a)=>[kind,a.slice(0,i).reduce((n,[,s])=>n+(s.size||0),0)]))});
             else {this.chart?.chart?.stop();set('chart-reading','Total not yet reported.');}
 
         }

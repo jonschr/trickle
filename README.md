@@ -1,4 +1,4 @@
-# Trickle 0.1.16
+# Trickle 0.1.17
 
 A shared WordPress plugin for selective push/pull migrations, controlled from the local site's **Tools → Trickle** page. Install the same ZIP at both ends.
 
@@ -26,7 +26,7 @@ Self-connections are excluded from the saved-site selector and rejected by the c
 
 ## Installation and use
 
-1. Upload `trickle-0.1.16.zip` through Plugins → Add Plugin on both sites and activate it.
+1. Upload `trickle-0.1.17.zip` through Plugins → Add Plugin on both sites and activate it.
    Activation installs `wp-content/mu-plugins/0-trickle-loader.php`. That directory must be writable. The loader isolates signed streaming/recovery requests and authenticated Trickle dashboard requests from ordinary plugins and theme code, so a broken active plugin need not block rollback. Isolation is limited to the actual WordPress entry scripts; unrelated login and admin pages retain their plugins. Dashboard AJAX isolation also requires a valid Trickle nonce. Inventory requests load ordinary plugins so their vendor update filters still work. A failed inventory request does not hide an existing transfer's recovery controls. Other must-use plugins and host firewalls still run. The loader is dormant when Trickle is deactivated. The first WordPress request after a version update refreshes an outdated loader when file modifications are allowed. The dashboard also checks it; CLI-only installations can reactivate Trickle to refresh it immediately. File apply remains blocked until the expected loader is installed.
 2. Open Tools → Trickle on the remote site. Authenticated remote reads and incoming writes are both allowed by default on a fresh installation. Either can be disabled under Connection & access; saved permission choices are preserved.
 3. Use **Copy connection code** at the top of the remote Trickle page, then paste both lines into the local site's connection panel. A complete code connects automatically: the visible site URL followed by its private key. Check the URL before pasting. Permission checkboxes save automatically. Treat the code like a password; do not put the key in a URL or support ticket. Older base64 connection codes are still accepted.
@@ -320,3 +320,7 @@ Run `php tests/security-core.php /path/to/wordpress <mode>` for each of `admin`,
 Dashboard workflow: editable database/missing-plugin/Git-code presets, searchable component lists, destination-specific action labels, and collapsible setup during monitoring. Follow live can be paused by inspecting an earlier stage. Recent activity groups routine file updates while retaining errors/retries and supports copying error details. Completion summarizes changed/unchanged files (including media comparison skips), protected folders, elapsed time, homepage health and the destination backup, with a direct link to that backup.
 
 `php tests/loader-refresh.php` verifies automatic upgrade-time loader refresh, no repeated rewrites, failure handling and file-modification policy without loading WordPress or changing a site.
+
+Release 0.1.17 refines migration setup with a component rail, side-by-side comparisons and a persistent selection summary. Monitoring uses a navy telemetry canvas, stream verification pipeline and visible recent activity. Stage times sit inline. The current site stays first; push/pull changes the arrow direction and source/destination roles.
+
+UI release validation: three local QA pulls covered plugin/theme updates, a repeat pull skipping 241 unchanged files, and a 613-row database fixture with ten selected media files. File hashes, normalized serialized/binary database values and homepage health passed. Read-only checkpoint replays covered desktop/mobile layouts; full browser interaction was not tested for this release.

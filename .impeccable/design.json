@@ -1,0 +1,666 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-01T07:42:09.448808+00:00",
+  "title": "Design System: Trickle",
+  "extensions": {
+    "colorMeta": {
+      "primary": {
+        "role": "primary",
+        "displayName": "Primary",
+        "canonical": "#2271b1",
+        "tonalRamp": [
+          "oklch(15% 0.0312 247.74)",
+          "oklch(26% 0.0687 247.74)",
+          "oklch(38% 0.1000 247.74)",
+          "oklch(50% 0.1249 247.74)",
+          "oklch(62% 0.1249 247.74)",
+          "oklch(74% 0.1000 247.74)",
+          "oklch(86% 0.0562 247.74)",
+          "oklch(95% 0.0187 247.74)"
+        ]
+      },
+      "primary-text": {
+        "role": "primary",
+        "displayName": "Primary text",
+        "canonical": "#165c94",
+        "tonalRamp": [
+          "oklch(15% 0.0281 248.06)",
+          "oklch(26% 0.0619 248.06)",
+          "oklch(38% 0.0901 248.06)",
+          "oklch(50% 0.1126 248.06)",
+          "oklch(62% 0.1126 248.06)",
+          "oklch(74% 0.0901 248.06)",
+          "oklch(86% 0.0507 248.06)",
+          "oklch(95% 0.0169 248.06)"
+        ]
+      },
+      "primary-wash": {
+        "role": "primary",
+        "displayName": "Primary wash",
+        "canonical": "#e7effa",
+        "tonalRamp": [
+          "oklch(15% 0.0043 256.28)",
+          "oklch(26% 0.0094 256.28)",
+          "oklch(38% 0.0137 256.28)",
+          "oklch(50% 0.0171 256.28)",
+          "oklch(62% 0.0171 256.28)",
+          "oklch(74% 0.0137 256.28)",
+          "oklch(86% 0.0077 256.28)",
+          "oklch(95% 0.0026 256.28)"
+        ]
+      },
+      "rail-selected": {
+        "role": "primary",
+        "displayName": "Rail selected",
+        "canonical": "#e8f0fb",
+        "tonalRamp": [
+          "oklch(15% 0.0043 256.28)",
+          "oklch(26% 0.0094 256.28)",
+          "oklch(38% 0.0137 256.28)",
+          "oklch(50% 0.0171 256.28)",
+          "oklch(62% 0.0171 256.28)",
+          "oklch(74% 0.0137 256.28)",
+          "oklch(86% 0.0077 256.28)",
+          "oklch(95% 0.0026 256.28)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#1e2939",
+        "tonalRamp": [
+          "oklch(15% 0.0084 257.67)",
+          "oklch(26% 0.0184 257.67)",
+          "oklch(38% 0.0268 257.67)",
+          "oklch(50% 0.0335 257.67)",
+          "oklch(62% 0.0335 257.67)",
+          "oklch(74% 0.0268 257.67)",
+          "oklch(86% 0.0151 257.67)",
+          "oklch(95% 0.0050 257.67)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "canonical": "#647184",
+        "tonalRamp": [
+          "oklch(15% 0.0084 257.79)",
+          "oklch(26% 0.0185 257.79)",
+          "oklch(38% 0.0269 257.79)",
+          "oklch(50% 0.0337 257.79)",
+          "oklch(62% 0.0337 257.79)",
+          "oklch(74% 0.0269 257.79)",
+          "oklch(86% 0.0151 257.79)",
+          "oklch(95% 0.0050 257.79)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Line",
+        "canonical": "#dce4ed",
+        "tonalRamp": [
+          "oklch(15% 0.0037 251.16)",
+          "oklch(26% 0.0082 251.16)",
+          "oklch(38% 0.0120 251.16)",
+          "oklch(50% 0.0150 251.16)",
+          "oklch(62% 0.0150 251.16)",
+          "oklch(74% 0.0120 251.16)",
+          "oklch(86% 0.0067 251.16)",
+          "oklch(95% 0.0022 251.16)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "canonical": "#fff",
+        "tonalRamp": [
+          "oklch(15% 0.0000 89.88)",
+          "oklch(26% 0.0000 89.88)",
+          "oklch(38% 0.0000 89.88)",
+          "oklch(50% 0.0000 89.88)",
+          "oklch(62% 0.0000 89.88)",
+          "oklch(74% 0.0000 89.88)",
+          "oklch(86% 0.0000 89.88)",
+          "oklch(95% 0.0000 89.88)"
+        ]
+      },
+      "rail": {
+        "role": "neutral",
+        "displayName": "Rail",
+        "canonical": "#f6f8fc",
+        "tonalRamp": [
+          "oklch(15% 0.0014 264.53)",
+          "oklch(26% 0.0032 264.53)",
+          "oklch(38% 0.0046 264.53)",
+          "oklch(50% 0.0057 264.53)",
+          "oklch(62% 0.0057 264.53)",
+          "oklch(74% 0.0046 264.53)",
+          "oklch(86% 0.0026 264.53)",
+          "oklch(95% 0.0009 264.53)"
+        ]
+      },
+      "table-header": {
+        "role": "neutral",
+        "displayName": "Table header",
+        "canonical": "#f5f8fc",
+        "tonalRamp": [
+          "oklch(15% 0.0016 255.47)",
+          "oklch(26% 0.0034 255.47)",
+          "oklch(38% 0.0050 255.47)",
+          "oklch(50% 0.0062 255.47)",
+          "oklch(62% 0.0062 255.47)",
+          "oklch(74% 0.0050 255.47)",
+          "oklch(86% 0.0028 255.47)",
+          "oklch(95% 0.0009 255.47)"
+        ]
+      },
+      "field-border": {
+        "role": "neutral",
+        "displayName": "Field border",
+        "canonical": "#c9d4e2",
+        "tonalRamp": [
+          "oklch(15% 0.0057 254.41)",
+          "oklch(26% 0.0125 254.41)",
+          "oklch(38% 0.0182 254.41)",
+          "oklch(50% 0.0228 254.41)",
+          "oklch(62% 0.0228 254.41)",
+          "oklch(74% 0.0182 254.41)",
+          "oklch(86% 0.0103 254.41)",
+          "oklch(95% 0.0034 254.41)"
+        ]
+      },
+      "telemetry": {
+        "role": "neutral",
+        "displayName": "Telemetry",
+        "canonical": "#172b43",
+        "tonalRamp": [
+          "oklch(15% 0.0129 253.90)",
+          "oklch(26% 0.0283 253.90)",
+          "oklch(38% 0.0412 253.90)",
+          "oklch(50% 0.0515 253.90)",
+          "oklch(62% 0.0515 253.90)",
+          "oklch(74% 0.0412 253.90)",
+          "oklch(86% 0.0232 253.90)",
+          "oklch(95% 0.0077 253.90)"
+        ]
+      },
+      "telemetry-text": {
+        "role": "neutral",
+        "displayName": "Telemetry text",
+        "canonical": "#edf5ff",
+        "tonalRamp": [
+          "oklch(15% 0.0040 253.90)",
+          "oklch(26% 0.0087 253.90)",
+          "oklch(38% 0.0127 253.90)",
+          "oklch(50% 0.0159 253.90)",
+          "oklch(62% 0.0159 253.90)",
+          "oklch(74% 0.0127 253.90)",
+          "oklch(86% 0.0072 253.90)",
+          "oklch(95% 0.0024 253.90)"
+        ]
+      },
+      "telemetry-muted": {
+        "role": "neutral",
+        "displayName": "Telemetry muted",
+        "canonical": "#b7c8dc",
+        "tonalRamp": [
+          "oklch(15% 0.0084 252.50)",
+          "oklch(26% 0.0185 252.50)",
+          "oklch(38% 0.0270 252.50)",
+          "oklch(50% 0.0337 252.50)",
+          "oklch(62% 0.0337 252.50)",
+          "oklch(74% 0.0270 252.50)",
+          "oklch(86% 0.0152 252.50)",
+          "oklch(95% 0.0051 252.50)"
+        ]
+      },
+      "pending": {
+        "role": "neutral",
+        "displayName": "Pending",
+        "canonical": "#263d57",
+        "tonalRamp": [
+          "oklch(15% 0.0135 252.35)",
+          "oklch(26% 0.0297 252.35)",
+          "oklch(38% 0.0432 252.35)",
+          "oklch(50% 0.0540 252.35)",
+          "oklch(62% 0.0540 252.35)",
+          "oklch(74% 0.0432 252.35)",
+          "oklch(86% 0.0243 252.35)",
+          "oklch(95% 0.0081 252.35)"
+        ]
+      },
+      "received": {
+        "role": "neutral",
+        "displayName": "Received",
+        "canonical": "#315b82",
+        "tonalRamp": [
+          "oklch(15% 0.0199 248.30)",
+          "oklch(26% 0.0437 248.30)",
+          "oklch(38% 0.0636 248.30)",
+          "oklch(50% 0.0795 248.30)",
+          "oklch(62% 0.0795 248.30)",
+          "oklch(74% 0.0636 248.30)",
+          "oklch(86% 0.0358 248.30)",
+          "oklch(95% 0.0119 248.30)"
+        ]
+      },
+      "transfer-line": {
+        "role": "secondary",
+        "displayName": "Transfer line",
+        "canonical": "#80bdff",
+        "tonalRamp": [
+          "oklch(15% 0.0285 251.29)",
+          "oklch(26% 0.0627 251.29)",
+          "oklch(38% 0.0912 251.29)",
+          "oklch(50% 0.1140 251.29)",
+          "oklch(62% 0.1140 251.29)",
+          "oklch(74% 0.0912 251.29)",
+          "oklch(86% 0.0513 251.29)",
+          "oklch(95% 0.0171 251.29)"
+        ]
+      },
+      "verified": {
+        "role": "secondary",
+        "displayName": "Verified",
+        "canonical": "#a587c1",
+        "tonalRamp": [
+          "oklch(15% 0.0225 307.73)",
+          "oklch(26% 0.0495 307.73)",
+          "oklch(38% 0.0720 307.73)",
+          "oklch(50% 0.0900 307.73)",
+          "oklch(62% 0.0900 307.73)",
+          "oklch(74% 0.0720 307.73)",
+          "oklch(86% 0.0405 307.73)",
+          "oklch(95% 0.0135 307.73)"
+        ]
+      },
+      "chart-grid": {
+        "role": "neutral",
+        "displayName": "Chart grid",
+        "canonical": "#3b526d",
+        "tonalRamp": [
+          "oklch(15% 0.0133 252.95)",
+          "oklch(26% 0.0293 252.95)",
+          "oklch(38% 0.0426 252.95)",
+          "oklch(50% 0.0532 252.95)",
+          "oklch(62% 0.0532 252.95)",
+          "oklch(74% 0.0426 252.95)",
+          "oklch(86% 0.0239 252.95)",
+          "oklch(95% 0.0080 252.95)"
+        ]
+      },
+      "chart-tick": {
+        "role": "neutral",
+        "displayName": "Chart tick",
+        "canonical": "#bfd0e3",
+        "tonalRamp": [
+          "oklch(15% 0.0081 251.16)",
+          "oklch(26% 0.0178 251.16)",
+          "oklch(38% 0.0259 251.16)",
+          "oklch(50% 0.0323 251.16)",
+          "oklch(62% 0.0323 251.16)",
+          "oklch(74% 0.0259 251.16)",
+          "oklch(86% 0.0145 251.16)",
+          "oklch(95% 0.0048 251.16)"
+        ]
+      },
+      "chart-error": {
+        "role": "secondary",
+        "displayName": "Chart error",
+        "canonical": "#ffaaa5",
+        "tonalRamp": [
+          "oklch(15% 0.0253 23.21)",
+          "oklch(26% 0.0556 23.21)",
+          "oklch(38% 0.0809 23.21)",
+          "oklch(50% 0.1011 23.21)",
+          "oklch(62% 0.1011 23.21)",
+          "oklch(74% 0.0809 23.21)",
+          "oklch(86% 0.0455 23.21)",
+          "oklch(95% 0.0152 23.21)"
+        ]
+      },
+      "prepare-line": {
+        "role": "secondary",
+        "displayName": "Prepare line",
+        "canonical": "#becfe1",
+        "tonalRamp": [
+          "oklch(15% 0.0078 249.72)",
+          "oklch(26% 0.0172 249.72)",
+          "oklch(38% 0.0250 249.72)",
+          "oklch(50% 0.0312 249.72)",
+          "oklch(62% 0.0312 249.72)",
+          "oklch(74% 0.0250 249.72)",
+          "oklch(86% 0.0140 249.72)",
+          "oklch(95% 0.0047 249.72)"
+        ]
+      },
+      "prepare-wash": {
+        "role": "secondary",
+        "displayName": "Prepare wash",
+        "canonical": "#354b64",
+        "tonalRamp": [
+          "oklch(15% 0.0126 252.21)",
+          "oklch(26% 0.0277 252.21)",
+          "oklch(38% 0.0404 252.21)",
+          "oklch(50% 0.0505 252.21)",
+          "oklch(62% 0.0505 252.21)",
+          "oklch(74% 0.0404 252.21)",
+          "oklch(86% 0.0227 252.21)",
+          "oklch(95% 0.0076 252.21)"
+        ]
+      },
+      "replace-line": {
+        "role": "secondary",
+        "displayName": "Replace line",
+        "canonical": "#efc77a",
+        "tonalRamp": [
+          "oklch(15% 0.0265 82.81)",
+          "oklch(26% 0.0582 82.81)",
+          "oklch(38% 0.0847 82.81)",
+          "oklch(50% 0.1059 82.81)",
+          "oklch(62% 0.1059 82.81)",
+          "oklch(74% 0.0847 82.81)",
+          "oklch(86% 0.0476 82.81)",
+          "oklch(95% 0.0159 82.81)"
+        ]
+      },
+      "replace-wash": {
+        "role": "secondary",
+        "displayName": "Replace wash",
+        "canonical": "#58482e",
+        "tonalRamp": [
+          "oklch(15% 0.0113 79.13)",
+          "oklch(26% 0.0249 79.13)",
+          "oklch(38% 0.0362 79.13)",
+          "oklch(50% 0.0452 79.13)",
+          "oklch(62% 0.0452 79.13)",
+          "oklch(74% 0.0362 79.13)",
+          "oklch(86% 0.0203 79.13)",
+          "oklch(95% 0.0068 79.13)"
+        ]
+      },
+      "health-line": {
+        "role": "secondary",
+        "displayName": "Health line",
+        "canonical": "#85d0bd",
+        "tonalRamp": [
+          "oklch(15% 0.0200 176.35)",
+          "oklch(26% 0.0439 176.35)",
+          "oklch(38% 0.0639 176.35)",
+          "oklch(50% 0.0798 176.35)",
+          "oklch(62% 0.0798 176.35)",
+          "oklch(74% 0.0639 176.35)",
+          "oklch(86% 0.0359 176.35)",
+          "oklch(95% 0.0120 176.35)"
+        ]
+      },
+      "health-wash": {
+        "role": "secondary",
+        "displayName": "Health wash",
+        "canonical": "#28584f",
+        "tonalRamp": [
+          "oklch(15% 0.0137 179.67)",
+          "oklch(26% 0.0301 179.67)",
+          "oklch(38% 0.0438 179.67)",
+          "oklch(50% 0.0547 179.67)",
+          "oklch(62% 0.0547 179.67)",
+          "oklch(74% 0.0438 179.67)",
+          "oklch(86% 0.0246 179.67)",
+          "oklch(95% 0.0082 179.67)"
+        ]
+      },
+      "size-small": {
+        "role": "secondary",
+        "displayName": "Size small",
+        "canonical": "#edfaef",
+        "tonalRamp": [
+          "oklch(15% 0.0050 150.11)",
+          "oklch(26% 0.0110 150.11)",
+          "oklch(38% 0.0159 150.11)",
+          "oklch(50% 0.0199 150.11)",
+          "oklch(62% 0.0199 150.11)",
+          "oklch(74% 0.0159 150.11)",
+          "oklch(86% 0.0090 150.11)",
+          "oklch(95% 0.0030 150.11)"
+        ]
+      },
+      "size-small-text": {
+        "role": "secondary",
+        "displayName": "Size small text",
+        "canonical": "#185b2a",
+        "tonalRamp": [
+          "oklch(15% 0.0258 148.53)",
+          "oklch(26% 0.0568 148.53)",
+          "oklch(38% 0.0826 148.53)",
+          "oklch(50% 0.1032 148.53)",
+          "oklch(62% 0.1032 148.53)",
+          "oklch(74% 0.0826 148.53)",
+          "oklch(86% 0.0464 148.53)",
+          "oklch(95% 0.0155 148.53)"
+        ]
+      },
+      "size-medium": {
+        "role": "secondary",
+        "displayName": "Size medium",
+        "canonical": "#fcf3cf",
+        "tonalRamp": [
+          "oklch(15% 0.0119 95.54)",
+          "oklch(26% 0.0263 95.54)",
+          "oklch(38% 0.0382 95.54)",
+          "oklch(50% 0.0478 95.54)",
+          "oklch(62% 0.0478 95.54)",
+          "oklch(74% 0.0382 95.54)",
+          "oklch(86% 0.0215 95.54)",
+          "oklch(95% 0.0072 95.54)"
+        ]
+      },
+      "size-medium-text": {
+        "role": "secondary",
+        "displayName": "Size medium text",
+        "canonical": "#694c00",
+        "tonalRamp": [
+          "oklch(15% 0.0224 83.30)",
+          "oklch(26% 0.0493 83.30)",
+          "oklch(38% 0.0717 83.30)",
+          "oklch(50% 0.0896 83.30)",
+          "oklch(62% 0.0896 83.30)",
+          "oklch(74% 0.0717 83.30)",
+          "oklch(86% 0.0403 83.30)",
+          "oklch(95% 0.0134 83.30)"
+        ]
+      },
+      "size-large": {
+        "role": "secondary",
+        "displayName": "Size large",
+        "canonical": "#fce8e8",
+        "tonalRamp": [
+          "oklch(15% 0.0055 17.55)",
+          "oklch(26% 0.0120 17.55)",
+          "oklch(38% 0.0175 17.55)",
+          "oklch(50% 0.0219 17.55)",
+          "oklch(62% 0.0219 17.55)",
+          "oklch(74% 0.0175 17.55)",
+          "oklch(86% 0.0098 17.55)",
+          "oklch(95% 0.0033 17.55)"
+        ]
+      },
+      "size-large-text": {
+        "role": "secondary",
+        "displayName": "Size large text",
+        "canonical": "#8a2424",
+        "tonalRamp": [
+          "oklch(15% 0.0344 25.23)",
+          "oklch(26% 0.0756 25.23)",
+          "oklch(38% 0.1100 25.23)",
+          "oklch(50% 0.1375 25.23)",
+          "oklch(62% 0.1375 25.23)",
+          "oklch(74% 0.1100 25.23)",
+          "oklch(86% 0.0619 25.23)",
+          "oklch(95% 0.0206 25.23)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Setup headline",
+        "purpose": "Setup workspace heading."
+      },
+      "metric": {
+        "displayName": "Telemetry metric",
+        "purpose": "Measured monitoring values."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "progress-fill",
+        "value": "transform .6s cubic-bezier(.16,1,.3,1)",
+        "purpose": "Progress fill; disabled for reduced motion."
+      },
+      {
+        "name": "verification-fill",
+        "value": "transform .4s ease-out",
+        "purpose": "Verification track; disabled for reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "workspace-compact",
+        "value": "1200px"
+      },
+      {
+        "name": "summary-stacked",
+        "value": "1050px"
+      },
+      {
+        "name": "header-wrapped",
+        "value": "1000px"
+      },
+      {
+        "name": "shared-admin-mobile",
+        "value": "782px"
+      },
+      {
+        "name": "workspace-mobile",
+        "value": "700px"
+      },
+      {
+        "name": "stage-tabs-compact",
+        "value": "600px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary transfer action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "WordPress blue action in the selection summary.",
+      "html": "<button class=\"ds-primary\">Pull into this site</button>",
+      "css": ".ds-primary{background:#2271b1;color:#fff;border:1px solid #2271b1;border-radius:6px;padding:4px 12px;min-height:41px;font-size:12px;cursor:pointer;}.ds-primary:hover{background:#135e96;border-color:#135e96;}.ds-primary:focus-visible{outline:2px solid #2271b1;outline-offset:3px;box-shadow:none;}.ds-primary:disabled{opacity:.5;cursor:default;}"
+    },
+    {
+      "name": "Secondary action",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Compact WordPress-style supporting control.",
+      "html": "<button class=\"ds-secondary\">Refresh versions</button>",
+      "css": ".ds-secondary{background:#f6f7f7;color:#2271b1;border:1px solid #2271b1;border-radius:6px;padding:4px 12px;min-height:35px;font-size:12px;cursor:pointer;}.ds-secondary:hover{background:#f0f0f1;color:#0a4b78;border-color:#0a4b78;}.ds-secondary:focus-visible{outline:2px solid #2271b1;outline-offset:3px;box-shadow:none;}"
+    },
+    {
+      "name": "Search field",
+      "kind": "input",
+      "refersTo": "input-search",
+      "description": "Search the current component without leaving the workspace.",
+      "html": "<label class=\"ds-search-label\">Search database tables<input class=\"ds-search\" type=\"search\" placeholder=\"Search database tables\u2026\"></label>",
+      "css": ".ds-search-label{display:grid;gap:7px;font-size:11px;color:#647184;}.ds-search{background:#fff;color:#1e2939;border:1px solid #c9d4e2;border-radius:6px;min-height:34px;padding:0 8px;font-size:12px;width:265px;max-width:100%;}.ds-search:focus-visible{outline:2px solid #2271b1;outline-offset:3px;box-shadow:none;}"
+    },
+    {
+      "name": "Plugin navigation",
+      "kind": "nav",
+      "refersTo": "navigation-active",
+      "description": "Top-level views with a quiet selected wash.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Trickle\"><a href=\"#settings\">Settings</a><a href=\"#migrate\" aria-current=\"page\">Migrate</a><a href=\"#backups\">Backups</a><a href=\"#diagnostics\">Diagnostics</a></nav>",
+      "css": ".ds-nav{display:flex;flex-wrap:wrap;gap:5px;}.ds-nav a{color:#647184;padding:8px 13px;border-radius:6px;font-size:12px;text-decoration:none;}.ds-nav a[aria-current]{background:#e7effa;color:#165c94;}.ds-nav a:hover{color:#165c94;}.ds-nav a:focus-visible{outline:2px solid #2271b1;outline-offset:3px;box-shadow:none;}"
+    },
+    {
+      "name": "Relative size chips",
+      "kind": "chip",
+      "refersTo": "size-chip",
+      "description": "Numeric sizes retain their relative-size color cue.",
+      "html": "<div class=\"ds-sizes\"><span class=\"ds-size ds-small\">2.9 MB</span><span class=\"ds-size ds-medium\">10.0 MB</span><span class=\"ds-size ds-large\">40.1 MB</span></div>",
+      "css": ".ds-sizes{display:flex;gap:7px;}.ds-size{display:inline-block;padding:3px 6px;border-radius:4px;font-size:10px;font-weight:500;white-space:nowrap;}.ds-small{background:#edfaef;color:#185b2a;}.ds-medium{background:#fcf3cf;color:#694c00;}.ds-large{background:#fce8e8;color:#8a2424;}"
+    },
+    {
+      "name": "Selection summary",
+      "kind": "card",
+      "refersTo": "summary-card",
+      "description": "Counts and measured-size context beside the comparison workspace.",
+      "html": "<section class=\"ds-summary\"><h2>Ready to pull</h2><p>8 tables \u00b7 1 plugin \u00b7 0 themes \u00b7 no media files</p><dl><div><dt>Database</dt><dd>8 tables<small>~61.2 MB</small></dd></div><div><dt>Plugins</dt><dd>1 folder</dd></div></dl><p>Files are verified before replacement. A backup is saved automatically.</p></section>",
+      "css": ".ds-summary{background:#fff;color:#1e2939;border:1px solid #dce4ed;border-radius:11px;padding:23px 20px;width:270px;max-width:100%;}.ds-summary h2{margin:0;font-size:17px;line-height:1.5;}.ds-summary p{color:#647184;font-size:11px;line-height:1.7;}.ds-summary dl{margin:19px 0 0;}.ds-summary dl>div{display:flex;justify-content:space-between;gap:12px;padding:13px 0;border-bottom:1px solid #edf1f6;font-size:11px;}.ds-summary dt{color:#647184;}.ds-summary dd{margin:0;text-align:right;font-weight:550;}.ds-summary small{display:block;margin-top:4px;font-size:10px;font-weight:400;color:#647184;}"
+    },
+    {
+      "name": "Component rail",
+      "kind": "custom",
+      "refersTo": "component-rail",
+      "description": "Current component and inclusion are separate controls.",
+      "html": "<div class=\"ds-rail\"><div class=\"ds-rail-entry ds-current\"><label><input type=\"checkbox\" checked>Database</label><small>8 of 8 selected</small><button aria-label=\"Inspect database\" aria-expanded=\"true\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"><path d=\"m6 9 6 6 6-6\"/></svg></button></div><div class=\"ds-rail-entry\"><label><input type=\"checkbox\">Plugins</label><small>None selected</small><button aria-label=\"Inspect plugins\" aria-expanded=\"false\"><svg viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\"><path d=\"m6 9 6 6 6-6\"/></svg></button></div></div>",
+      "css": ".ds-rail{width:171px;background:#f6f8fc;border:1px solid #dce4ed;border-radius:11px;overflow:clip;}.ds-rail-entry{position:relative;min-height:70px;padding:12px 10px 12px 14px;display:grid;align-content:center;gap:5px;}.ds-current{background:#e8f0fb;color:#165c94;}.ds-rail label{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:550;}.ds-rail input{margin:0;accent-color:#2271b1;}.ds-rail small{margin-left:24px;color:#647184;font-size:10px;line-height:1.5;}.ds-rail button{position:absolute;right:5px;top:17px;width:25px;height:36px;border:0;background:transparent;color:#72829a;cursor:pointer;}.ds-rail button[aria-expanded=\"false\"] svg{transform:rotate(-90deg);}.ds-rail button:hover{background:#e9ecef;}.ds-rail :is(button,input):focus-visible{outline:2px solid #2271b1;outline-offset:3px;box-shadow:none;}"
+    },
+    {
+      "name": "Telemetry canvas",
+      "kind": "custom",
+      "refersTo": "telemetry-card",
+      "description": "Dark monitoring material with real units and distinct verification.",
+      "html": "<section class=\"ds-telemetry\"><div class=\"ds-stats\"><div>Received<strong>17.6 MiB / 19.1 MiB</strong></div><div>Transfer speed<strong>0.1 MB/s</strong></div><div>Stream remaining<strong>~10s</strong></div></div><p>Snapshot progress</p><div class=\"ds-byte-range\" aria-label=\"Received and verified stream bytes\"><span class=\"ds-verified\"></span><span class=\"ds-received\"></span></div><div class=\"ds-legend\"><span>Received</span><span>Verified</span></div></section>",
+      "css": ".ds-telemetry{background:#172b43;color:#edf5ff;border-radius:12px;padding:26px 28px 22px;}.ds-stats{display:flex;flex-wrap:wrap;gap:18px 30px;color:#b7c8dc;font-size:10px;margin-bottom:22px;}.ds-stats>div{flex:1;min-width:100px;}.ds-stats strong{display:block;color:#f0f6ff;font-size:22px;font-weight:550;line-height:1.4;margin-top:9px;letter-spacing:-.02em;}.ds-telemetry p{color:#c3d2e4;font-size:11px;}.ds-byte-range{display:flex;height:84px;background:#263d57;}.ds-verified{width:75%;background:#a587c1;}.ds-received{width:17%;background:#315b82;border-right:1px solid #80bdff;}.ds-legend{display:flex;gap:18px;color:#b7c8dc;font-size:10px;padding-top:14px;}"
+    },
+    {
+      "name": "Transfer pipeline",
+      "kind": "card",
+      "refersTo": "pipeline-card",
+      "description": "Text states accompany pipeline tracks.",
+      "html": "<section class=\"ds-pipeline\"><h3>Transfer pipeline</h3><div class=\"ds-pipeline-row\"><div><strong>Database</strong><small>14.3 MiB / 14.3 MiB</small></div><div class=\"ds-track\"><span></span></div><small>Verified</small></div><p>Database and files are verified as complete streams.</p></section>",
+      "css": ".ds-pipeline{background:#fff;border:1px solid #dce4ed;border-radius:11px;padding:22px 20px 15px;}.ds-pipeline h3{margin:0 0 15px;font-size:13px;font-weight:600;color:#26384d;}.ds-pipeline-row{display:grid;grid-template-columns:minmax(100px,1fr) minmax(50px,1fr) 90px;align-items:center;gap:14px;padding:15px 0;border-top:1px solid #e5ebf3;}.ds-pipeline strong{display:block;font-size:11px;font-weight:550;color:#30455f;}.ds-pipeline small{display:block;font-size:9px;margin-top:5px;color:#647184;}.ds-pipeline-row>small{text-align:right;}.ds-track{height:5px;border-radius:3px;overflow:hidden;background:#eaf0f6;}.ds-track span{display:block;width:100%;height:100%;border-radius:3px;background:#a587c1;}.ds-pipeline p{font-size:9px;color:#647184;margin-top:12px;}"
+    },
+    {
+      "name": "Recent activity",
+      "kind": "custom",
+      "refersTo": "recent-activity",
+      "description": "Always-visible timestamped monitoring events.",
+      "html": "<section class=\"ds-activity\"><h3>Recent activity</h3><ol><li><time>01:38:56 AM</time><span>Receiving file stream</span><code>plugins/contact-form-7</code></li><li><time>01:38:57 AM</time><span>Connection restored</span></li></ol></section>",
+      "css": ".ds-activity h3{margin:0 0 15px;font-size:13px;font-weight:600;color:#26384d;}.ds-activity ol{max-height:360px;overflow:auto;margin:0;padding:0;list-style:none;}.ds-activity li{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 12px;padding:13px 0;border-top:1px solid #e2e9f2;color:#1e2939;font-size:11px;}.ds-activity time{grid-row:span 2;font-size:10px;font-variant-numeric:tabular-nums;color:#647184;}.ds-activity code{font-size:10px;background:none;padding:0;color:#56636c;overflow-wrap:anywhere;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The transfer workbench",
+    "overview": "Trickle gives administrators a compact, deliberate workspace for consequential transfers. Source and destination remain explicit, selection details sit beside comparison data, and primary actions retain WordPress blue. The interface uses short labels, quiet supporting text, thin dividers, and rounded white surfaces.\n\nMonitoring changes the working material to a dark navy telemetry canvas. Bright measurements and muted chart scaffolding make received, pending, and verified work distinguishable. Pipeline and recent activity explain the operation beneath the chart. This document records the implemented migration workspace and monitor; the shared settings, backups, and diagnostics components remain an incumbent system rather than a newly redesigned surface.",
+    "keyCharacteristics": [
+      "Dense comparison data with a persistent wide-screen selection summary.",
+      "White, bordered setup surfaces and a navy monitoring canvas.",
+      "Measured progress, separate verification state, and readable activity history.",
+      "WordPress blue actions and concise operational copy."
+    ],
+    "rules": [
+      {
+        "name": "The Verification Rule",
+        "body": "Received work and verified work must remain visually distinct; lavender is reserved for confirmed stream verification.",
+        "section": "colors"
+      }
+    ],
+    "dos": [
+      "**Do** retain WordPress blue for primary transfer actions and visible keyboard focus.",
+      "**Do** preserve source, destination, and selected-component context throughout the workflow.",
+      "**Do** distinguish received bytes from verified streams using both color and text.",
+      "**Do** show measured units and omit unsupported speed or ETA estimates.",
+      "**Do** keep pipeline and recent activity visible in monitoring, stacking them on narrow screens.",
+      "**Do** preserve the existing shared components when extending settings, backups, and diagnostics."
+    ],
+    "donts": [
+      "**Don't** apply the dark telemetry material to the entire setup workspace.",
+      "**Don't** mark received bytes as verified before stream verification succeeds.",
+      "**Don't** squeeze comparison tables into unreadable mobile columns; preserve horizontal scrolling.",
+      "**Don't** promote the migration rail and summary arrangement into a requirement for unrelated plugin surfaces."
+    ]
+  }
+}

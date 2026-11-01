@@ -18,12 +18,12 @@
                     if(!state?.total||!area)return;
                     const ctx=chart.ctx, height=area.bottom-area.top;
                     ctx.save();ctx.beginPath();ctx.rect(area.left,area.top,area.right-area.left,height);ctx.clip();
-                    ctx.fillStyle='#f6f7f7';ctx.fillRect(area.left,area.top,area.right-area.left,height);
+                    ctx.fillStyle=state.pending;ctx.fillRect(area.left,area.top,area.right-area.left,height);
                     const ranges=state.windows.length?state.windows:[{startBytes:0,endBytes:state.total,receivedEnd:state.received}];
                     for(const range of ranges){
                         const left=x.getPixelForValue(range.startBytes), end=x.getPixelForValue(range.receivedEnd);
-                        ctx.fillStyle=range.verified?'#eee3f4':state.wash;ctx.fillRect(left,area.top,Math.max(0,end-left),height);
-                        if(range.startBytes>0){ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,area.top);ctx.lineTo(left,area.bottom);ctx.stroke();}
+                        ctx.fillStyle=range.verified?state.verifiedColor:state.wash;ctx.fillRect(left,area.top,Math.max(0,end-left),height);
+                        if(range.startBytes>0){ctx.strokeStyle=state.boundary;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,area.top);ctx.lineTo(left,area.bottom);ctx.stroke();}
                     }
                     const edge=x.getPixelForValue(state.received);
                     ctx.strokeStyle=state.color;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(edge,area.top);ctx.lineTo(edge,area.bottom);ctx.stroke();ctx.restore();
@@ -81,16 +81,18 @@
         }
         update(samples,phase,context={}) {
             if(!this.chart)return;
-            this.context={total:context.total||0,received:context.received||0,windows:context.windows||[],unit:context.unit||'bytes',color:context.color||'#2271b1',wash:context.wash||'#dbeaf6'};
-            const signature=`${samples.length}:${samples.at(-1)?.at}:${phase}:${context.total}:${context.received}:${context.unit}:${context.stage}:${context.color}:${context.windows?.map(r=>r.verified?1:0).join('')}`;
+            this.context={total:context.total||0,received:context.received||0,windows:context.windows||[],unit:context.unit||'bytes',color:context.color||'#2271b1',wash:context.wash||'#dbeaf6',pending:context.pending||'#f6f7f7',verifiedColor:context.verifiedColor||'#eee3f4',grid:context.grid||'#eef0f2',tick:context.tick||'#646970',boundary:context.boundary||'#fff',errorColor:context.errorColor||'#b32d2e'};
+            const signature=`${samples.length}:${samples.at(-1)?.at}:${phase}:${context.total}:${context.received}:${context.unit}:${context.stage}:${JSON.stringify(this.context)}:${context.windows?.map(r=>r.verified?1:0).join('')}`;
             if(signature===this.signature)return;
             const incremental=this.sampleCount!=null && samples.length===this.sampleCount+1;
             this.sampleCount=samples.length;
             this.samples=samples.map(p=>({...p,elapsed:p.x,x:p.position??(context.offsets?.[p.kind]||0)+p.bytes}));this.signature=signature;
             this.chart.data.datasets[0].data=this.samples;
             this.chart.options.scales.x.max=context.total||Math.max(1,...this.samples.map(p=>p.x));
-            this.chart.data.datasets[0].borderColor=['failed','recover'].includes(phase)?'#b32d2e':this.context.color;
+            this.chart.data.datasets[0].borderColor=['failed','recover'].includes(phase)?this.context.errorColor:this.context.color;
+            this.chart.options.scales.x.ticks.color=this.context.tick;this.chart.options.scales.y.ticks.color=this.context.tick;this.chart.options.scales.y.grid.color=this.context.grid;
             this.chart.options.scales.y.display=this.context.unit==='bytes';
+            this.chart.options.scales.y.suggestedMax=Math.max(.1,...this.samples.map(point=>point.y))*1.15;
             this.chart.options.scales.x.ticks.precision=this.context.unit==='bytes'?undefined:0;
             this.chart.update(incremental?undefined:'none');
             if(!samples.length&&this.reading)this.reading.textContent=this.context.unit==='bytes'?'Shading shows received bytes. Speed appears as data arrives.':'Shading shows completed work. Hover to inspect.';

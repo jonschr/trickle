@@ -23,3 +23,14 @@ console.log('Selection UI checks passed: filters preserve selection, no-match st
 
 const matchedMedia=c.completionReceipt({status:'applied',unchanged_files:10,media_comparison:{source_hashing:{scanned_files:100},files_selected:7}},null);
 assert.equal(matchedMedia.find(row=>row[0]==='Unchanged')[1],'103 files','Cascading media skips included without double counting code');
+
+// Site identities stay in place while direction and source/destination roles change.
+let routeDirection='pull', arrow;
+const endpoints={source:{id:'source'},destination:{id:'destination'}};
+const flow={children:[endpoints.source,'arrow',endpoints.destination],prepend(node){this.children=this.children.filter(x=>x!==node);this.children.unshift(node);},append(node){this.children=this.children.filter(x=>x!==node);this.children.push(node);},querySelector(){return {setAttribute(_,value){arrow=value;}};}};
+const routeControls={};for(const id of ['source','destination']){routeControls[id]={closest:()=>endpoints[id]};routeControls[id+'-location']={classList:{toggle(_,value){this.local=value;}}};}
+const routeContext={session:null,direction:()=>routeDirection,$:id=>routeControls[id],document:{querySelector:()=>flow}};
+vm.createContext(routeContext);vm.runInContext(code.slice(code.indexOf('    function labelRoute('),code.indexOf('    const source =')),routeContext);
+for(const dir of ['pull','push','pull']){routeDirection=dir;routeContext.labelRoute();const local=dir==='pull'?'destination':'source';assert.equal(flow.children[0],endpoints[local]);assert.equal(flow.children[1],'arrow');assert.equal(routeControls[local+'-location'].textContent,'This site');assert.equal(arrow,dir==='pull'?'M19 12H5m6-6-6 6 6 6':'M5 12h14m-6-6 6 6-6 6');}
+routeContext.session={direction:'push'};routeContext.labelRoute();assert.equal(flow.children[0],endpoints.source,'Retained direction takes precedence');
+console.log('Route checks passed: current site first, arrow follows push/pull, retained direction preserved.');

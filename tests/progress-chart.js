@@ -37,6 +37,9 @@ assert.equal(paints.at(-1),'#eee3f4');assert.match(chart.rangeLabel(1048576),/ve
 chart.update(points,'failed');assert.equal(chart.chart.data.datasets[0].borderColor,'#b32d2e');chart.update([],'verify',{stage:'verify',unit:'files',total:100,received:25,color:'#7b4397',wash:'#eee3f4'});
 assert.equal(chart.chart.options.scales.y.display,false);assert.equal(chart.chart.data.datasets[0].borderColor,'#7b4397');assert.equal(chart.chart.options.scales.x.max,100);
 chart.describePosition(10);assert.match(reading.textContent,/10 files.*processed/);assert.equal(reading.textContent.includes('MB/s'),false);
+chart.update(points,'transfer',{total:4194304,received:2097152,color:'#80bdff',wash:'#315b82',pending:'#263d57',verifiedColor:'#a587c1',grid:'#3b526d',tick:'#bfd0e3',boundary:'#172b43',windows:[{startBytes:0,endBytes:4194304,receivedEnd:2097152,verified:true}]});
+config.plugins[0].beforeDatasetsDraw({ctx:drawContext,chartArea:{left:0,right:100,top:0,bottom:50},scales:{x:{getPixelForValue:v=>v/4194304*100}}});
+assert.equal(paints.at(-2),'#263d57');assert.equal(paints.at(-1),'#a587c1');assert.equal(chart.chart.options.scales.x.ticks.color,'#bfd0e3');assert.equal(chart.chart.options.scales.y.grid.color,'#3b526d');
 chart.destroy();assert.equal(destroyed,true);
 const fallback={};vm.createContext(fallback);vm.runInContext(source,fallback);const absent=new fallback.CSMProgressChart({},{});absent.update([], 'preflight');absent.destroy();
 console.log('Chart checks passed: configuration, reduced motion, unchanged samples, hover, keyboard tooltip, error color, byte alignment, progress shading and optional-library fallback.');

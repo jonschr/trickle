@@ -409,7 +409,7 @@
 .csm-actions:has(.csm-transfer-meter:not([hidden])) .csm-action-copy > :is(#csm-action-title,#csm-selection-summary,#csm-status,#csm-media-comparison,#csm-activity) { display:none; }
 .csm-actions:has(.csm-transfer-meter:not([hidden])) .csm-transfer-meter { margin:0; padding:0; border:0; }
 .csm-meter-overview { display:flex; align-items:center; flex-wrap:wrap; justify-content:flex-end; gap:8px 12px; color:var(--csm-muted); font-size:11px; font-variant-numeric:tabular-nums; }
-.csm-stage-tabs { display:flex; margin:20px 0 18px; border-bottom:1px solid var(--csm-line); gap:4px; }
+.csm-stage-tabs { display:flex; margin:20px 0 18px; border-bottom:1px solid var(--csm-line); gap:4px; overflow-x:auto; }
 .csm-stage-tabs button { flex:1; min-width:0; padding:10px 4px; border:0; border-bottom:2px solid transparent; margin-bottom:-1px; background:transparent; color:#50575e; font:inherit; font-size:12px; cursor:pointer; }
 .csm-stage-tabs button[aria-selected="true"] { color:#135e96; border-bottom-color:#2271b1; font-weight:600; }
 .csm-stage-tabs button:disabled { color:#8c8f94; cursor:default; }
@@ -426,7 +426,7 @@
 .csm-transfer-meter #csm-completion-title { display:none; }
 .csm-transfer-meter .csm-completion { margin-top:8px; }
 
-.csm-stage-tabs button { display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:3px; min-height:50px; }
+.csm-stage-tabs button { display:flex; flex-direction:row; flex-wrap:nowrap; align-items:center; justify-content:center; gap:6px; min-width:max-content; min-height:44px; }
 .csm-stage-tabs small { font-size:10px; line-height:1.4; font-weight:400; color:var(--csm-muted); font-variant-numeric:tabular-nums; }
 .csm-transfer-visual { margin-top:14px; }
 .csm-transfer-visual .csm-speed-plot { height:180px; margin:8px 0; }

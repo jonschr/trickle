@@ -13,6 +13,30 @@
         const button = $('disclose-' + kind);
         button.setAttribute('aria-expanded', String(open));
         button.setAttribute('aria-label', `${open ? 'Collapse' : 'Expand'} ${kind === 'tables' ? 'database' : kind === 'media' ? 'media library' : kind}`);
+        if (open) showComponent(kind); else syncComponentView();
+    }
+    function showComponent(kind) {
+        const workbench = $('component-workbench');
+        if (!workbench) return;
+        workbench.dataset.current = kind; syncComponentView();
+    }
+    function syncComponentView() {
+        const workbench = $('component-workbench');
+        if (!workbench) return;
+        const kind = workbench.dataset.current || 'tables';
+        const labels = {tables:'database', plugins:'plugins', themes:'themes', media:'media library'};
+        const open = !$(kind + '-body').hidden;
+        workbench.querySelectorAll('[data-component-panel]').forEach(panel => {
+            const key = panel.dataset.componentPanel, current = key === kind;
+            panel.toggleAttribute('data-current', current);
+            const button = $('disclose-' + key);
+            button.setAttribute('aria-expanded', String(current && !$(key + '-body').hidden));
+            button.setAttribute('aria-label', `${current && open ? 'Hide' : 'View'} ${labels[key]} selection`);
+            if (current) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
+        });
+        $('selection-placeholder').hidden = open;
+        $('placeholder-title').textContent = `${$('enable-' + kind).checked ? 'Selection hidden' : 'Include ' + labels[kind]}`;
+        $('include-current').textContent = $('enable-' + kind).checked ? 'Show selection' : 'Include ' + labels[kind];
     }
     function setComponent(kind, enabled, selectItems = false) {
         const checkbox = $('enable-' + kind);
@@ -143,6 +167,10 @@
     const transferAction = () => (session?.direction || direction()) === 'push' ? 'Push' : 'Pull';
     function labelRoute() {
         const pull = (session?.direction || direction()) === 'pull';
+        const flow = document.querySelector('.csm-route-flow');
+        flow.prepend($(pull ? 'destination' : 'source').closest('.csm-endpoint'));
+        flow.append($(pull ? 'source' : 'destination').closest('.csm-endpoint'));
+        flow.querySelector('.csm-route-arrow path').setAttribute('d', pull ? 'M19 12H5m6-6-6 6 6 6' : 'M5 12h14m-6-6 6 6-6 6');
         for (const [id, local] of [['source', !pull], ['destination', pull]]) {
             $(id + '-location').textContent = local ? 'This site' : 'Remote site';
             $(id + '-location').classList.toggle('csm-this-site', local);
@@ -227,7 +255,7 @@
         }
         document.querySelectorAll('.csm-sort').forEach(button => { button.disabled = busy || !sites; });
         document.querySelectorAll('input[data-component]').forEach(input => { input.disabled = busy || !!session || !sites; });
-        for (const kind of componentKinds) $('disclose-' + kind).disabled = !sites || !$('enable-' + kind).checked;
+        for (const kind of componentKinds) $('disclose-' + kind).disabled = !sites;
         $('remote-site').disabled = busy || !!session || !connectionState.connections.length;
         $('recent').disabled = busy || !!session || !connectionState.recents.length;
         const mode = !sites && session?.selection ? session.selection.media : $('media-mode').value;
@@ -241,6 +269,8 @@
         renderVersionStatus();
         syncMediaSelection();
         updateSetup();
+        renderSelectionBreakdown(counts, media);
+        $('include-current').disabled = !sites || busy || !!session;
         for (const kind of ['tables','plugins','themes']) filterComponents(kind);
         for (const id of ['media-select-visible', 'media-clear', 'media-more']) $(id).disabled = busy || !!session;
         lockReplacements();
@@ -290,6 +320,14 @@
         restoreSelection({...currentSelection(), ...preset.selection, file_verify:$('file-verify').checked, enabled_components:enabled, expanded_components:enabled});
         $('preset').value = name;
         $('preset-status').textContent = 'Preset loaded. Review or edit the selections.'; feedback('');
+    }
+    function renderSelectionBreakdown(counts, media) {
+        const root = $('selection-breakdown');
+        if (!root) return;
+        const selectedTables = new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input => input.value));
+        const databaseBytes = sites ? source().tables.filter(table => selectedTables.has(table.id)).reduce((sum,table) => sum + table.bytes, 0) : null;
+        const rows = [['Database',`${counts.tables} table${counts.tables === 1 ? '' : 's'}`,databaseBytes ? '~' + bytes(databaseBytes) : ''], ['Plugins',`${counts.plugins} folder${counts.plugins === 1 ? '' : 's'}`,''], ['Themes',`${counts.themes} folder${counts.themes === 1 ? '' : 's'}`,''], ['Media',media,'']];
+        root.innerHTML = rows.map(([label,value,note]) => `<div><dt>${label}</dt><dd>${esc(value)}${note ? `<small>${esc(note)}</small>` : ''}</dd></div>`).join('');
     }
     function transferVersionMatches() { return !session || (!!sites && session.plugin_version === sites.local.plugin_version); }
     function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version; }
@@ -381,6 +419,7 @@
             setComponent(kind, hasItems || (selection.enabled_components || []).includes(kind));
             if (Array.isArray(selection.expanded_components)) setPanelOpen(kind, $('enable-' + kind).checked && selection.expanded_components.includes(kind));
         }
+        showComponent(componentKinds.find(kind => !$(kind + '-body').hidden) || 'tables');
         $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('ignore-active-plugins').checked = selection.sync_active_plugins === false;
         $('media-mode').value = selection.media === 'compare' ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
@@ -744,8 +783,15 @@
     });
     document.querySelectorAll('.csm-panel-disclosure').forEach(button => button.addEventListener('click', () => {
         const kind = button.dataset.disclose;
-        setPanelOpen(kind, $(kind + '-body').hidden);
+        if ($('component-workbench').dataset.current !== kind) { showComponent(kind); if ($('enable-' + kind).checked) setPanelOpen(kind, true); }
+        else setPanelOpen(kind, $(kind + '-body').hidden && $('enable-' + kind).checked);
     }));
+    $('include-current').addEventListener('click', () => {
+        if (busy || session || !sites) return;
+        const kind = $('component-workbench').dataset.current;
+        if ($('enable-' + kind).checked) setPanelOpen(kind, true); else setComponent(kind, true, true);
+        $('recent').value = ''; updateSelection();
+    });
     $('tables').addEventListener('click', event => {
         const button = event.target.closest('.csm-sort');
         if (!button || busy) return;

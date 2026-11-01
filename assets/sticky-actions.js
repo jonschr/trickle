@@ -2,7 +2,7 @@
 (() => {
     'use strict';
     const actions=document.querySelector('.csm-actions');
-    if(!actions||!globalThis.IntersectionObserver)return;
+    if(!actions||actions.closest?.('.csm-workspace-layout')||!globalThis.IntersectionObserver)return;
     const sentinel=document.createElement('div');sentinel.className='csm-sticky-sentinel';sentinel.setAttribute('aria-hidden','true');actions.before(sentinel);
     const top=parseFloat(getComputedStyle(actions).top)||0;
     const update=rect=>{

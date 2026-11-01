@@ -567,6 +567,7 @@ final class CSM_Plugin {
     public static function assets(string $hook): void {
         if ($hook !== 'tools_page_trickle') { return; }
         wp_enqueue_style('trickle', plugins_url('assets/admin.css', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin.css'));
+        wp_enqueue_style('trickle-workspace', plugins_url('assets/workspace.css', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/workspace.css'));
         $script = ($_GET['view'] ?? '') === 'backups' ? 'backups' : 'admin';
         if ($script === 'admin') {
             wp_enqueue_script('trickle-chart-library', plugins_url('assets/vendor/chartjs/chart.umd.js', CSM_FILE), [], '4.6.1', true);

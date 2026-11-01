@@ -134,3 +134,17 @@ follow.followLive();assert.equal(follow.selectedStage,'apply');assert.equal(foll
 follow.addEvent({id:'important',phase:'Retry',state:'retry',error:'HTTP 502',updated:1});
 for(let i=0;i<25;i++)follow.addEvent({id:'routine'+i,phase:'File phase '+i,component:'file'+i,updated:i+2});
 assert(follow.events.some(event=>event.id==='important'));assert(follow.events.length<=16);
+
+// Pipeline uses actual stream bytes; receipt alone cannot imply checksum verification.
+const pipe = new TransferProgress(null,()=>now);pipe.begin({...timeline,id:'pipeline',streams:{database:{size:10,received:10},files:{size:100,received:50}}});
+assert.equal(pipe.pipelineRows()[0].status,'Awaiting verification');assert.equal(pipe.pipelineRows()[1].percent,50);
+pipe.update({pending:['files'],timeline:pipe.timeline});assert.equal(pipe.pipelineRows()[0].status,'Verified');
+pipe.retry('connection interrupted',2);assert.equal(pipe.pipelineRows()[1].status,'Retrying');pipe.resolved();
+pipe.finish('cancelled');assert.equal(pipe.pipelineRows()[1].status,'Stopped');
+pipe.begin({...timeline,id:'unknown-pipeline',streams:{files:{size:null,received:0}}});assert.equal(pipe.pipelineRows()[0].percent,null);assert.equal(pipe.pipelineRows()[0].status,'Preparing');
+pipe.finish('applied');assert.equal(pipe.pipelineRows().find(row=>row.name==='Health').status,'Not confirmed');
+assert.equal(pipe.pipelineRows().find(row=>row.name==='Replace').percent,100);
+pipe.terminalHealth={verified:true,status:200};pipe.stages.health={detail:{count:3,total:5,unit:'bytes'}};
+assert.equal(pipe.pipelineRows().find(row=>row.name==='Health').percent,100);
+assert.equal(pipe.pipelineRows().find(row=>row.name==='Health').detail,'Destination homepage · HTTP 200');
+pipe.terminalHealth={verified:false,status:503};assert.equal(pipe.pipelineRows().find(row=>row.name==='Health').percent,null);
