@@ -283,12 +283,29 @@ final class CSM_Controller {
             CSM_Progress::start($data['id'] ?? '', 'Restoring saved backup');
             return $site === '' ? CSM_Backups::restore($data['id'] ?? '') : CSM_Transport::request(self::peer($site), 'restore_backup', ['id' => $data['id'] ?? '', 'progress_run' => CSM_Progress::run()]);
         }
+        if ($action === 'preset') {
+            $name = $data['preset'] ?? '';
+            $catalog = CSM_Presets::catalog();
+            if (!is_string($name) || !isset($catalog[$name])) { throw new RuntimeException('Choose a supported preset.'); }
+            $inventory = self::inventory(self::peer($data['site'] ?? ''));
+            $flags = CSM_Presets::resolve($name, $inventory);
+            $selection = ['media' => 'none', 'media_ids' => [], 'replace' => true];
+            foreach (['tables', 'plugins', 'themes'] as $kind) { $selection[$kind] = $flags[$kind] === '' ? [] : explode(',', $flags[$kind]); }
+            return ['direction' => $catalog[$name]['direction'], 'selection' => $selection];
+        }
         if ($action === 'logs') { return ['entries' => CSM_Log::entries()]; }
         if ($action === 'state') { return self::state(); }
         if ($action === 'recent') { return self::recent($data['id'] ?? ''); }
         if ($action === 'keys') { return ['keys' => CSM_Access::list()]; }
         if ($action === 'issue_key') { return CSM_Access::issue($data['name'] ?? '', !empty($data['read']), !empty($data['write']), (int)($data['days'] ?? 30)); }
         if ($action === 'revoke_key') { CSM_Access::revoke($data['id'] ?? ''); return ['keys' => CSM_Access::list()]; }
+        if ($action === 'transfer_settings') {
+            if (get_option('_csm_control')) { throw new RuntimeException('Finish the current transfer before changing transfer preferences.'); }
+            if (!in_array($data['transport'] ?? '', ['stream', 'chunks'], true)) { throw new RuntimeException('Choose automatic or chunked transport.'); }
+            $defaults = ['transport' => $data['transport'], 'file_verify' => !empty($data['file_verify'])];
+            update_option('_csm_transfer_defaults', $defaults, false);
+            return $defaults;
+        }
         if ($action === 'settings') {
             update_option('_csm_settings', ['pull' => !empty($data['pull']), 'push' => !empty($data['push']), 'updates' => !empty($data['updates'])], false);
             if (!empty($data['rotate'])) { update_option('_csm_key', bin2hex(random_bytes(32)), false); delete_option('_csm_tokens'); }

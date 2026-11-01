@@ -50,7 +50,7 @@ final class CSM_Transport {
         return ['X-CSM-Key-Id: ' . CSM_Access::id($key), 'X-CSM-Time: ' . $time, 'X-CSM-Nonce: ' . $nonce, 'X-CSM-Hash: ' . $bodyhash, 'X-CSM-Params: ' . $params, 'X-CSM-Signature: ' . $signature, 'Expect:'];
     }
 
-    public static function authenticate(string $action): array {
+    public static function signed_credential(string $action): array {
         $credential = CSM_Access::credential($_SERVER['HTTP_X_CSM_KEY_ID'] ?? '');
         $key = $credential['key'];
         $time = $_SERVER['HTTP_X_CSM_TIME'] ?? ''; $nonce = $_SERVER['HTTP_X_CSM_NONCE'] ?? '';
@@ -61,9 +61,17 @@ final class CSM_Transport {
         }
         $expected = hash_hmac('sha256', implode("\n", [$action, $time, $nonce, $hash, $params]), $key);
         if (!hash_equals($expected, $signature)) { throw new RuntimeException('Authentication failed.', 403); }
+        CSM_Access::authorize($credential, $action);
+        return $credential;
+    }
+
+    public static function authenticate(string $action): array {
+        self::signed_credential($action);
+        $nonce = $_SERVER['HTTP_X_CSM_NONCE'];
+        $hash = $_SERVER['HTTP_X_CSM_HASH'];
+        $params = $_SERVER['HTTP_X_CSM_PARAMS'];
         $nonce_key = '_csm_nonce_' . $nonce;
         if (!add_option($nonce_key, time(), '', false)) { throw new RuntimeException('Request was already used.', 403); }
-        CSM_Access::authorize($credential, $action);
         $params = json_decode(base64_decode($params, true), true, 64, JSON_THROW_ON_ERROR);
         if (in_array($action, ['prepare', 'bundle', 'bundle_chunk', 'bundle_stream', 'component_manifest', 'export', 'receive', 'stream_data', 'segment_state', 'segment_data', 'commit'], true)) { CSM_Updates::assert_version($params['trickle_version'] ?? null); }
         if (in_array($action, ['receive', 'stream_data', 'segment_data'], true)) {

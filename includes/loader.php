@@ -4,12 +4,32 @@ defined('ABSPATH') || exit;
 $csm_recovery_job = get_option('_csm_active_job');
 $csm_recovery_cron = defined('DOING_CRON') && DOING_CRON && $csm_recovery_job && in_array(get_option('_csm_job_' . $csm_recovery_job, [])['status'] ?? '', ['applying', 'backup_copy'], true);
 if ($csm_recovery_cron) { define('CSM_RECOVERY_CRON', true); }
-$csm_request = (isset($_GET['trickle']) && $_GET['trickle'] !== 'manifest')
-    || (($_POST['action'] ?? '') === 'csm_admin' && !in_array($_POST['op'] ?? '', ['manifest', 'connect'], true))
-    || (is_admin() && ($_GET['page'] ?? '') === 'trickle')
-    || $csm_recovery_cron;
 $csm_plugin = __CSM_PLUGIN__;
 $csm_active = get_option('active_plugins', []);
+// Request parameters alone must never disable plugins on login or other WordPress routes.
+$csm_request = $csm_recovery_cron;
+if (in_array($csm_plugin, $csm_active, true) && !$csm_request) {
+    $csm_request = (static function () use ($csm_plugin): bool {
+        $script = realpath($_SERVER['SCRIPT_FILENAME'] ?? '');
+        $post = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
+        if ($post && $script === realpath(ABSPATH . 'index.php') && is_string($_GET['trickle'] ?? null) && $_GET['trickle'] !== 'manifest') {
+            $base = WP_PLUGIN_DIR . '/' . dirname($csm_plugin) . '/includes/';
+            foreach (['support', 'access', 'transport'] as $part) { require_once $base . $part . '.php'; }
+            try { CSM_Transport::signed_credential($_GET['trickle']); return true; }
+            catch (Throwable $error) { return false; }
+        }
+        $ajax = $post && defined('DOING_AJAX') && DOING_AJAX && $script === realpath(ABSPATH . 'wp-admin/admin-ajax.php')
+            && ($_POST['action'] ?? '') === 'csm_admin' && ($_REQUEST['action'] ?? '') === 'csm_admin'
+            && !in_array($_POST['op'] ?? '', ['manifest', 'connect'], true);
+        $page = !$post && $script === realpath(ABSPATH . 'wp-admin/tools.php') && ($_GET['page'] ?? '') === 'trickle';
+        if (!$ajax && !$page) { return false; }
+        // Core user/session APIs are available here, before ordinary plugins load.
+        wp_cookie_constants();
+        require_once ABSPATH . WPINC . '/pluggable.php';
+        if (!current_user_can('manage_options')) { return false; }
+        return $page || (is_string($_POST['nonce'] ?? null) && wp_verify_nonce($_POST['nonce'], 'csm_admin') !== false);
+    })();
+}
 $csm_maintenance = get_option('_csm_maintenance', []);
 $csm_probe = isset($csm_maintenance['probe']) && hash_equals($csm_maintenance['probe'], hash('sha256', (string)($_SERVER['HTTP_X_TRICKLE_HEALTH'] ?? '')));
 if (!$csm_probe && in_array($csm_plugin, $csm_active, true) && !$csm_request && !(defined('WP_CLI') && WP_CLI) && !is_admin() && !empty($csm_maintenance['until']) && $csm_maintenance['until'] > time()) {

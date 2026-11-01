@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+let callback,config,observed,stuck=false,position='sticky',visible=true;
+const sentinel={setAttribute(){},getBoundingClientRect(){return {bottom:100};}};
+const actions={before(node){assert.equal(node,sentinel);},getClientRects(){return visible?[{}]:[];},classList:{toggle(_,on){stuck=on;}}};
+const context={document:{querySelector:()=>actions,createElement:()=>sentinel},getComputedStyle:()=>({position,top:'44px'}),IntersectionObserver:class{constructor(cb,options){callback=cb;config=options;}observe(node){observed=node;}}};
+vm.createContext(context);vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../assets/sticky-actions.js'),'utf8'),context);
+assert.equal(stuck,false);assert.equal(observed,sentinel);assert.equal(config.rootMargin,'-44px 0px 0px 0px');
+callback([{boundingClientRect:{bottom:40}}]);assert.equal(stuck,true);
+callback([{boundingClientRect:{bottom:200}}]);assert.equal(stuck,false);
+position='static';callback([{boundingClientRect:{bottom:-30}}]);assert.equal(stuck,false);
+position='sticky';visible=false;callback([{boundingClientRect:{bottom:-30}}]);assert.equal(stuck,false);
+console.log('Sticky checks passed: threshold, initial state, return to flow, static/mobile mode and hidden panels.');

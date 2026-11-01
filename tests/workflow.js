@@ -5,13 +5,14 @@ const controls = new Map();
 const selection = {tables:['wp_posts'],plugins:['fixture'],themes:[],media:'none'};
 function context(options={}) {
  const calls=[],finished=[];
- const c={session:options.session || null,summary:null,sites:{local:{plugin_version:'test'}},previewId:'',previewItems:[],
+ const c={esc:String,session:options.session || null,summary:null,sites:{local:{plugin_version:'test'}},previewId:'',previewItems:[],
   $:id=>{if(!controls.has(id))controls.set(id,{value:'remote',removeAttribute(){}});return controls.get(id);},
   currentSelection:()=>selection,destination:()=>({url:'https://destination.test'}),source:()=>({url:'https://source.test'}),direction:()=> 'pull',transferAction:()=> 'Pull',
   transferMeter:{begin(){},update(){},setPhase(){},finish(){}},showSummary(){},renderActivity(){},message(){},load:async()=>{},reviewGitFolders:async()=>[],
   finishTransfer:async(result,route)=>{finished.push([result.status,route.id]);c.session=null;},
   setTimeout:fn=>{if(fn.name!=='poll')fn();return 0;},clearTimeout(){},
   api:async(op,data)=>{
+   if(op==='logs')return {entries:[]}; // Read-only telemetry does not affect the migration sequence.
    calls.push(op);
    if(options.handler){const result=options.handler(op,data,calls);if(result!==undefined)return result;}
    if(op==='review')return {git_folders:[]};
@@ -42,8 +43,15 @@ function context(options={}) {
  x=context({handler(op){if(op==='transfer'){const e=Error('Remote server requested a pause');e.retryExhausted=true;e.retryAfter=60;throw e;}}});await x.c.migrate();assert.equal(x.calls.includes('recover'),false);assert.equal(x.calls.includes('commit'),false);assert.equal(x.c.session.id,'transfer');assert(x.c.session.retryAt>Date.now()+50000);
  x=context({handler(op){if(op==='transfer')throw Error('Invalid PHP');}});await assert.rejects(()=>x.c.migrate(),/Invalid PHP/);assert.equal(x.calls.filter(op=>op==='transfer').length,1);assert.equal(x.calls.at(-1),'recover');assert.equal(x.c.session,null);
  x=context({handler(op){if(op==='finish')return {};}});x.c.renderPreview=()=>{};x.c.URL=URL;x.c.feedback=()=>{};x.c.load=async()=>{throw Error('Inventory unavailable');};x.c.$('backup-link').href='https://destination.test/wp-admin/tools.php?page=trickle&view=backups';
+ vm.runInContext(source.slice(source.indexOf('    function completionReceipt('),source.indexOf('    async function finishTransfer(')),x.c);
  vm.runInContext(source.slice(source.indexOf('    async function finishTransfer('),source.indexOf('    let previewItems',source.indexOf('    async function finishTransfer('))),x.c);
  await x.c.finishTransfer({status:'applied',tables:0,files:1},{id:'complete',direction:'pull',view_url:'https://frontend.test/'});assert.equal(x.c.$('completion').hidden,false);assert.equal(x.c.$('view-site').href,'https://frontend.test/');assert.equal(x.c.$('completion-title').textContent,'Pull complete');
  let warning='';x.c.load=async()=>{};x.c.feedback=text=>{warning=text;};await x.c.finishTransfer({status:'applied',tables:0,files:1,health:{verified:false},activation_missing:['missing/plugin.php']},{id:'complete',direction:'pull',view_url:'https://frontend.test/'});assert.match(warning,/health check/);assert.match(warning,/missing plugin/);
+ // Successful receiver confirmation must survive the progress-rendering adapter.
+ const {TransferProgress}=require('../assets/transfer-progress.js');
+ const verifiedTimeline={id:'verified-adapter',elapsed:0,ready:true,components:{plugins:100},selected:['plugins'],streams:{files:{size:100,received:100}}};
+ x=context({handler(op){if(op==='transfer')return {id:'verified-adapter',pending:[],timeline:verifiedTimeline,progress:{phase:'Files verified',state:'complete'}};}});
+ x.c.transferMeter=new TransferProgress(null);x.c.transferMeter.begin({...verifiedTimeline,streams:{files:{size:100,received:0}}});x.c.renderActivity=detail=>x.c.transferMeter.update(detail);
+ await x.c.transferRequest('transfer',{id:'verified-adapter',kind:'files'});assert.equal(x.c.transferMeter.verified.has('files'),true);
  console.log('Workflow checks passed: one click, checkpoint retry, resume, completed response, interrupted apply, safe timeout recovery and failed-stage cleanup.');
 })().catch(e=>{console.error(e);process.exitCode=1;});

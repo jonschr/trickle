@@ -7,7 +7,8 @@ const source = fs.readFileSync(path.join(__dirname, '../assets/admin.js'), 'utf8
 const kinds = ['tables', 'plugins', 'themes', 'media'];
 const controls = {};
 controls.transport = {value:'stream'};
-controls['sync-active-plugins'] = {checked:true};
+controls['ignore-active-plugins'] = {checked:false};
+controls['file-verify'] = {checked:false};
 for (const kind of kinds) {
     controls['enable-' + kind] = {checked:false, setAttribute(name, value) { this[name] = value; }};
     controls[kind + '-body'] = {hidden:true};
@@ -22,12 +23,14 @@ const items = [
     {kind:'themes', value:'parent', checked:false},
     {kind:'media_ids', value:'42', checked:false},
 ];
+items.forEach(item => { item.dataset = {kind:item.kind}; });
 let mediaRenders = 0;
 const context = {
-    $: id => controls[id], componentKinds:kinds, sites:null,
+    $: id => controls[id], componentKinds:kinds, sites:null, renderReplacements(){}, updateSelection(){},
     renderMedia: () => { mediaRenders++; },
     document:{querySelectorAll(selector) {
-        const kind = selector.match(/data-kind="([^"]+)"/)[1];
+        const kind = selector.match(/data-kind="([^"]+)"/)?.[1];
+        if (!kind) return items;
         return items.filter(item => item.kind === kind && (!selector.includes('data-protected') || !item.protected) && (!selector.includes(':checked') || item.checked));
     }},
 };
@@ -36,7 +39,7 @@ vm.runInContext(source.slice(source.indexOf('    function setPanelOpen('), sourc
 assert.equal(context.currentSelection().transport, 'stream');
 controls.transport.value = 'chunks'; assert.equal(context.currentSelection().transport, 'chunks');
 assert.equal(context.currentSelection().sync_active_plugins, true);
-controls['sync-active-plugins'].checked = false;
+controls['ignore-active-plugins'].checked = true;
 assert.equal(context.currentSelection().sync_active_plugins, false);
 context.setComponent('plugins', true, true);
 assert.equal(items.filter(item => item.kind === 'plugins' && item.checked).length, 2);
@@ -84,4 +87,10 @@ controls['media-mode'].value = 'all';
 context.setComponent('media', false, true);
 assert.equal(context.currentSelection().media_force, false, 'Disabled media cannot inherit force-all');
 assert.equal(context.currentSelection().media_verify, false, 'Disabled media cannot leak a stale full-verification option');
+vm.runInContext(source.slice(source.indexOf('    function restoreSelection('),source.indexOf('    let mediaAnchor')),context);
+for (const flag of [true,false,undefined]) {
+    context.restoreSelection({sync_active_plugins:flag,plugins:['one'],themes:[],tables:[],media:'none',replacements:[]},false);
+    assert.equal(controls['ignore-active-plugins'].checked,flag===false);
+    assert.equal(context.currentSelection().sync_active_plugins,flag!==false,'Restore respects both saved opt-out and legacy default, including plugin-only transfers');
+}
 console.log('Component selection checks passed: defaults, independent collapse, protected plugin, enabled-empty state, disabled selection gating, and media toggles.');

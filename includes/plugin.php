@@ -21,6 +21,13 @@ final class CSM_Plugin {
 
     public static function boot(): void {
         if (!get_option('_csm_key')) { add_option('_csm_key', bin2hex(random_bytes(32)), '', false); }
+        // Upgrades do not run activation hooks; refresh the security-sensitive MU loader once per version.
+        if (get_option('_csm_loader_version') !== CSM_VERSION && wp_is_file_mod_allowed('trickle')) {
+            try {
+                if (!self::loader_ready()) { self::install_loader(); }
+                update_option('_csm_loader_version', CSM_VERSION, false);
+            } catch (Throwable $error) { CSM_Log::write('error', 'Recovery loader refresh failed', ['error' => $error->getMessage()]); }
+        }
         if (defined('CSM_RECOVERY_CRON')) {
             self::recover_interrupted((string)get_option('_csm_active_job'));
             // Other plugins were isolated; leave their due cron events untouched for the next request.
@@ -251,9 +258,9 @@ final class CSM_Plugin {
     }
 
     public static function changes(array $job): array {
-        $new = []; $paths = [];
+        $new = []; $paths = []; $checked = 0;
         foreach ($job['files'] as $file) {
-            CSM_Progress::update(['phase' => 'Verifying staged file', 'component' => $file['path']]);
+            CSM_Progress::update(['phase' => 'Verifying staged file', 'component' => $file['path'], 'count' => $checked++, 'total' => count($job['files']), 'unit' => 'files', 'bytes' => 0]);
             $target = CSM_Files::destination($file['path'], $job['selection']);
             if (!empty($file['unchanged'])) {
                 if (!is_file($target) || !hash_equals($file['sha256'], hash_file('sha256', $target))) { throw new RuntimeException('An unchanged destination file changed after staging: ' . $file['path'] . '. Discard and prepare again.'); }
@@ -262,10 +269,11 @@ final class CSM_Plugin {
             if (!is_file($file['stage']) || !hash_equals($file['sha256'], hash_file('sha256', $file['stage']))) { throw new RuntimeException('A staged file is missing or changed.'); }
             $new[$file['path']] = $file; $paths[$file['path']] = $target;
         }
+        CSM_Progress::update(['count' => $checked]);
         // Selected plugin/theme directories are replacements, not merges that leave obsolete PHP files behind.
         foreach (['plugins', 'themes'] as $kind) {
             foreach ($job['selection'][$kind] as $component) {
-                CSM_Progress::update(['phase' => 'Checking destination component', 'component' => $kind . '/' . $component]);
+                CSM_Progress::update(['phase' => 'Checking destination component', 'component' => $kind . '/' . $component, 'count' => 0, 'total' => null, 'unit' => '', 'bytes' => 0]);
                 $root = CSM_Files::root($kind, $component);
                 $path = $root . '/' . CSM_Files::safe_relative($component);
                 if (!file_exists($path)) { continue; }
@@ -277,12 +285,14 @@ final class CSM_Plugin {
                 }
             }
         }
+        $checked = 0;
         foreach ($paths as $relative => $target) {
-            CSM_Progress::update(['phase' => 'Checking destination file', 'component' => $relative]);
+            CSM_Progress::update(['phase' => 'Checking destination file', 'component' => $relative, 'count' => $checked++, 'total' => count($paths), 'unit' => 'files', 'bytes' => 0]);
             $ancestor = dirname($target);
             while (!file_exists($ancestor)) { $ancestor = dirname($ancestor); }
             if (!is_writable($ancestor) || (file_exists($target) && (!is_file($target) || !is_writable($target) || !is_writable(dirname($target))))) { throw new RuntimeException('Destination is not writable: ' . $relative); }
         }
+        CSM_Progress::update(['count' => $checked]);
         return ['new' => $new, 'paths' => $paths];
     }
 
@@ -316,10 +326,12 @@ final class CSM_Plugin {
         $warnings = [];
         if ($job['database']) { $warnings[] = 'Selected database tables replace destination tables completely. Concurrent orders, submissions, and content are not merged.'; }
         if ($plan['paths']) { $warnings[] = 'Files apply one at a time. A temporary maintenance screen protects normal visitors during apply; recovery access stays available.'; }
+        $compat_checked = 0;
         foreach ($job['files'] as $file) {
+            $compat_checked++;
             if (!empty($file['unchanged'])) { continue; }
             $parts = explode('/', $file['path']);
-            if (str_ends_with($file['path'], '.php') || ($parts[0] === 'themes' && count($parts) === 3 && $parts[2] === 'style.css')) { CSM_Progress::update(['phase' => 'Checking PHP compatibility', 'component' => $file['path']]); }
+            if (str_ends_with($file['path'], '.php') || ($parts[0] === 'themes' && count($parts) === 3 && $parts[2] === 'style.css')) { CSM_Progress::update(['phase' => 'Checking PHP compatibility', 'component' => $file['path'], 'count' => $compat_checked - 1, 'total' => count($job['files']), 'unit' => 'files', 'bytes' => 0]); }
             if (($parts[0] === 'plugins' && count($parts) <= 3 && str_ends_with($file['path'], '.php')) || ($parts[0] === 'themes' && count($parts) === 3 && $parts[2] === 'style.css')) {
                 $headers = get_file_data($file['stage'], ['php' => 'Requires PHP', 'wp' => 'Requires at least']);
                 if ($headers['php'] && version_compare(PHP_VERSION, $headers['php'], '<')) { throw self::compatibility_error($job, $file, 'requires PHP ' . $headers['php'] . '; destination uses PHP ' . PHP_VERSION); }
@@ -330,6 +342,7 @@ final class CSM_Plugin {
                 catch (ParseError $e) { throw self::compatibility_error($job, $file, 'PHP parse error on destination PHP ' . PHP_VERSION . ' (line ' . $e->getLine() . ': ' . $e->getMessage() . ')'); }
             }
         }
+        if ($compat_checked) { CSM_Progress::update(['phase' => 'Checking PHP compatibility', 'component' => '', 'count' => $compat_checked, 'total' => count($job['files']), 'unit' => 'files', 'bytes' => 0]); }
         $free = disk_free_space(CSM_Support::private_dir());
         if ($free !== false && $free < $backup + 16 * 1024 * 1024) { throw new RuntimeException('Insufficient private storage for the destination rollback backup.'); }
         usort($items, static fn($a, $b) => (['delete' => 0, 'replace' => 1, 'add' => 2][$a['action']] <=> ['delete' => 0, 'replace' => 1, 'add' => 2][$b['action']]) ?: strcmp($a['path'], $b['path']));
@@ -555,8 +568,16 @@ final class CSM_Plugin {
         if ($hook !== 'tools_page_trickle') { return; }
         wp_enqueue_style('trickle', plugins_url('assets/admin.css', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin.css'));
         $script = ($_GET['view'] ?? '') === 'backups' ? 'backups' : 'admin';
-        if ($script === 'admin') { wp_enqueue_script('trickle-progress', plugins_url('assets/transfer-progress.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/transfer-progress.js'), true); }
+        if ($script === 'admin') {
+            wp_enqueue_script('trickle-chart-library', plugins_url('assets/vendor/chartjs/chart.umd.js', CSM_FILE), [], '4.6.1', true);
+            wp_add_inline_script('trickle-chart-library', 'window._csmPreviousChart = window.Chart;', 'before');
+            wp_add_inline_script('trickle-chart-library', 'window.CSMChart = window.Chart; window.Chart = window._csmPreviousChart; delete window._csmPreviousChart;', 'after');
+            wp_enqueue_script('trickle-progress-chart', plugins_url('assets/progress-chart.js', CSM_FILE), ['trickle-chart-library'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/progress-chart.js'), true);
+            wp_enqueue_script('trickle-progress', plugins_url('assets/transfer-progress.js', CSM_FILE), ['trickle-progress-chart'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/transfer-progress.js'), true);
+        }
         wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-progress'] : [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
+        if ($script === 'admin') { wp_enqueue_script('trickle-tabs', plugins_url('assets/admin-tabs.js', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin-tabs.js'), true); }
+        if ($script === 'admin') { wp_enqueue_script('trickle-sticky', plugins_url('assets/sticky-actions.js', CSM_FILE), ['trickle-tabs'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/sticky-actions.js'), true); }
         wp_localize_script('trickle', 'CSM', ['ajax' => admin_url('admin-ajax.php'), 'nonce' => wp_create_nonce('csm_admin'), 'state' => CSM_Controller::state(), 'keys' => CSM_Access::list()]);
     }
 
@@ -567,6 +588,7 @@ final class CSM_Plugin {
             try { self::install_loader(); }
             catch (Throwable $e) { $loader_error = $e->getMessage(); CSM_Log::write('error', 'Recovery loader update failed', ['error' => $loader_error]); }
         }
+        $transfer_defaults = get_option('_csm_transfer_defaults', []) + ['transport' => 'stream', 'file_verify' => false];
         $settings = CSM_Access::settings();
         require __DIR__ . (($_GET['view'] ?? '') === 'backups' ? '/backup-page.php' : '/admin.php');
     }

@@ -28,7 +28,7 @@
     }
     async function api(op, data = {}) {
         const body = new URLSearchParams({action:'csm_admin', nonce:CSM.nonce, op, data:JSON.stringify(data)});
-        const response = await fetch(CSM.ajax, {method:'POST', credentials:'same-origin', body, ...(op === 'progress' ? {signal:AbortSignal.timeout(8000)} : {})});
+        const response = await fetch(CSM.ajax, {method:'POST', credentials:'same-origin', body, ...(['progress','logs'].includes(op) ? {signal:AbortSignal.timeout(8000)} : {})});
         const text = await response.text();
         let result;
         try { result = JSON.parse(text); } catch (_) { throw new Error(`Unexpected response (HTTP ${response.status}). Check the PHP log and firewall. ${text.replace(/<[^>]*>/g, '').slice(0, 160)}`); }
@@ -39,10 +39,14 @@
     }
     function message(text) { $('status').textContent = text; }
     function fail(error) {
+        transferMeter.fail?.(error);
         $('error').innerHTML = `<p>${esc(error.message)}</p>`;
+        const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'button-link'; copy.textContent = 'Copy error details';
+        copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(error.message); copy.textContent = 'Copied'; } catch (_) { copy.textContent = 'Select the error text to copy'; } });
+        $('error').append(copy);
         $('error').hidden = false;
         $('error').scrollIntoView({block:'nearest'});
-        feedback('Request failed. Details are available in Diagnostics below.');
+        feedback('Request failed. Details are available in the Diagnostics tab.');
         if ($('diagnostics').open) refreshLogs();
     }
     function feedback(text) { $('feedback').textContent = text; $('feedback').hidden = !text; }
@@ -62,7 +66,7 @@
     let progressStamp = '', progressChangedAt = Date.now();
     function renderActivity(detail) {
         transferMeter.update(detail);
-        if (!detail?.phase) { $('activity').hidden = true; return; }
+        if (transferMeter.timeline || !detail?.phase) { $('activity').hidden = true; return; }
         const failed = detail.failure;
         const component = failed?.component || (detail.state === 'running' ? detail.component : '');
         const count = detail.unit && detail.unit !== 'bytes' ? `${detail.count.toLocaleString()}${detail.total == null ? '' : ' of ' + detail.total.toLocaleString()} ${detail.unit} processed` : '';
@@ -73,35 +77,42 @@
         $('activity').hidden = false;
     }
     async function transferRequest(op, data) {
-        let stopped = false, timer;
+        let stopped = false, timer, lastLogRead = 0;
         const poll = async () => {
             try {
                 const detail = await api('progress', {id:data.id});
                 if (!stopped) renderActivity(detail);
+                if (!stopped && Date.now() - lastLogRead > 5000) {
+                    lastLogRead = Date.now();
+                    api('logs').then(logs => { if (!stopped) transferMeter.ingestLogs?.(logs.entries); }).catch(() => {});
+                }
             } catch (_) {
                 if (!stopped) { $('activity').hidden = false; $('activity').textContent = 'Live progress is unavailable. The transfer may still be running; waiting for its result.'; }
             }
             if (!stopped) timer = setTimeout(poll, 1000);
         };
         const action = transferAction();
-        transferMeter.setPhase(op === 'commit' ? 'apply' : op === 'rollback' ? 'recover' : op === 'preflight' ? 'preflight' : 'transfer');
+        transferMeter.operation?.(op, data.kind);
         $('action-title').textContent = ['commit','transfer'].includes(op) ? (action === 'Push' ? 'Pushing…' : 'Pulling…') : op === 'rollback' ? 'Restoring destination…' : `Preparing ${action.toLowerCase()}…`;
         $('activity').hidden = false; $('activity').textContent = 'Waiting for progress from the server…';
         timer = setTimeout(poll, 300);
         try {
             let result, retries = 0;
             do {
-                try { result = await api(op, data); retries = 0; }
+                try { result = await api(op, data); retries = 0; transferMeter.resolved?.(); }
                 catch (error) {
                     if (error.retryExhausted || !['preflight','transfer'].includes(op) || retries >= 3 || !/Another transfer is running|stream is still being built|network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
                     message('Connection interrupted. Retrying…');
-                    await new Promise(resolve => setTimeout(resolve, 1000 * Math.max(error.retryAfter || 0, 2 ** retries++)));
+                    const wait = Math.max(error.retryAfter || 0, 2 ** retries++);
+                    transferMeter.retry?.(error.message, wait);
+                    await new Promise(resolve => setTimeout(resolve, 1000 * wait));
                     result = {continue:true};
                 }
-                if (result.progress) renderActivity({...result.progress, ...(result.timeline ? {timeline:result.timeline} : {})});
+                if (result.progress) renderActivity({...result.progress, ...(Array.isArray(result.pending) ? {pending:result.pending} : {}), ...(result.timeline ? {timeline:result.timeline} : {})});
                 else transferMeter.update(result);
                 if (result.continue) summary = result;
             } while (['preflight','transfer'].includes(op) && result.continue);
+            api('logs').then(logs => transferMeter.ingestLogs?.(logs.entries)).catch(() => {});
             return result;
         }
         catch (error) {
@@ -118,14 +129,14 @@
         busy = true; $('error').hidden = true;
         document.querySelector('.csm').setAttribute('aria-busy', 'true');
         feedback('Working… Keep this page open.');
-        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => control.id !== 'csm-copy' && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
+        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => control.id !== 'csm-copy' && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
         finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; document.querySelector('.csm').setAttribute('aria-busy', 'false'); if ($('feedback').textContent === 'Working… Keep this page open.') feedback('Done.'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
-        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-sync-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
+        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
         lockReplacements();
     }
     const direction = () => $('direction').value;
@@ -229,22 +240,73 @@
         $('apply').disabled = busy || !versionsMatch() || !transferVersionMatches();
         renderVersionStatus();
         syncMediaSelection();
+        updateSetup();
+        for (const kind of ['tables','plugins','themes']) filterComponents(kind);
         for (const id of ['media-select-visible', 'media-clear', 'media-more']) $(id).disabled = busy || !!session;
         lockReplacements();
         $('apply').textContent = transferAction();
         if (!session) {
-            $('stage').textContent = transferAction();
+            $('stage').textContent = destinationAction();
             $('action-title').textContent = selected ? `Ready to ${transferAction().toLowerCase()}` : 'Choose what to transfer';
         }
     }
+    function destinationAction() {
+        if ((session?.direction || direction()) === 'pull') return 'Pull into this site';
+        const peer = connectionState.connections.find(item => item.id === $('remote-site').value);
+        return `Push to ${peer?.name || 'remote site'}`;
+    }
+    function updateSetup() {
+        $('action-destination').textContent = session?.destination || (sites ? destination().url : '');
+        const setup = $('transfer-setup');
+        if (!setup) return;
+        const monitoring = !!session || !$('completion').hidden;
+        if (setup.dataset.monitoring !== String(monitoring)) { setup.open = !monitoring; setup.dataset.monitoring = String(monitoring); }
+        $('setup-summary').textContent = $('selection-summary').textContent;
+        $('preset').disabled = busy || !!session || !sites;
+        $('stage').hidden = !!session && busy || !session && !$('completion').hidden;
+    }
+    function filterComponents(kind) {
+        const search = $('search-' + kind), filter = $('filter-' + kind);
+        if (!search || !filter || !sites) return;
+        const query = search.value.trim().toLocaleLowerCase(), mode = filter.value;
+        const lookup = new Map(destination()[kind].map(item => [kind === 'tables' ? item.id.slice(destination().prefix.length) : item.id, item]));
+        const inventory = new Map(source()[kind].map(item => [item.id, item]));
+        let total = 0, shown = 0;
+        $(kind).querySelectorAll(`input[data-kind="${kind}"]`).forEach(input => {
+            const item = inventory.get(input.value), target = lookup.get(kind === 'tables' ? input.value.slice(source().prefix.length) : input.value);
+            const row = input.closest(kind === 'tables' ? 'tr' : '.csm-component');
+            if (!item || !row) return;
+            const matches = `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || item.version !== target.version));
+            row.hidden = !matches; total++; if (matches) shown++;
+        });
+        $('filter-count-' + kind).textContent = `${shown} of ${total}`;
+        $('filter-empty-' + kind).hidden = shown > 0 || total === 0;
+    }
+    async function applyPreset(name) {
+        if (!name || session) return;
+        const preset = await api('preset', {preset:name, site:$('remote-site').value});
+        $('direction').value = preset.direction; render();
+        const enabled = ['tables','plugins','themes'].filter(kind => preset.selection[kind]?.length);
+        restoreSelection({...currentSelection(), ...preset.selection, file_verify:$('file-verify').checked, enabled_components:enabled, expanded_components:enabled});
+        $('preset').value = name;
+        $('preset-status').textContent = 'Preset loaded. Review or edit the selections.'; feedback('');
+    }
     function transferVersionMatches() { return !session || (!!sites && session.plugin_version === sites.local.plugin_version); }
     function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version; }
+    function renderEndpoints() {
+        for (const [id, site] of [['source', source()], ['destination', destination()]]) {
+            const versions = [['Trickle', site.plugin_version], ['WordPress', site.wordpress], ['PHP', site.php]];
+            $(id).innerHTML = `${icon(site.icon, 'site')}<span class="csm-site-identity"><strong>${esc(site.url)}</strong>${site.name ? `<small>${esc(site.name)}</small>` : ''}<span class="csm-site-versions">${versions.map(([label, version]) => `<span>${label} <b>${esc(version || 'unknown')}</b></span>`).join('')}</span></span>`;
+        }
+    }
     function renderVersionStatus() {
         $('trickle-versions').hidden = !sites;
         if (!sites) return;
-        const same = versionsMatch(), local = sites.local.plugin_version, remote = sites.remote.plugin_version || 'unknown';
+        renderEndpoints();
+        const same = versionsMatch(), local = sites.local.plugin_version;
+        $('trickle-versions').hidden = same && transferVersionMatches();
         $('trickle-versions').classList.toggle('csm-version-mismatch', !same || !transferVersionMatches());
-        $('trickle-version-status').textContent = `Trickle — this site: ${local} · remote site: ${remote}${same ? ' · Versions match' : ' · Update required before transferring'}`;
+        $('trickle-version-status').textContent = same ? '' : 'Trickle update required before transferring';
         const supported = sites.remote.remote_update === 1;
         const mayUpdate = !!sites.remote.can_update_trickle;
         $('check-remote-update').hidden = same || !supported;
@@ -257,6 +319,7 @@
     const transferDate = stamp => new Date(stamp * 1000).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
     function renderConnections(state) {
         connectionState = state; session = state.session;
+        $('no-connection').hidden = !!state.selected || !!session;
         $('remote-site').innerHTML = (state.selected ? '' : '<option value="" disabled>Choose a remote site…</option>') + state.connections.map(site => `<option value="${esc(site.id)}">${esc(site.name === site.url ? site.url : site.name + ' · ' + site.url)}</option>`).join('');
         $('remote-site').value = state.selected;
         const recent = $('recent').value;
@@ -270,7 +333,7 @@
         if (state.connections.length || session) $('workspace').hidden = false;
     }
     function clearInventory() {
-        sites = null; remoteUpdate = null; resetComponents(); $('sync-active-plugins').checked = true;
+        sites = null; remoteUpdate = null; resetComponents(); $('ignore-active-plugins').checked = false;
         $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
@@ -295,7 +358,7 @@
         $('replacement-status').textContent = !available ? 'Load both sites with the current Trickle version to preview and configure replacements.' : !$('replace').checked ? 'Find & replace is off. No replacement rules will run.' : `${replacementRules.filter(rule => rule.enabled).length} enabled rules. Replacement settings are locked once a transfer is staged.`;
     }
     function currentSelection() {
-        const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:$('sync-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
+        const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:!$('ignore-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
         selection.file_verify = ($('enable-plugins').checked || $('enable-themes').checked) && !!$('file-verify')?.checked;
         selection.media_force = selection.media === 'all' && !!$('media-force')?.checked;
         selection.media_verify = selection.media === 'all' && !selection.media_force && !!$('media-verify')?.checked;
@@ -318,7 +381,7 @@
             setComponent(kind, hasItems || (selection.enabled_components || []).includes(kind));
             if (Array.isArray(selection.expanded_components)) setPanelOpen(kind, $('enable-' + kind).checked && selection.expanded_components.includes(kind));
         }
-        $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('sync-active-plugins').checked = selection.sync_active_plugins !== false;
+        $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('ignore-active-plugins').checked = selection.sync_active_plugins === false;
         $('media-mode').value = selection.media === 'compare' ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
         renderReplacements(selection.replacements ?? sites.replacements?.[direction()] ?? []);
@@ -384,14 +447,14 @@
         updateSelection();
     }
     function render() {
+        $('preset').value = ''; $('preset-status').textContent = 'Selections stay editable.';
         resetComponents(); $('media-mode').value = 'none'; $('media-force').checked = false;
         if (session) $('direction').value = session.direction;
         labelRoute();
         $('workspace').hidden = false;
-        for (const [id, site] of [['source', source()], ['destination', destination()]]) {
-            $(id).innerHTML = `${icon(site.icon, 'site')}<span class="csm-site-identity"><strong>${esc(site.url)}</strong>${site.name ? `<small>${esc(site.name)}</small>` : ''}</span>`;
-        }
-        $('version-note').textContent = `Source: WordPress ${source().wordpress}, PHP ${source().php}. Destination: WordPress ${destination().wordpress}, PHP ${destination().php}. ${source().wordpress !== destination().wordpress ? 'WordPress versions differ; core is not transferred. ' : ''}${direction() === 'push' && !sites.remote.incoming_writes ? 'Enable incoming writes on the remote site before pushing.' : ''}`;
+        renderEndpoints();
+        $('version-note').textContent = [source().wordpress !== destination().wordpress ? 'WordPress versions differ; core is not transferred.' : '', direction() === 'push' && !sites.remote.incoming_writes ? 'Enable incoming writes on the remote site before pushing.' : ''].filter(Boolean).join(' ');
+        $('version-note').hidden = !$('version-note').textContent;
         renderReplacements(sites.replacements?.[direction()] ?? []);
         $('tables').replaceChildren();
         for (const kind of ['plugins','themes','tables']) components(kind);
@@ -418,7 +481,7 @@
         if (session && summary?.id !== session.id) { summary = await api('status', {id:session.id}); showSummary(); }
         $('connect-status').textContent = 'Paste a complete code to save or update the connection automatically.';
         feedback(refresh ? 'Versions refreshed on both sites.' : '');
-        $('connection').open = false;
+
         if (session?.automatic) await migrate();
     }
     function showSummary() {
@@ -428,28 +491,48 @@
         $('rollback').hidden = summary.status !== 'applying';
         $('discard').hidden = summary.status !== 'staging';
         $('stage').hidden = summary.status !== 'staging';
-        $('stage').textContent = `Continue ${action.toLowerCase()}`;
+        $('stage').textContent = `Continue ${destinationAction().toLowerCase()}`;
         $('action-title').textContent = summary.status === 'applied' ? `${action} complete` : summary.status === 'restored' ? 'Destination restored' : summary.status === 'applying' ? 'Recovering…' : `${action === 'Push' ? 'Pushing' : 'Pulling'}…`;
         message(`${summary.tables} tables · ${summary.files.toLocaleString()} files · ${bytes(summary.bytes)}`);
         $('media-comparison').hidden = true;
         $('skipped-folders').hidden = !summary.skipped_folders?.length;
         $('skipped-folders').textContent = summary.skipped_folders?.length ? 'Skipped: ' + summary.skipped_folders.join(', ') : '';
         renderActivity(summary.progress);
-        renderPreview();
+        renderPreview(); updateSetup();
+    }
+    function completionReceipt(result, metrics) {
+        const rows = [];
+        if (result.status === 'applied') {
+            rows.push(['Transferred', `${Number(result.tables || 0).toLocaleString()} tables · ${Number(result.files || 0).toLocaleString()} files`]);
+            const media = result.media_comparison;
+            const sameMedia = Number.isFinite(media?.source_hashing?.scanned_files) && Number.isFinite(media.files_selected) ? Math.max(0, media.source_hashing.scanned_files - media.files_selected) : 0;
+            rows.push(['Unchanged', `${(Number(result.unchanged_files || 0) + sameMedia).toLocaleString()} files`]);
+            const skipped = (result.skipped_folders || []).length;
+            rows.push(['Skipped', `${skipped} protected folder${skipped === 1 ? '' : 's'}`]);
+            rows.push(['Health', result.health?.verified ? `Homepage passed${result.health.status ? ' · HTTP ' + result.health.status : ''}` : 'Not confirmed']);
+            rows.push(['Backup', 'Saved on destination']);
+        } else rows.push(['Result', 'Destination restored']);
+        if (metrics?.elapsed != null) rows.push(['Elapsed', `${Math.floor(metrics.elapsed / 60)}m ${Math.floor(metrics.elapsed % 60)}s`]);
+        return rows;
     }
     async function finishTransfer(result, route) {
-        transferMeter.finish(result.status);
+        transferMeter.finish(result.status, result);
         const finished = await api('finish', {id:route.id});
         summary = null; session = null; renderPreview();
         for (const id of ['apply','rollback','discard','retained-note','activity']) $(id).hidden = true;
         $('stage').hidden = false;
         $('completion').hidden = false;
         $('completion-title').textContent = result.status === 'applied' ? `${route.direction === 'push' ? 'Push' : 'Pull'} complete` : 'Destination restored';
-        $('completion-detail').textContent = result.status === 'applied' ? (result.tables || result.files ? `${result.tables} tables · ${result.files.toLocaleString()} files · Backup saved` : 'Up to date · Backup saved') : 'Previous changes recovered.';
+        const receipt = completionReceipt(result, transferMeter.metrics?.());
+        $('completion-receipt').innerHTML = receipt.map(([label,value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
+        $('completion-detail').textContent = result.status === 'applied' ? 'Destination updated.' : 'Previous changes recovered.';
         $('view-site').href = route.view_url || route.destination;
         const backupUrl = new URL($('backup-link').href);
         if (route.direction === 'push') backupUrl.searchParams.set('site', route.remote_id);
         else backupUrl.searchParams.delete('site');
+        if (result.status === 'applied') backupUrl.searchParams.set('backup', route.id);
+        else backupUrl.searchParams.delete('backup');
+        $('backup-link').textContent = result.status === 'applied' ? 'View backup' : 'Backups';
         $('backup-link').href = backupUrl.href;
         try { await load(true); }
         catch (_) { message(''); feedback('Complete. Reload to refresh the inventory.'); return; }
@@ -504,6 +587,7 @@
             clearTimeout(copyResetTimer);
             copyResetTimer = setTimeout(() => { label.textContent = 'Copy connection code'; }, 2000);
         } catch (_) {
+            document.querySelector('[data-csm-tab="settings"]').click();
             $('connection').open = true;
             $('pairing').hidden = false;
             $('reveal').setAttribute('aria-expanded', 'true');
@@ -578,6 +662,9 @@
         await api('update_remote', {site:$('remote-site').value});
         await load(true); feedback('Remote Trickle updated. Versions match; choose what to transfer.');
     }));
+    $('preset').addEventListener('change', () => run(() => applyPreset($('preset').value)));
+    document.querySelectorAll('[data-search-kind]').forEach(input => input.addEventListener('input', () => filterComponents(input.dataset.searchKind)));
+    document.querySelectorAll('[data-filter-kind]').forEach(input => input.addEventListener('change', () => filterComponents(input.dataset.filterKind)));
     $('refresh').addEventListener('click', () => run(() => load(true)));
     $('remote-site').addEventListener('change', () => run(async () => {
         const chosen = $('remote-site').value;
@@ -598,7 +685,19 @@
         });
     });
     $('direction').addEventListener('change', () => { if (sites) { $('media-mode').value = 'none'; $('replace').checked = true; $('recent').value = ''; render(); } });
-    for (const id of ['transport', 'file-verify', 'media-verify', 'sync-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
+    let savedTransferSettings = {transport:$('transport').value, file_verify:$('file-verify').checked};
+    for (const id of ['transport', 'file-verify']) $(id).addEventListener('change', () => run(async () => {
+        $('transfer-settings-status').textContent = 'Saving…';
+        try {
+            savedTransferSettings = await api('transfer_settings', {transport:$('transport').value, file_verify:$('file-verify').checked});
+            $('transfer-settings-status').textContent = 'Preferences saved.';
+        } catch (error) {
+            $('transport').value = savedTransferSettings.transport; $('file-verify').checked = savedTransferSettings.file_verify;
+            $('transfer-settings-status').textContent = 'Save failed. Previous preferences restored.';
+            throw error;
+        }
+    }));
+    for (const id of ['transport', 'file-verify', 'media-verify', 'ignore-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
     $('media-mode').addEventListener('change', () => { mediaAnchor = null; renderMedia(); });
     $('media-force').addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
     for (const id of ['media-after', 'media-before']) $(id).addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
@@ -631,6 +730,7 @@
         }
     });
     $('workspace').addEventListener('change', event => {
+        if (!session && !$('completion').hidden) { $('completion').hidden = true; $('transfer-meter').hidden = true; }
         const checkbox = event.target;
         if (checkbox.matches('input[data-component]')) {
             if (busy || session) return;
@@ -704,11 +804,12 @@
                 session = {view_url:destination().home || dest, plugin_version:sites.local.plugin_version, id:summary.id, remote_id:$('remote-site').value, direction:direction(), source:source().url, destination:dest, selection, automatic:true};
             } else summary = await api('status', {id:session.id});
             const route = {...session};
+            transferMeter.configure?.({direction:session.direction, transport:session.selection?.transport || 'stream'});
             transferMeter.begin(summary.timeline || {id:session.id,elapsed:0,components:{},streams:{},selected:[],ready:false});
             transferMeter.update(summary);
             if (['applied','restored'].includes(summary.status)) { await finishTransfer(summary, route); return; }
             if (summary.status === 'applying') {
-                transferMeter.setPhase('apply');
+                transferMeter.setPhase('recover');
                 summary = await api('recover', {id:session.id});
                 await finishTransfer(summary, route); return;
             }
@@ -726,8 +827,8 @@
             summary = await transferRequest('commit', {id:session.id});
             await finishTransfer(summary, route);
         } catch (error) {
-            if (error.retryExhausted && session) { session.retryAt = Date.now() + 1000 * Math.max(15, error.retryAfter || 0); message('Connection interrupted. Transfer saved; retrying after a pause…'); return; }
-            if (error.pending || /Another transfer is running|stream is still being built/i.test(error.message)) { message('Transfer is still running. Reconnecting…'); return; }
+            if (error.retryExhausted && session) { const wait = Math.max(15, error.retryAfter || 0); session.retryAt = Date.now() + 1000 * wait; transferMeter.retry?.(error.message, wait); message('Connection interrupted. Transfer saved; retrying after a pause…'); return; }
+            if (error.pending || /Another transfer is running|stream is still being built/i.test(error.message)) { transferMeter.retry?.(error.message); message('Transfer is still running. Reconnecting…'); return; }
             if (session) {
                 const route = {...session};
                 try {

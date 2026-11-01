@@ -62,11 +62,20 @@ final class CSM_Support {
         }
         if (is_link($path) || !is_writable($path)) { throw new RuntimeException('Unsafe staging directory.'); }
         chmod($path, 0700);
-        $webroot = realpath(ABSPATH);
-        if ($webroot && str_starts_with(realpath($path) . '/', $webroot . '/')) {
-            throw new RuntimeException('Staging storage must be outside the public WordPress directory.');
-        }
+        if (self::public_path($path)) { throw new RuntimeException('Staging storage must be outside the public web directory.'); }
         return $path;
+    }
+
+    private static function public_path(string $path): bool {
+        $roots = array_filter([realpath(ABSPATH), !empty($_SERVER['DOCUMENT_ROOT']) ? realpath($_SERVER['DOCUMENT_ROOT']) : false]);
+        // Inspect ancestors too: a symlink beneath a public directory can expose an outside target.
+        while (true) {
+            $real = realpath($path);
+            foreach ($roots as $root) { if ($real && str_starts_with($real . '/', rtrim($root, '/') . '/')) { return true; } }
+            $parent = dirname($path);
+            if ($parent === $path) { return false; }
+            $path = $parent;
+        }
     }
 
     public static function job(string $id): array {
@@ -82,8 +91,7 @@ final class CSM_Support {
             $path = rtrim($home, '/\\') . '/.trickle-backups/' . substr(hash_hmac('sha256', ABSPATH, wp_salt('auth')), 0, 24);
             if (is_dir($path) || @mkdir($path, 0700, true)) {
                 $real = realpath($path);
-                $public = array_filter([realpath(ABSPATH), realpath($_SERVER['DOCUMENT_ROOT'] ?? '')]);
-                if ($real && !is_link($path) && is_writable($path) && !array_filter($public, static fn($root) => $real === $root || str_starts_with($real . '/', rtrim($root, '/') . '/'))) { chmod($path, 0700); return $path; }
+                if ($real && !is_link($path) && is_writable($path) && !self::public_path($path)) { chmod($path, 0700); return $path; }
             }
         }
         return self::private_dir();

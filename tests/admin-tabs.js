@@ -1,0 +1,16 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const panels=['settings','migrate','diagnostics'].map(view=>({dataset:{csmView:view},hidden:true,selection:'retained'}));
+const links=['settings','migrate','backups','diagnostics'].map(view=>({dataset:{csmTab:view},href:'https://local.test/wp-admin/tools.php?page=trickle'+(view==='migrate'?'':'&view='+view),attrs:{},classList:{toggle(_,active){this.active=active;}},closest(){return true;},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},addEventListener(_,fn){this.click=fn;}}));
+let toggles=0,popstate;
+const logs={open:false,dispatchEvent(){toggles++;}};
+const location={href:links[0].href};
+const c={URL,location,Event:class{},document:{querySelectorAll:selector=>selector==='[data-csm-view]'?panels:links,getElementById:()=>logs},history:{pushState(_,__,url){location.href=url;}},window:{addEventListener(_,fn){popstate=fn;}}};
+vm.createContext(c);vm.runInContext(fs.readFileSync(require('node:path').join(__dirname,'../assets/admin-tabs.js'),'utf8'),c);
+assert.deepEqual(panels.map(p=>p.hidden),[false,true,true]);assert.equal(links[0].attrs['aria-current'],'page');
+const click=(i,extra={})=>{let prevented=false;links[i].click({button:0,preventDefault(){prevented=true;},...extra});return prevented;};
+assert.equal(click(1),true);assert.deepEqual(panels.map(p=>p.hidden),[true,false,true]);assert.equal(panels[1].selection,'retained');
+click(3);assert.equal(logs.open,true);assert.equal(toggles,1);assert.equal(panels[2].hidden,false);
+assert.equal(click(0,{metaKey:true}),false);assert.equal(click(2),false);
+location.href=links[0].href;popstate();assert.equal(panels[0].hidden,false);assert.equal(panels[1].selection,'retained');
+location.href='https://local.test/wp-admin/tools.php?page=trickle&view=unknown';popstate();assert.equal(panels[1].hidden,false);
+console.log('Tab checks passed: deep links, selected tab, retained selection, diagnostics loading, browser back, modifier clicks and Backups navigation.');

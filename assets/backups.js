@@ -32,9 +32,11 @@
             const counts = [[item.tables.length,'table'],[item.plugins.length,'plugin'],[item.themes.length,'theme']].filter(([count]) => count).map(([count,label]) => `${count} ${label}${count === 1 ? '' : 's'}`);
             if (item.media) counts.push('Replaced media');
             const names = [...item.tables, ...item.plugins, ...item.themes].join(', ');
-            return `<article class="csm-backup-row"><div><h2>Before ${esc(date)}${i === 0 ? ' <span class="csm-backup-latest">Latest</span>' : ''}</h2><p>${esc(counts.join(' · '))}</p>${item.temporary ? '<p class="csm-note">Temporary storage; the host may clear these files.</p>' : ''}${item.source ? `<p class="csm-backup-source">From ${esc(item.source)}</p>` : ''}<details><summary>Included items</summary><p>${esc(names || 'Media files')}${item.media && names ? ', replaced media files' : ''}</p></details></div><button type="button" class="button" data-restore-backup="${esc(item.id)}">Restore</button></article>`;
+            return `<article class="csm-backup-row" id="csm-backup-${esc(item.id)}"${new URLSearchParams(location.search).get('backup') === item.id ? ' tabindex="-1" data-highlighted="true"' : ''}><div><h2>Before ${esc(date)}${i === 0 ? ' <span class="csm-backup-latest">Latest</span>' : ''}</h2><p>${esc(counts.join(' · '))}</p>${item.temporary ? '<p class="csm-note">Temporary storage; the host may clear these files.</p>' : ''}${item.source ? `<p class="csm-backup-source">From ${esc(item.source)}</p>` : ''}<details><summary>Included items</summary><p>${esc(names || 'Media files')}${item.media && names ? ', replaced media files' : ''}</p></details></div><button type="button" class="button" data-restore-backup="${esc(item.id)}">Restore</button></article>`;
         }).join('');
         $('backup-status').textContent = inventory.backups.length ? `${inventory.backups.length} of 3 backups · ${inventory.destination}` : 'No backups yet.';
+        const selectedBackup = $('backup-items').querySelector('[data-highlighted]');
+        if (selectedBackup) { selectedBackup.focus({preventScroll:true}); selectedBackup.scrollIntoView({block:'nearest'}); }
         if (inventory.recovery) await restore(inventory.recovery.backup_id, false);
     }
     async function restore(id, ask = true) {
