@@ -574,7 +574,9 @@ final class CSM_Plugin {
     }
 
     private static function copy_step(string $source, string $target, ?array &$state, bool $sealed = false): bool {
-        clearstatcache(true,$source); $stat=stat($source); $stamp=[$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']];
+        clearstatcache(true,$source); $stat=@stat($source);
+        if (!$stat || !is_file($source)) { throw new RuntimeException('Copy source is missing: '.basename($source)); }
+        $stamp=[$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']];
         $state ??= ['offset'=>0,'stamp'=>$stamp];
         if ($stamp!==$state['stamp']) { throw new RuntimeException('File changed during copy: '.basename($source)); }
         if ($state['offset']>0 && (!is_file($target) || filesize($target)<$state['offset'])) { throw new RuntimeException('Copy checkpoint is missing or truncated.'); }
@@ -705,6 +707,7 @@ final class CSM_Plugin {
         CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id'] . '-preview.json');
         foreach (['-apply.json','-restore.json','-retry.json','-heartbeat'] as $suffix) { CSM_Support::remove_tree(CSM_Support::private_dir().'/'.$job['id'].$suffix); }
         CSM_Progress::remove($job['id']);
+        CSM_Support::remove_tree(CSM_Support::private_dir().'/job-records/'.$job['id']);
         delete_option('_csm_cursor_'.$job['id']);
         delete_option('_csm_job_' . $job['id']); CSM_Backups::forget($job['id']);
         if (get_option('_csm_active_job') === $job['id']) { delete_option('_csm_active_job'); }

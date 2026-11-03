@@ -34,7 +34,11 @@ final class CSM_Support {
     public static function due(): bool { return self::$step_deadline !== null && hrtime(true)/1e9 >= self::$step_deadline; }
 
     public static function atomic_json(string $path, array $data): void {
-        $raw = self::json($data); $tmp = $path . '.' . bin2hex(random_bytes(6));
+        self::atomic_bytes($path,self::json($data));
+    }
+
+    private static function atomic_bytes(string $path,string $raw): void {
+        $tmp = $path . '.' . bin2hex(random_bytes(6));
         if (file_put_contents($tmp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
         chmod($tmp, 0600);
         if (!rename($tmp, $path)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
@@ -151,8 +155,24 @@ final class CSM_Support {
         if (!preg_match('/^[a-f0-9]{32}$/D', $id)) { throw new RuntimeException('Invalid transfer ID.'); }
         $job = get_option('_csm_job_' . $id);
         if (!$job) { throw new RuntimeException('Transfer not found.'); }
+        if (isset($job['_csm_blob'])) {
+            $digest=$job['_csm_blob'];
+            if (!is_string($digest) || !preg_match('/^[a-f0-9]{64}$/D',$digest)) { throw new RuntimeException('Invalid transfer checkpoint reference.'); }
+            $dir=$job['_csm_blob_dir'] ?? self::private_dir().'/job-records/'.$id;
+            if (!is_string($dir) || is_link($dir) || self::public_path($dir)) { throw new RuntimeException('Unsafe transfer checkpoint storage.'); }
+            $raw=@file_get_contents($dir.'/'.$digest.'.json.gz');
+            if ($raw===false || !hash_equals($digest,hash('sha256',$raw))) { throw new RuntimeException('Transfer checkpoint is missing or changed.'); }
+            $decoded=@gzdecode($raw,268435456);
+            $state=$decoded===false?null:json_decode($decoded,true,512,JSON_THROW_ON_ERROR);
+            if (!is_array($state) || ($state['id'] ?? null)!==$id || ($state['status'] ?? null)!==$job['status']) { throw new RuntimeException('Invalid transfer checkpoint.'); }
+            $job=$state;
+        }
         if (in_array($job['status'],['staging','backup_copy'],true)) {
-            $key='_csm_cursor_'.$id; wp_cache_delete($key,'options'); $cursor=get_option($key,[]);
+            global $wpdb;
+            $key='_csm_cursor_'.$id;
+            // Transactional writes bypass the options cache, including its negative cache.
+            $cursor=maybe_unserialize($wpdb->get_var($wpdb->prepare('SELECT option_value FROM '.self::ident($wpdb->options).' WHERE option_name=%s',$key)));
+            if (!is_array($cursor)) { $cursor=[]; }
             if (($cursor['status'] ?? '')===$job['status']) { $job=array_replace($job,$cursor); }
         }
         return $job;
@@ -180,9 +200,46 @@ final class CSM_Support {
     }
 
     public static function save(array $job): void {
+        if (!preg_match('/^[a-f0-9]{32}$/D',$job['id'] ?? '')) { throw new RuntimeException('Invalid transfer ID.'); }
         @touch(self::private_dir().'/'.$job['id'].'-heartbeat');
-        update_option('_csm_job_' . $job['id'], $job, false);
+        $record=$job;
+        if (strlen(maybe_serialize($job))>262144) {
+            $json=self::json($job);
+            if (strlen($json)>268435456) { throw new RuntimeException('Transfer inventory exceeds its checkpoint limit. Narrow the selection.'); }
+            $raw=gzencode($json,3); unset($json);
+            if ($raw===false) { throw new RuntimeException('Could not encode transfer checkpoint.'); }
+            $digest=hash('sha256',$raw);
+            $dir=isset($job['backup_dir'])?$job['backup_dir'].'/job-records':self::private_dir().'/job-records/'.$job['id'];
+            if (is_link($dir) || self::public_path($dir)) { throw new RuntimeException('Unsafe transfer checkpoint storage.'); }
+            if (!is_dir($dir) && !mkdir($dir,0700,true)) { throw new RuntimeException('Cannot create transfer checkpoint storage.'); }
+            $path=$dir.'/'.$digest.'.json.gz';
+            if (!is_file($path)) { self::atomic_bytes($path,$raw); }
+            $record=array_intersect_key($job,array_flip(['id','status','credential','created','plugin_version','applied'])); $record['_csm_blob']=$digest; $record['_csm_blob_dir']=$dir;
+        }
+        $key='_csm_job_'.$job['id'];
+        if (!update_option($key,$record,false)) {
+            wp_cache_delete($key,'options');
+            if (get_option($key)!==$record) { throw new RuntimeException('Could not persist transfer checkpoint. Check database storage and packet limits.'); }
+        }
         delete_option('_csm_cursor_'.$job['id']);
+    }
+
+    public static function prune_job_records(): void {
+        $dirs=[];
+        foreach (glob(self::private_dir().'/job-records/*',GLOB_ONLYDIR) ?: [] as $dir) {
+            $id=basename($dir); if (!preg_match('/^[a-f0-9]{32}$/D',$id)) { continue; }
+            $dirs[$dir]=get_option('_csm_job_'.$id,[])['_csm_blob'] ?? '';
+        }
+        foreach (array_filter(array_merge(get_option('_csm_backups',[]),[get_option('_csm_active_job')])) as $id) {
+            $record=get_option('_csm_job_'.$id,[]);
+            if (!empty($record['_csm_blob_dir']) && !is_link($record['_csm_blob_dir']) && !self::public_path($record['_csm_blob_dir'])) { $dirs[$record['_csm_blob_dir']]=$record['_csm_blob'] ?? ''; }
+        }
+        foreach ($dirs as $dir=>$current) {
+            foreach (glob($dir.'/*.json.gz') ?: [] as $path) {
+                // Retain old immutable versions long enough for concurrent status readers.
+                if (basename($path)!==$current.'.json.gz' && filemtime($path)<time()-3600) { @unlink($path); }
+            }
+        }
     }
 
     public static function lock(): string {

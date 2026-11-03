@@ -1,4 +1,4 @@
-# Trickle 0.1.18
+# Trickle 0.1.19
 
 A shared WordPress plugin for selective push/pull migrations, controlled from the local site's **Tools → Trickle** page. Install the same ZIP at both ends.
 
@@ -26,7 +26,7 @@ Self-connections are excluded from the saved-site selector and rejected by the c
 
 ## Installation and use
 
-1. Upload `trickle-0.1.18.zip` through Plugins → Add Plugin on both sites and activate it.
+1. Upload `trickle-0.1.19.zip` through Plugins → Add Plugin on both sites and activate it.
    Activation installs `wp-content/mu-plugins/0-trickle-loader.php`. That directory must be writable. The loader isolates signed streaming/recovery requests and authenticated Trickle dashboard requests from ordinary plugins and theme code, so a broken active plugin need not block rollback. Isolation is limited to the actual WordPress entry scripts; unrelated login and admin pages retain their plugins. Dashboard AJAX isolation also requires a valid Trickle nonce. Inventory requests load ordinary plugins so their vendor update filters still work. A failed inventory request does not hide an existing transfer's recovery controls. Other must-use plugins and host firewalls still run. The loader is dormant when Trickle is deactivated. The first WordPress request after a version update refreshes an outdated loader when file modifications are allowed. The dashboard also checks it; CLI-only installations can reactivate Trickle to refresh it immediately. File apply remains blocked until the expected loader is installed.
 2. Open Tools → Trickle on the remote site. Authenticated remote reads and incoming writes are both allowed by default on a fresh installation. Either can be disabled under Connection & access; saved permission choices are preserved.
 3. Use **Copy connection code** at the top of the remote Trickle page, then paste both lines into the local site's connection panel. A complete code connects automatically: the visible site URL followed by its private key. Check the URL before pasting. Permission checkboxes save automatically. Treat the code like a password; do not put the key in a URL or support ticket. Older base64 connection codes are still accepted.
@@ -349,3 +349,7 @@ Plugin/theme file hashes are also cached per folder, independently of the transf
 Media comparisons checkpoint between differing months and exchange one bounded compressed hash manifest per month instead of 500-file pages. Matching years/months still skip deeper comparison. Safe retry loops share a 50-second request envelope; streams resume from their saved byte offsets when that envelope is reached.
 
 Release 0.1.18 adds bounded checkpointed packaging/import/replacement and recovery, durable cancellation and cleanup, finite retry/worker budgets, clearer 502 diagnostics, on-demand component/year size estimates, and cross-selection folder hash reuse. Unreachable frontend health checks fail safely into rollback; partially restored transfers remain resumable. Both ends must run 0.1.18 for new transfers.
+
+Release 0.1.19 fixes verification loops on large file inventories by storing large jobs as compressed, immutable, checksummed private records with small database status/reference rows. Failed checkpoint writes stop with an error. Transactional cursors bypass the options negative cache. Cancel remains enabled during busy-state handling. Superseded record versions expire after an hour; current records survive with retained backups and are removed on discard. Validation includes a 25,001-record checkpoint exceeding 16 MB, forced database-write failure, a real 24,670-file QA pull, and a repeat selecting zero media files across all 12 source groups.
+
+Many-file regression: `python3 tests/full-files-pull.py --apply` intentionally copies all QA-A plugins, themes and media to QA-C, preserves destination activation and database data, retains the backup, then stages/discards a repeat pull and requires zero media selected. It leaves the successful files on QA-C for manual repeat-pull testing. It requires both QA sites idle and never contacts a production source.

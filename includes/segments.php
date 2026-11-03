@@ -204,6 +204,7 @@ final class CSM_Segments {
     }
 
     public static function prune_sources(): void {
+        CSM_Support::prune_job_records();
         foreach (glob(CSM_Support::private_dir().'/media-compare-*.json') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
         foreach (glob(CSM_Support::private_dir().'/*.comparison-*.json') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
         foreach (glob(CSM_Support::private_dir().'/*.build-*') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }

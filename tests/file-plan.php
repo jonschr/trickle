@@ -19,15 +19,18 @@ $make=static function()use($root,$stage,$component,&$jobs):array{
  $job['received']['files']=true;CSM_Support::save($job);return $job;
 };
 try{
- $job=$make();$writes=0;
+ $job=$make();$writes=0;$per_file=[];
  $watch=static function($sql)use(&$writes,$job){if(str_starts_with($sql,'UPDATE ')&&str_contains($sql,'_csm_job_'.$job['id']))$writes++;return $sql;};
+ $checkpoint=static function($id,$phase)use(&$per_file,&$writes,$job){if($id===$job['id']&&$phase==='apply')$per_file[]=$writes;};
  add_filter('query',$watch);
+ add_action('csm_checkpoint',$checkpoint,10,2);
  $result=CSM_Plugin::commit($job);
  remove_filter('query',$watch);
+ remove_action('csm_checkpoint',$checkpoint,10);
  $job=CSM_Support::job($job['id']);
  $check($result['status']==='applied'&&file_get_contents($root.'/a.txt')==='new-a'&&file_get_contents($root.'/b.txt')==='new-b','Applies replacement and new files');
  $check(!file_exists($root.'/obsolete.txt'),'Removes obsolete component files');
- $check($writes>0&&$writes<=3,'Saves recovery state at most three times, independent of file count');
+ $check(count($per_file)===4&&count(array_unique($per_file))===1,'Per-file replacement uses its tiny journal without rewriting the database job per file');
  $planpath=$job['backup_dir'].'/operations.json';$plan=file_get_contents($planpath);
  $ops=json_decode($plan,true);
  $check(count($ops)===4&&$job['ops']===[]&&hash_equals($job['ops_hash'],hash('sha256',$plan)),'Complete checksummed plan includes all replaced, new and obsolete files');
@@ -62,6 +65,7 @@ try{
  CSM_Plugin::discard(CSM_Support::job($job['id']));
  echo "$checks file recovery checks passed.\n";
 }finally{
+ if(isset($checkpoint))remove_action('csm_checkpoint',$checkpoint,10);
  if(isset($watch))remove_filter('query',$watch);if(isset($break))remove_filter('query',$break);if(isset($reject))remove_filter('query',$reject);
  foreach($jobs as $id){if(!get_option('_csm_job_'.$id))continue;$j=CSM_Support::job($id);if(in_array($j['status'],['applying','applied'],true))CSM_Plugin::rollback($j);CSM_Plugin::discard(CSM_Support::job($id));}
  CSM_Support::remove_tree($root);CSM_Support::remove_tree($stage);

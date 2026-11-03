@@ -169,7 +169,7 @@
         busy = true; $('error').hidden = true;
         document.querySelector('.csm').setAttribute('aria-busy', 'true');
         feedback('Working… Keep this page open.');
-        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => control.id !== 'csm-copy' && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
+        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-discard'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
