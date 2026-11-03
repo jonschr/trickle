@@ -22,8 +22,10 @@ final class CSM_Files {
     }
 
     public static function git_folders(array $selection): array {
-        $result = [];
-        $scan = static function (string $path, string $relative) use (&$scan, &$result): void {
+        $result = []; $deadline=hrtime(true)/1e9+45;
+        $scan = static function (string $path, string $relative) use (&$scan, &$result,$deadline): void {
+            if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('Git folder scan exceeded its 45-second limit. Narrow the selection.'); }
+            CSM_Support::check_source_budget();
             if (self::excluded($relative) || is_link($path) || !is_dir($path)) { return; }
             // A .git file is a worktree/submodule marker, just as a .git directory is a repository marker.
             if (file_exists($path . '/.git') || is_link($path . '/.git')) { $result[] = $relative; }
@@ -60,7 +62,7 @@ final class CSM_Files {
         }
     }
 
-    public static function inventory(bool $refresh = false): array {
+    public static function inventory(bool $refresh = false, bool $media = true): array {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
         require_once ABSPATH . 'wp-admin/includes/update.php';
         if ($refresh) { wp_update_plugins(); wp_update_themes(); }
@@ -79,7 +81,7 @@ final class CSM_Files {
         foreach (wp_get_themes() as $id => $theme) {
             $themes[] = ['id' => $id, 'name' => $theme->get('Name'), 'version' => $theme->get('Version'), 'update' => $theme_updates->response[$id]['new_version'] ?? null, 'icon' => esc_url_raw($theme->get_screenshot() ?: '', ['http', 'https']), 'parent' => $theme->get('Template'), 'active' => in_array($id, $active_themes, true)];
         }
-        return ['plugins' => array_values($plugins), 'themes' => $themes] + self::media();
+        return ['plugins' => array_values($plugins), 'themes' => $themes] + ($media?self::media():[]);
     }
 
     public static function media(int $page = 1, array $ids = []): array {
@@ -99,7 +101,7 @@ final class CSM_Files {
     }
 
     public static function selection(array $selection): array {
-        $inventory = self::inventory();
+        $inventory = self::inventory(false,false);
         foreach (['plugins', 'themes'] as $kind) {
             $allowed = array_column($inventory[$kind], null, 'id');
             $selection[$kind] = array_values(array_unique($selection[$kind] ?? []));
@@ -192,13 +194,16 @@ final class CSM_Files {
         return $path;
     }
 
-    public static function scan(string $path, string $relative = '', array $selection = []): Generator {
+    public static function scan(string $path, string $relative = '', array $selection = [], ?float $deadline = null): Generator {
+        $deadline ??= hrtime(true)/1e9+45;
+        if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('File traversal exceeded its 45-second limit. Narrow the selection.'); }
+        CSM_Support::check_source_budget();
         if (self::skipped($relative, $selection)) { return; }
         if (!empty($selection['protect_source_git']) && is_dir($path) && (file_exists($path . '/.git') || is_link($path . '/.git')) && !in_array($relative, $selection['git_overrides'] ?? [], true)) { return; }
         if (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: ' . basename($path)); }
         if (is_file($path)) { yield $path; return; }
         if (!is_dir($path)) { return; }
-        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname(), $relative . '/' . $file->getFilename(), $selection); }
+        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname(), $relative . '/' . $file->getFilename(), $selection,$deadline); }
     }
 
     public static function paths(array $selection): Generator {
@@ -289,6 +294,131 @@ final class CSM_Files {
         yield CSM_Support::json(['type' => 'end', 'files' => $count, 'started' => $started, 'sha256' => hash_final($hash)]);
     }
 
+    public static function stream_step(array $selection, array &$cursor, array &$sizes): Generator {
+        $cursor += ['header'=>false,'index'=>0,'offset'=>0,'hash'=>'','done'=>false];
+        if ($cursor['done']) { return; }
+        if (empty($cursor['planned'])) {
+            $cursor['plan'] ??= [];
+            foreach (self::paths($selection) as $entry) {
+                if (isset($cursor['plan'][$entry[0]])) { continue; }
+                $stat=stat($entry[1]); $cursor['plan'][$entry[0]]=[$entry[1],[$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']],$entry[2] ?? null];
+                if (CSM_Support::due()) { return; }
+            }
+            $cursor['planned']=true; $cursor['plan']=array_map(static fn($relative,$entry)=>[$relative,...$entry],array_keys($cursor['plan']),array_values($cursor['plan']));
+        }
+        if (!$cursor['header']) {
+            $parents = []; foreach ($selection['themes'] as $theme) { $parents[$theme] = wp_get_theme($theme)->get('Template'); }
+            $cursor['started'] = time(); $cursor['header'] = true;
+            yield CSM_Support::json(['type'=>'header','version'=>2,'kind'=>'files','started'=>$cursor['started'],'theme_parents'=>$parents,'active_plugins'=>CSM_Activation::current(),'trickle_plugin'=>plugin_basename(CSM_FILE)]);
+        }
+        $same = CSM_Components::unchanged($selection); $index = 0;
+        foreach ($cursor['plan'] as [$relative,$path,$planned_stamp,$expected_hash]) {
+            CSM_Support::check_cancel();
+            if ($index++ < $cursor['index']) { continue; }
+            clearstatcache(true,$path); $stat = stat($path);
+            if ([$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']]!==$planned_stamp) { throw new RuntimeException('Source file changed after planning: '.$relative); }
+            if (!$cursor['offset']) {
+                $cursor['stamp'] = [$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']];
+                if (isset($same[$relative])) {
+                    if (!CSM_Components::verify($path,$same[$relative])) { throw new RuntimeException('Source file changed after comparison: '.$relative); }
+                    $line = CSM_Support::json(['type'=>'file-same','path'=>$relative,'sha256'=>$same[$relative]['hash'],'size'=>$stat['size'],'mtime'=>$stat['mtime']]);
+                    $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line); $cursor['index']++; yield $line; continue;
+                }
+                $line = CSM_Support::json(['type'=>'file','path'=>$relative,'size'=>$stat['size'],'mtime'=>$stat['mtime'],'mode'=>($stat['mode']&0111)?0755:0644]);
+                $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line);
+                // offset=-1 means the header is durable, including for empty files.
+                $cursor['offset'] = -1; yield $line;
+            }
+            if ($cursor['stamp'] !== [$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']]) { throw new RuntimeException('Source file changed during packaging: '.$relative); }
+            $fp = fopen($path,'rb'); $offset = max(0,$cursor['offset']);
+            if (!$fp || fseek($fp,$offset)!==0) { throw new RuntimeException('Cannot resume source file: '.$relative); }
+            try {
+                while ($offset < $stat['size']) {
+                    $bytes = fread($fp,min(262144,$stat['size']-$offset));
+                    if ($bytes === false || $bytes === '') { throw new RuntimeException('Source file is truncated: '.$relative); }
+                    $offset += strlen($bytes); $cursor['offset'] = $offset;
+                    $component = str_starts_with($relative,'uploads/')?'media':explode('/',$relative)[0];
+                    $sizes[$component] += strlen($bytes);
+                    CSM_Progress::update(['phase'=>'Packaging file','component'=>$relative,'count'=>$index-1,'bytes'=>$offset]);
+                    yield $bytes;
+                }
+            } finally { fclose($fp); }
+            clearstatcache(true,$path); $after = stat($path);
+            if ($cursor['stamp'] !== [$after['size'],$after['mtime'],$after['ctime'],$after['ino']]) { throw new RuntimeException('Source file changed during packaging: '.$relative); }
+            $digest = CSM_Support::hash_file($path);
+            if ($expected_hash!==null && !hash_equals($expected_hash,$digest)) { throw new RuntimeException('Media changed after comparison: '.$relative); }
+            $line = CSM_Support::json(['type'=>'file-end','sha256'=>$digest]);
+            $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line); $cursor['index']++; $cursor['offset']=0; yield $line;
+        }
+        $cursor['done'] = true;
+        yield CSM_Support::json(['type'=>'end','files'=>$cursor['index'],'started'=>$cursor['started'],'sha256'=>$cursor['hash']]);
+    }
+
+    public static function stage_step($fp, array &$job): bool {
+        $state = $job['imports']['files'] ?? null;
+        if (!$state) {
+            $header = CSM_Support::line($fp);
+            if (($header['type'] ?? '') !== 'header' || ($header['version'] ?? 0) !== 2 || ($header['kind'] ?? '') !== 'files') { throw new RuntimeException('Invalid file stream.'); }
+            CSM_Activation::source($job,$header);
+            foreach ($header['theme_parents'] ?? [] as $parent) {
+                if ($parent && (!in_array($parent,$job['selection']['themes'],true) || self::skipped('themes/'.$parent,$job['selection'])) && !wp_get_theme($parent)->exists()) { throw new RuntimeException('Include the required parent theme: '.$parent); }
+            }
+            $state = ['header'=>$header,'offset'=>ftell($fp),'hash'=>'','seen'=>[],'components'=>[],'current'=>null];
+            $job['files'] = [];
+        }
+        $dir=CSM_Support::private_dir().'/'.$job['id'];
+        if (!is_dir($dir) && !mkdir($dir,0700)) { throw new RuntimeException('Cannot create transfer staging directory.'); }
+        if (fseek($fp,$state['offset'])!==0) { throw new RuntimeException('Cannot resume file import.'); }
+        CSM_Support::step();
+        do {
+            CSM_Support::check_cancel();
+            if (!$state['current']) {
+                $record=CSM_Support::line($fp); $type=$record['type'] ?? '';
+                if ($type==='end') {
+                    if (count($job['files'])!==$record['files'] || !hash_equals($state['hash'],$record['sha256']) || fread($fp,1)!=='') { throw new RuntimeException('Incomplete file stream or checksum failure.'); }
+                    foreach (['plugins','themes'] as $kind) { foreach ($job['selection'][$kind] as $component) { if (!self::skipped($kind.'/'.$component,$job['selection']) && empty($state['components'][$kind.'/'.$component])) { throw new RuntimeException('Selected component was omitted from the file stream.'); } } }
+                    $job['media_watermark']=$state['header']['started']; unset($job['imports']['files']); return true;
+                }
+                if (!in_array($type,['file','file-same'],true) || !is_string($record['path'] ?? null) || isset($state['seen'][$record['path']])) { throw new RuntimeException('Invalid or duplicate file header.'); }
+                $target=self::destination($record['path'],$job['selection']);
+                $state['seen'][$record['path']]=true; $parts=explode('/',$record['path']); $state['components'][$parts[0].'/'.$parts[1]]=true;
+                $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($record));
+                if ($type==='file-same') {
+                    if (!is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'],CSM_Support::hash_file($target))) { throw new RuntimeException('Unchanged destination file failed verification: '.$record['path']); }
+                    $job['files'][]=['path'=>$record['path'],'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true];
+                } else {
+                    if (!is_int($record['size'] ?? null) || $record['size']<0) { throw new RuntimeException('Invalid file size.'); }
+                    $state['current']=['record'=>$record,'written'=>0,'stage'=>$dir.'/'.count($job['files'])];
+                }
+            }
+            if ($current=$state['current']) {
+                $record=$current['record']; if ($current['written']>0 && (!is_file($current['stage']) || filesize($current['stage'])<$current['written'])) { throw new RuntimeException('Staged file checkpoint is missing or truncated.'); } $out=fopen($current['stage'],'c+b');
+                if (!$out || !ftruncate($out,$current['written']) || fseek($out,$current['written'])!==0) { throw new RuntimeException('Cannot resume staged file.'); }
+                try {
+                    do {
+                        $remaining=$record['size']-$current['written'];
+                        if ($remaining<=0) { break; }
+                        $bytes=fread($fp,min(262144,$remaining));
+                        if ($bytes===false || $bytes==='') { throw new RuntimeException('Truncated file stream.'); }
+                        CSM_Support::write($out,$bytes); $current['written']+=strlen($bytes);
+                        CSM_Progress::update(['phase'=>'Staging file','component'=>$record['path'],'count'=>count($job['files']),'bytes'=>$current['written']]);
+                    } while (!CSM_Support::due());
+                    fflush($out);
+                } finally { fclose($out); }
+                $state['current']=$current;
+                if ($current['written']===$record['size']) {
+                    $end=CSM_Support::line($fp);
+                    if (($end['type'] ?? '')!=='file-end' || !hash_equals(CSM_Support::hash_file($current['stage']),$end['sha256'] ?? '')) { throw new RuntimeException('File checksum mismatch.'); }
+                    $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($end));
+                    $job['files'][]=['path'=>$record['path'],'mtime'=>(int)$record['mtime'],'size'=>$record['size'],'mode'=>!str_starts_with($record['path'],'uploads/') && (($record['mode'] ?? 0644)&0111)?0755:0644,'stage'=>$current['stage'],'sha256'=>$end['sha256']];
+                    $state['current']=null;
+                }
+            }
+            $state['offset']=ftell($fp);
+        } while (!CSM_Support::due());
+        $job['imports']['files']=$state; CSM_Support::save($job); return false;
+    }
+
     public static function stage($fp, array &$job): void {
         $header = CSM_Support::line($fp);
         if (($header['type'] ?? '') !== 'header' || ($header['version'] ?? 0) !== 1 || ($header['kind'] ?? '') !== 'files') { throw new RuntimeException('Invalid file stream.'); }
@@ -310,7 +440,7 @@ final class CSM_Files {
             }
             if (($record['type'] ?? '') === 'file-same') {
                 $path = $record['path'] ?? ''; $target = self::destination($path, $job['selection']);
-                if (isset($seen[$path]) || !is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'], hash_file('sha256', $target))) { throw new RuntimeException('Unchanged destination file failed verification: ' . $path); }
+                if (isset($seen[$path]) || !is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('Unchanged destination file failed verification: ' . $path); }
                 $parts = explode('/', $path); $components[$parts[0] . '/' . $parts[1]] = true; $seen[$path] = true;
                 hash_update($hash, CSM_Support::json($record));
                 $files[] = ['path' => $path, 'sha256' => $record['sha256'], 'size' => filesize($target), 'unchanged' => true]; continue;

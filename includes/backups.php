@@ -87,22 +87,47 @@ final class CSM_Backups {
             update_option('_csm_active_job', $job['id'], false);
             wp_schedule_single_event(time() + 60, 'trickle_recover', [$job['id']]);
         }
-        // Journal the copy phase too; a killed copy can restart without touching live tables.
-        if ($job['status'] === 'backup_copy') {
-            foreach ($original['database'] as $i => $table) {
-                if (empty($table['existed'])) { continue; }
-                CSM_Progress::update(['phase' => 'Copying backup table', 'component' => $table['target'], 'count' => $i, 'total' => count($original['database']), 'unit' => 'tables']);
-                $copy = CSM_Support::ident($job['database'][$i]['backup']);
-                CSM_Support::query('DROP TABLE IF EXISTS ' . $copy);
-                CSM_Support::query('CREATE TABLE ' . $copy . ' LIKE ' . CSM_Support::ident($table['backup']));
-                $columns = $wpdb->get_results('SHOW COLUMNS FROM ' . CSM_Support::ident($table['backup']), ARRAY_A);
-                $columns = implode(',', array_map([CSM_Support::class, 'ident'], array_column(array_filter($columns, static fn($column) => !str_contains($column['Extra'], 'GENERATED')), 'Field')));
-                CSM_Support::query('INSERT INTO ' . $copy . ' (' . $columns . ') SELECT ' . $columns . ' FROM ' . CSM_Support::ident($table['backup']));
+        // Each copy batch and its cursor commit together; a killed worker repeats no acknowledged rows.
+        CSM_Support::work($job['id'],false); CSM_Support::step();
+        if ($job['status']==='backup_copy') {
+            $cursor=$job['backup_copy'] ?? ['table'=>0,'offset'=>0,'initialized'=>false];
+            while ($cursor['table']<count($original['database'])) {
+                $i=$cursor['table']; $table=$original['database'][$i];
+                if (empty($table['existed'])) { $cursor=['table'=>$i+1,'offset'=>0,'initialized'=>false]; continue; }
+                $copy=CSM_Support::ident($job['database'][$i]['backup']); $source=CSM_Support::ident($table['backup']);
+                CSM_Progress::update(['phase'=>'Copying backup table','component'=>$table['target'],'count'=>$cursor['offset'],'total'=>null,'unit'=>'rows']);
+                if (!$cursor['initialized']) {
+                    CSM_Support::query('DROP TABLE IF EXISTS '.$copy); CSM_Support::query('CREATE TABLE '.$copy.' LIKE '.$source);
+                    $cursor['initialized']=true; $job['backup_copy']=$cursor; CSM_Support::save($job);
+                }
+                $columns=$wpdb->get_results('SHOW COLUMNS FROM '.$source,ARRAY_A);
+                $copy_columns=array_column(array_filter($columns,static fn($c)=>!str_contains($c['Extra'],'GENERATED')),'Field');
+                $columns=implode(',',array_map([CSM_Support::class,'ident'],$copy_columns));
+                $keys=$wpdb->get_results("SHOW INDEX FROM ".$source." WHERE Key_name='PRIMARY'",ARRAY_A);
+                usort($keys,static fn($a,$b)=>(int)$a['Seq_in_index']<=>(int)$b['Seq_in_index']); $keys=array_column($keys,'Column_name');
+                $where='';
+                if ($keys && isset($cursor['last'])) {
+                    $clauses=[];
+                    foreach ($keys as $index=>$key) { $terms=[]; for ($j=0;$j<=$index;$j++) { $terms[]=CSM_Support::ident($keys[$j]).($j===$index?' > ':' = ').$wpdb->prepare('%s',$cursor['last'][$keys[$j]]); } $clauses[]='('.implode(' AND ',$terms).')'; }
+                    $where=' WHERE '.implode(' OR ',$clauses);
+                }
+                $order=$keys?' ORDER BY '.implode(',',array_map([CSM_Support::class,'ident'],$keys)):CSM_Database::keyless_order($copy_columns);
+                $limit=$keys?' LIMIT 250':' LIMIT '.$cursor['offset'].',250';
+                CSM_Support::query('START TRANSACTION');
+                try {
+                    $count=CSM_Support::query('INSERT INTO '.$copy.' ('.$columns.') SELECT '.$columns.' FROM '.$source.$where.$order.$limit);
+                    $cursor['offset']+=$count;
+                    if ($keys && $count) { $cursor['last']=$wpdb->get_row('SELECT '.implode(',',array_map([CSM_Support::class,'ident'],$keys)).' FROM '.$copy.' ORDER BY '.implode(',',array_map(static fn($key)=>CSM_Support::ident($key).' DESC',$keys)).' LIMIT 1',ARRAY_A); }
+                    if ($count<250) { $cursor=['table'=>$i+1,'offset'=>0,'initialized'=>false]; }
+                    $job['backup_copy']=$cursor; CSM_Support::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options');
+                } catch (Throwable $error) { CSM_Support::query('ROLLBACK'); throw $error; }
+                if (CSM_Support::due()) { return CSM_Plugin::summary($job)+['continue'=>true]; }
             }
-            $job['status'] = 'applying'; CSM_Support::save($job);
+            $job['status']='applying'; CSM_Support::save($job);
         }
         update_option('_csm_maintenance', ['id' => $job['id'], 'probe' => hash('sha256', random_bytes(32)), 'until' => time() + 15 * MINUTE_IN_SECONDS], false);
         $result = CSM_Plugin::rollback($job);
+        if (!empty($result['continue'])) { return $result; }
         CSM_Plugin::discard(CSM_Support::job($job['id'])); delete_option('_csm_backup_restore');
         return $result + ['restored_backup' => $id, 'destination' => site_url()];
     }

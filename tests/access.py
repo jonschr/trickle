@@ -10,7 +10,7 @@ def wp(*args):
  if p.returncode:raise RuntimeError(p.stdout+p.stderr)
  return p.stdout
 
-def ev(code):return json.loads(wp('eval',code))
+def ev(code):return json.loads(wp('eval',code).splitlines()[-1])
 def request(action,key,data=None):
  body=(json.dumps(data or {},separators=(',',':'))+'\n').encode();stamp=str(int(time.time()));nonce=secrets.token_hex(16)
  digest=hashlib.sha256(body).hexdigest();params=base64.b64encode((json.dumps({'trickle_version':VERSION})+'\n').encode()).decode();sig=hmac.new(key.encode(),'\n'.join([action,stamp,nonce,digest,params]).encode(),hashlib.sha256).hexdigest()
@@ -30,12 +30,12 @@ try:
  wp('eval',"delete_option('_csm_settings');")
  status,r=request('manifest',master)
  check(status==200 and r['data']['incoming_writes'] and r['data']['can_receive'],'Fresh installation permits authenticated reads and advertises incoming writes')
- check(not r['data']['remote_updates_allowed'] and not r['data']['can_update_trickle'],'Migration defaults do not enable authenticated plugin updates')
+ check(r['data']['remote_updates_allowed'] and r['data']['can_update_trickle'],'Authenticated code updates are available without a separate permission')
  status,r=request('prepare',master,{'selection':{'tables':['wp_csm_fixture']}});job=r['data']['id']
  check(status==200,'Fresh installation accepts authenticated destination preparation without saving permissions')
  request('discard',master,{'id':job});job=None
  ui=wp('--user=admin','eval',"""ob_start();CSM_Plugin::page();$html=ob_get_clean();echo wp_json_encode([preg_match('/id="csm-allow-read"[^>]*checked/',$html)===1,preg_match('/id="csm-allow-write"[^>]*checked/',$html)===1]);""")
- check(json.loads(ui)==[True,True],'Fresh dashboard shows both migration permissions enabled')
+ check(json.loads(ui.splitlines()[-1])==[True,True],'Fresh dashboard shows both migration permissions enabled')
  wp('eval',"update_option('_csm_settings',['pull'=>false,'push'=>false,'updates'=>false],false);")
  check(request('manifest',master)[0]==403 and request('prepare',master,{'selection':{'tables':['wp_csm_fixture']}})[0]==403,'Explicitly disabled permissions remain disabled')
  wp('eval',"update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
@@ -56,7 +56,7 @@ try:
  check(request('commit',write,{'id':job})[0]==403,'Site-wide incoming-write setting still overrides key scope')
  wp('eval',"update_option('_csm_settings',['pull'=>true,'push'=>true],false);")
  request('discard',write,{'id':job});job=None
- data={'id':bundle,'kind':'database','selection':{'tables':['wp_csm_fixture'],'plugins':[],'themes':[],'media':'none'}}
+ data={'id':bundle,'kind':'database','format':2,'selection':{'tables':['wp_csm_fixture'],'plugins':[],'themes':[],'media':'none'}}
  status,r=request('bundle',read,data);info=r['data']
  check(status==200,'Read key can build a private resumable source snapshot')
  stream={'id':bundle,'kind':'database','offset':0,'bundle':info}

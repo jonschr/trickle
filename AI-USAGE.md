@@ -80,3 +80,6 @@ For media, `--media=all` includes the whole library but skips identical files th
 ## Traffic identity in tests
 
 Invoking Trickle through its dashboard, CLI or APIs must preserve the plugin’s normal user agents, even when an AI operator starts the operation. Do not install agent-identity overrides or change the user agent in migration test fixtures. This keeps host/firewall behavior representative of daily use. Identify the agent only on HTTP requests the agent makes directly outside the plugin.
+
+
+`wp trickle inventory --remote=Production --format=json` includes `estimates` for database allocation and file metadata, with a `complete` flag. These are estimates before compression and matching-file skips. `wp trickle cancel --yes --format=json` persists cancellation without waiting for the transfer lock; a `cancelling` result means safe cleanup/recovery is still pending. WordPress cron continues that cancellation if the browser/CLI disappears. Check status before starting another transfer. Consistent database export stops after 45 seconds; per-file checksums stop after 15 seconds. Large or slow selections may need narrowing. Downloads, verification, import and preview acknowledge separate steps; CLI commands consume those continuations automatically.

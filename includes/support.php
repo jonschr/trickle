@@ -1,7 +1,76 @@
 <?php
 defined('ABSPATH') || exit;
 
+final class CSM_Cancelled_Error extends RuntimeException {}
+final class CSM_Yield extends RuntimeException {}
+
 final class CSM_Support {
+    private static ?string $work_id = null;
+    private static bool $cancellable = true;
+    private static ?float $step_deadline = null;
+
+    public static function work(string $id, ?bool $cancellable = true): void {
+        self::cancel_path($id); if (self::$work_id!==$id || $cancellable!==null) { self::$cancellable=$cancellable ?? true; } self::$work_id=$id;
+    }
+
+    private static function cancel_path(string $id): string {
+        if (!preg_match('/^[a-f0-9]{32}$/D', $id)) { throw new RuntimeException('Invalid transfer ID.'); }
+        return self::private_dir() . '/' . $id . '-cancel.json';
+    }
+
+    public static function cancel(string $id): void {
+        self::atomic_json(self::cancel_path($id), ['created'=>time(),'credential'=>class_exists('CSM_Access')?CSM_Access::owner():'local']);
+    }
+
+    public static function is_cancelled(string $id): bool { $path=self::cancel_path($id); clearstatcache(true,$path); return is_file($path); }
+    public static function check_cancel(): void {
+        if (self::$cancellable && self::$work_id && self::is_cancelled(self::$work_id)) {
+            $marker=json_decode(file_get_contents(self::cancel_path(self::$work_id)),true);
+            if (!isset($marker['credential']) || !class_exists('CSM_Access') || $marker['credential']===CSM_Access::owner() || !empty($GLOBALS['_csm_credential']['master'])) { throw new CSM_Cancelled_Error('Transfer cancelled.'); }
+        }
+    }
+
+    public static function step(float $seconds = 8): void { self::$step_deadline = hrtime(true)/1e9 + max(.01, (float)apply_filters('csm_step_seconds', $seconds)); }
+    public static function due(): bool { return self::$step_deadline !== null && hrtime(true)/1e9 >= self::$step_deadline; }
+
+    public static function atomic_json(string $path, array $data): void {
+        $raw = self::json($data); $tmp = $path . '.' . bin2hex(random_bytes(6));
+        if (file_put_contents($tmp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
+        chmod($tmp, 0600);
+        if (!rename($tmp, $path)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
+    }
+
+    private static ?float $source_deadline = null;
+    private static int $source_seconds = 45;
+
+    public static function begin_source_budget(): void {
+        self::$source_seconds = max(1, min(45, (int)apply_filters('csm_source_packaging_seconds', 45)));
+        self::$source_deadline = hrtime(true) / 1e9 + self::$source_seconds;
+    }
+
+    public static function check_source_budget(): void {
+        self::check_cancel();
+        if (self::$source_deadline !== null && hrtime(true) / 1e9 >= self::$source_deadline) {
+            throw new RuntimeException('Source packaging exceeded the ' . self::$source_seconds . '-second limit. Select fewer components or a smaller media date range.');
+        }
+    }
+
+    public static function end_source_budget(): void { self::$source_deadline = null; }
+
+    public static function hash_file(string $path, ?callable $progress = null): string {
+        $fp=fopen($path,'rb'); if (!$fp) { throw new RuntimeException('Cannot read checksum file: '.basename($path)); }
+        $seconds=max(1,min(15,(int)apply_filters('csm_hash_seconds',15))); $deadline=hrtime(true)/1e9+$seconds; $hash=hash_init('sha256'); $read=0;
+        try {
+            while (!feof($fp)) {
+                self::check_source_budget();
+                if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('Checksum exceeded the '.$seconds.'-second limit: '.basename($path)); }
+                $bytes=fread($fp,262144); if ($bytes===false || ($bytes==='' && !feof($fp))) { throw new RuntimeException('Checksum read failed: '.basename($path)); }
+                hash_update($hash,$bytes); $read+=strlen($bytes); if ($progress) { $progress($read); }
+            }
+            return hash_final($hash);
+        } finally { fclose($fp); }
+    }
+
     public static function gzip(Generator $input): Generator {
         $context = deflate_init(ZLIB_ENCODING_GZIP, ['level' => 3]);
         if (!$context) { throw new RuntimeException('Cannot initialize stream compression.'); }
@@ -82,6 +151,10 @@ final class CSM_Support {
         if (!preg_match('/^[a-f0-9]{32}$/D', $id)) { throw new RuntimeException('Invalid transfer ID.'); }
         $job = get_option('_csm_job_' . $id);
         if (!$job) { throw new RuntimeException('Transfer not found.'); }
+        if (in_array($job['status'],['staging','backup_copy'],true)) {
+            $key='_csm_cursor_'.$id; wp_cache_delete($key,'options'); $cursor=get_option($key,[]);
+            if (($cursor['status'] ?? '')===$job['status']) { $job=array_replace($job,$cursor); }
+        }
         return $job;
     }
 
@@ -97,8 +170,19 @@ final class CSM_Support {
         return self::private_dir();
     }
 
+    public static function save_transactional(array $job): void {
+        @touch(self::private_dir().'/'.$job['id'].'-heartbeat');
+        global $wpdb;
+        $key='_csm_cursor_'.$job['id'];
+        $cursor=array_intersect_key($job,array_flip(['status','imports','rows','backup_copy']));
+        $sql=$wpdb->prepare('INSERT INTO '.self::ident($wpdb->options).' (option_name,option_value,autoload) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)',$key,maybe_serialize($cursor),'off');
+        self::query($sql); wp_cache_delete($key,'options');
+    }
+
     public static function save(array $job): void {
+        @touch(self::private_dir().'/'.$job['id'].'-heartbeat');
         update_option('_csm_job_' . $job['id'], $job, false);
+        delete_option('_csm_cursor_'.$job['id']);
     }
 
     public static function lock(): string {
@@ -124,7 +208,15 @@ final class CSM_Support {
     }
 
     public static function long_request(): void {
-        @set_time_limit(0);
+        @set_time_limit(50);
+        global $wpdb;
+        if (isset($wpdb) && method_exists($wpdb,'db_server_info')) {
+            $previous=$wpdb->suppress_errors(true);
+            $wpdb->query('SET SESSION innodb_lock_wait_timeout=10');
+            $wpdb->query('SET SESSION lock_wait_timeout=10');
+            $wpdb->query(stripos($wpdb->db_server_info(),'MariaDB')!==false?'SET SESSION max_statement_time=10':'SET SESSION max_execution_time=10000');
+            $wpdb->suppress_errors($previous);
+        }
         if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) { session_write_close(); }
     }
 

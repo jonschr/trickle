@@ -8,6 +8,7 @@ function get_option($key,$default=false){return $GLOBALS['options'][$key]??$defa
 function update_option($key,$value,$autoload=null){$GLOBALS['options'][$key]=$value;}
 function wp_is_file_mod_allowed($context){return $GLOBALS['allowed'];}
 function add_action(...$args){}
+function wp_next_scheduled(...$args){return true;}
 function plugin_basename($file){return 'trickle/trickle.php';}
 function wp_mkdir_p($path){return is_dir($path)||mkdir($path,0700,true);}
 class CSM_Log {public static array $errors=[];public static function write($level,$event,$context){self::$errors[]=$event;}}

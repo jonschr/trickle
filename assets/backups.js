@@ -55,7 +55,7 @@
         };
         timer = setTimeout(poll, 500);
         try {
-            await api('restore_backup', {site,id});
+            let result; do { result=await api('restore_backup', {site,id}); } while (result.continue);
             $('backup-status').textContent = 'Backup restored.';
         } finally { stopped = true; clearTimeout(timer); }
     }

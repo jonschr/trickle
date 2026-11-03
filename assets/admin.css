@@ -96,6 +96,13 @@
 .csm-component > span { font-size: 13px; overflow-wrap: anywhere; }
 .csm small { display: block; font-size: 12px; color: var(--csm-muted); margin-top: 3px; overflow-wrap: anywhere; }
 .csm-component b { font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.csm-component-size { font-variant-numeric: tabular-nums; }
+.csm-media-sizes { margin: 0 0 20px; }
+.csm-media-sizes h3 { margin: 0 0 8px; font-size: 12px; font-weight: 600; }
+.csm-media-year-sizes { display: grid; grid-template-columns: repeat(auto-fit,minmax(130px,1fr)); gap: 0 18px; margin: 0; }
+.csm-media-year-sizes > div { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--csm-line); }
+.csm-media-year-sizes dt,.csm-media-year-sizes dd { margin: 0; font-size: 12px; }
+.csm-media-year-sizes dd { color: var(--csm-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .csm-component .csm-inactive { color: #646970; }
 .csm-component .csm-inactive strong { font-weight: 500; }
 .csm-inactive .csm-identity-icon { filter: grayscale(1); opacity: .7; }
@@ -307,7 +314,6 @@
 .csm .csm-version-actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
 .csm .csm-version-actions:has(button:not([hidden])){margin-top:10px}
 .csm .csm-version-actions:not(:has(button:not([hidden]))){display:none}
-.csm .csm-update-permission{display:block;margin-top:10px}
 .csm-tabs { margin-bottom: 24px; }
 .csm-completion { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:20px; margin:20px 0; background:#fff; border:1px solid #c3c4c7; border-radius:6px; }
 .csm-completion h2, .csm-backup-row h2 { margin:0 0 8px; font-size:16px; }
@@ -516,3 +522,7 @@
 .csm-actions:has(.csm-transfer-meter:not([hidden])) > .csm-action-copy { width:100%; }
 .csm-actions:has(.csm-transfer-meter:not([hidden])) > .csm-buttons { width:100%; max-width:none; }
 .csm-actions:has(#csm-completion:not([hidden])) > .csm-buttons { display:none; }
+
+.csm-source-size-overview { display:flex; flex-wrap:wrap; gap:8px 24px; padding:12px 0 4px; color:#596579; font-size:12px; font-variant-numeric:tabular-nums; }
+.csm-source-size-overview strong { color:#1e2939; font-weight:600; margin-left:4px; }
+@media (max-width:600px) { .csm-source-size-overview { display:grid; grid-template-columns:1fr 1fr; gap:8px 16px; } .csm-source-size-overview > :first-child { grid-column:1/-1; } }

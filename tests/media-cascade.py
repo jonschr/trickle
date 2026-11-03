@@ -17,8 +17,8 @@ def wp(site,*args,fail=False):
  if p.returncode:raise RuntimeError(p.stdout+p.stderr)
  return p.stdout
 
-def cli(*args):return json.loads(wp(DEST,'trickle',*args,'--format=json'))
-def evaluate(site,code):return json.loads(wp(site,'eval',code))
+def cli(*args):return json.loads(wp(DEST,'trickle',*args,'--format=json').splitlines()[-1])
+def evaluate(site,code):return json.loads(wp(site,'eval',code).splitlines()[-1])
 def check(ok,label):
  global checks
  assert ok,label

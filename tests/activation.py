@@ -13,7 +13,7 @@ def wp(site,*args,fail=False):
  if r.returncode:raise RuntimeError(r.stdout+r.stderr)
  return r.stdout
 
-def ev(site,code):return json.loads(wp(site,'eval',code))
+def ev(site,code):return json.loads(wp(site,'eval',code).splitlines()[-1])
 def op(action,data=None):return ev(D,'echo wp_json_encode(CSM_Controller::execute('+json.dumps(action)+',json_decode('+repr(json.dumps(data or {}))+',true)));')
 def check(ok,label):
  global checks
@@ -37,7 +37,8 @@ for x in ROOT:
  assert ev(x,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job"));')
  for name in NAMES:assert not (ROOT[x]/'wp-content/plugins'/name).exists()
 old={x:ev(x,'echo wp_json_encode(["active"=>get_option("active_plugins"),"settings"=>get_option("_csm_settings"),"backups"=>get_option("_csm_backups",[]),"name"=>get_option("blogname"),"recents"=>get_option("_csm_recents",[]),"history"=>get_option("_csm_history",[])]);') for x in ROOT}
-baseline={x:list(old[x]['active'].values()) if isinstance(old[x]['active'],dict) else old[x]['active'] for x in ROOT}
+# Test activation with plugins installed on both QA sites; restore every original active list in finally.
+baseline={x:['trickle/trickle.php'] for x in ROOT}
 source=baseline[S]+[file(N+'source'),file(N+'dependency')];dest=baseline[D]+[file(N+'destination')]
 try:
  for x in ROOT:

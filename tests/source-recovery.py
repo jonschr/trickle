@@ -10,10 +10,11 @@ def wp(s,*args):
  assert p.returncode==0,p.stdout+p.stderr
  return p.stdout
 def ev(s,code):
- return json.loads(wp(s,'eval',code))
+ return json.loads(wp(s,'eval',code).splitlines()[-1])
 def op(action):return ev(D,'$s=CSM_Controller::session();echo wp_json_encode(CSM_Controller::execute('+json.dumps(action)+',["id"=>$s["id"],"kind"=>"files"]));')
 def prepare():return ev(D,'echo wp_json_encode(CSM_Controller::execute("prepare",["site"=>"https://trickle-qa-a.localhost:8453","direction"=>"pull","selection"=>["plugins"=>["'+NAME+'"],"transport"=>"stream","sync_active_plugins"=>false]]));')
-def preflight():return ev(D,'$calls=[];add_action("csm_request_complete",static function($a,$c)use(&$calls){if($a==="bundle")$calls[]=$c["http_status"];},10,2);$s=CSM_Controller::session();$r=CSM_Controller::execute("preflight",["id"=>$s["id"],"kind"=>"files"]);echo wp_json_encode([$r["timeline"]["ready"],$calls]);')
+def preflight():return ev(D,'$calls=[];add_action("csm_request_complete",static function($a,$c)use(&$calls){if($a==="bundle")$calls[]=$c["http_status"];},10,2);$s=CSM_Controller::session();$start=microtime(true);try{$r=CSM_Controller::execute("preflight",["id"=>$s["id"],"kind"=>"files"]);echo wp_json_encode([$r["timeline"]["ready"],$calls]);}catch(CSM_Network_Error $e){echo wp_json_encode(["exhausted"=>$e->exhausted,"calls"=>$calls,"milliseconds"=>(microtime(true)-$start)*1000]);}')
+
 def check(ok,label):
  global checks
  assert ok,label
@@ -49,17 +50,18 @@ add_action('plugins_loaded',static function(){if(($_GET['trickle']??'')!=='bundl
   until=time.monotonic()+10
   while not ready.exists() and time.monotonic()<until:time.sleep(.05)
   assert ready.exists(),'Lock holder did not start'
-  check(preflight()==[True,[409,200]],'A real source lock returns retryable busy and preparation resumes automatically')
+  pending=preflight();check(pending['exhausted'] and pending['calls']==[409] and pending['milliseconds']<2500,'A busy source releases the controller request promptly instead of sleeping through repeated waits')
   holder.wait(timeout=10);holder=None
+  check(preflight()==[True,[200]],'A later request resumes preparation once the source lock is released')
   no_cooldown=ev(D,'$p=CSM_Controller::peer("https://trickle-qa-a.localhost:8453");$r=CSM_Transport::request($p,"version");echo wp_json_encode($r["plugin_version"]===CSM_VERSION);')
   check(no_cooldown,'A busy build does not impose an unrelated host-wide rate-limit cooldown');op('discard')
   prepare();legacy_flag.write_text('busy')
-  check(preflight()==[True,[400,200]],'Older unclassified source-lock responses also resume automatically')
+  pending=preflight();check(pending['exhausted'] and pending['calls']==[400] and preflight()==[True,[200]],'Older unclassified source-lock errors retain a resumable preparation')
   immediate=ev(D,'CSM_Support::lock();$t=microtime(true);try{$s=CSM_Controller::session();CSM_Controller::execute("commit",["id"=>$s["id"]]);echo "false";}catch(Throwable $e){echo wp_json_encode($e instanceof CSM_Busy_Error&&!$e->exhausted&&microtime(true)-$t<1);}finally{CSM_Support::unlock();}')
   check(immediate,'A busy apply is returned immediately and is never blindly replayed');op('discard')
-  policy=ev(D,'$calls=0;$r=CSM_Transport::retry(static function()use(&$calls){$calls++;if($calls===1)throw new CSM_Network_Error("Fixture EOF");if($calls<6){$e=new CSM_Busy_Error("Fixture building");$e->retry_after=0;throw $e;}return [true];});echo wp_json_encode([$r,$calls]);')
-  check(policy==[[True],6],'Waiting for source preparation has a separate budget from network failures')
-  bounded=ev(D,'$calls=0;try{CSM_Transport::retry(static function()use(&$calls){$calls++;$e=new CSM_Busy_Error("Fixture building");$e->retry_after=0;throw $e;});echo "false";}catch(CSM_Busy_Error $e){echo wp_json_encode($e->exhausted&&$calls===13);}')
+  policy=ev(D,'$calls=0;try{CSM_Transport::retry(static function()use(&$calls){$calls++;if($calls===1)throw new CSM_Network_Error("Fixture EOF");$e=new CSM_Busy_Error("Fixture building");$e->retry_after=0;throw $e;});echo "false";}catch(CSM_Busy_Error $e){echo wp_json_encode([$e->exhausted,$calls]);}')
+  check(policy==[True,3],'Network and busy retry counts remain independently bounded inside one short request')
+  bounded=ev(D,'$calls=0;try{CSM_Transport::retry(static function()use(&$calls){$calls++;$e=new CSM_Busy_Error("Fixture building");$e->retry_after=0;throw $e;});echo "false";}catch(CSM_Busy_Error $e){echo wp_json_encode($e->exhausted&&$calls===2);}')
   check(bounded,'A permanently busy source eventually returns a retained, resumable failure')
   print(f'{checks} source-recovery checks passed; no migration apply or push.',flush=True)
  finally:

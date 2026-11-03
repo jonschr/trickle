@@ -4,6 +4,7 @@ define('ABSPATH', __DIR__);
 $options = [];
 function get_option($key, $default = false) { return $GLOBALS['options'][$key] ?? $default; }
 function update_option($key, $value, $autoload = null) { $GLOBALS['options'][$key] = $value; }
+function wp_cache_delete(...$args){}
 require __DIR__ . '/../includes/controller.php';
 $operate = new ReflectionMethod(CSM_Controller::class, 'operate');
 $check = static function ($ok) { if (!$ok) throw new RuntimeException('Preference check failed'); };

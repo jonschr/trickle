@@ -50,13 +50,23 @@
     function resetComponents() {
         for (const kind of componentKinds) setComponent(kind, false);
     }
-    async function api(op, data = {}) {
+    let cancellation = 0, cancelling = false;
+    const activeRequests=new Set();
+    function cancelled() { return Object.assign(new Error("Transfer cancelled."), {cancelled:true}); }
+    async function api(op, data = {}, generation = null) {
+        if (generation===null && data.id && !['cancel','recover','rollback'].includes(op)) generation=cancellation;
         const body = new URLSearchParams({action:'csm_admin', nonce:CSM.nonce, op, data:JSON.stringify(data)});
-        const response = await fetch(CSM.ajax, {method:'POST', credentials:'same-origin', body, ...(['progress','logs'].includes(op) ? {signal:AbortSignal.timeout(8000)} : {})});
-        const text = await response.text();
+        const controller=new AbortController();
+        if (generation!==null) activeRequests.add(controller);
+        const timer=setTimeout(()=>controller.abort(),['progress','logs'].includes(op)?8000:['cancel','recover'].includes(op)?20000:150000);
+        let response,text;
+        try { response=await fetch(CSM.ajax,{method:'POST',credentials:'same-origin',body,signal:controller.signal}); text=await response.text(); }
+        catch (error) { if (generation!==null && generation!==cancellation) throw cancelled(); error.retryable=true; throw error; }
+        finally { clearTimeout(timer); activeRequests.delete(controller); }
+        if (generation !== null && generation !== cancellation) throw cancelled();
         let result;
-        try { result = JSON.parse(text); } catch (_) { throw new Error(`Unexpected response (HTTP ${response.status}). Check the PHP log and firewall. ${text.replace(/<[^>]*>/g, '').slice(0, 160)}`); }
-        if (!result.ok) { const error = new Error(result.error || 'Request failed.'); error.retryExhausted = !!result.retry_exhausted; error.retryAfter = result.retry_after || 0; throw error; }
+        try { result = JSON.parse(text); } catch (_) { throw Object.assign(new Error(`Unexpected response (HTTP ${response.status}). Check Diagnostics.`),{retryable:[429,502,503,504].includes(response.status)}); }
+        if (!result.ok) { const error = new Error(result.error || 'Request failed.'); error.retryable=!!result.retryable; error.busy=!!result.busy; error.retryExhausted = !!result.retry_exhausted; error.retryAfter = result.retry_after || 0; throw error; }
         if (result.data?.nonce) CSM.nonce = result.data.nonce;
         if (Array.isArray(result.data?.state?.connections)) renderConnections(result.data.state);
         return result.data;
@@ -102,6 +112,7 @@
     }
     async function transferRequest(op, data) {
         let stopped = false, timer, lastLogRead = 0;
+        const generation = cancellation;
         const poll = async () => {
             try {
                 const detail = await api('progress', {id:data.id});
@@ -123,9 +134,12 @@
         try {
             let result, retries = 0;
             do {
-                try { result = await api(op, data); retries = 0; transferMeter.resolved?.(); }
+                try { if (generation !== cancellation) throw cancelled(); result = await api(op, data, generation); if (generation !== cancellation) throw cancelled(); retries = 0; transferMeter.resolved?.(); }
                 catch (error) {
-                    if (error.retryExhausted || !['preflight','transfer'].includes(op) || retries >= 3 || !/Another transfer is running|stream is still being built|network|fetch|timed? ?out|connection|HTTP 50[234]|HTTP 429/i.test(error.message)) throw error;
+                    if (error.cancelled || generation !== cancellation) throw cancelled();
+                    if (error.retryExhausted || !['preflight','transfer'].includes(op) || retries >= 3 || !error.retryable) throw error;
+                    const retry=await api('retry_state',{id:data.id,failed:true});
+                    if (retry.stopped) { session.automatic=false; throw new Error('No progress after repeated retries. Transfer stopped; cancelling.'); }
                     message('Connection interrupted. Retrying…');
                     const wait = Math.max(error.retryAfter || 0, 2 ** retries++);
                     transferMeter.retry?.(error.message, wait);
@@ -135,21 +149,23 @@
                 if (result.progress) renderActivity({...result.progress, ...(Array.isArray(result.pending) ? {pending:result.pending} : {}), ...(result.timeline ? {timeline:result.timeline} : {})});
                 else transferMeter.update(result);
                 if (result.continue) summary = result;
-            } while (['preflight','transfer'].includes(op) && result.continue);
+            } while (result.continue);
+            if (generation !== cancellation) throw cancelled();
             api('logs').then(logs => transferMeter.ingestLogs?.(logs.entries)).catch(() => {});
             return result;
         }
         catch (error) {
             stopped = true;
-            if (/Another transfer is running|stream is still being built/i.test(error.message)) { error.pending = true; throw error; }
-            try { summary = await api('status', {id:data.id}); showSummary(); renderActivity(await api('progress', {id:data.id})); }
+            if (error.cancelled || generation !== cancellation) throw cancelled();
+            if (error.busy) { error.pending = true; throw error; }
+            try { summary = await api('status', {id:data.id},generation); if (generation!==cancellation) throw cancelled(); showSummary(); renderActivity(await api('progress', {id:data.id},generation)); }
             catch (_) { /* Preserve the original failure when the destination is unreachable. */ }
             if (summary?.status !== 'applied') $('action-title').textContent = summary?.error || summary?.progress?.failure ? (op === 'commit' ? `${action} failed` : op === 'rollback' ? 'Restore failed' : 'Preparation failed') : `Check ${action.toLowerCase()} status`;
             throw error;
         } finally { stopped = true; clearTimeout(timer); }
     }
     async function run(fn) {
-        if (busy) return;
+        if (busy || cancelling) return;
         busy = true; $('error').hidden = true;
         document.querySelector('.csm').setAttribute('aria-busy', 'true');
         feedback('Working… Keep this page open.');
@@ -203,7 +219,8 @@
             const disabled = item.protected ? 'disabled' : '';
             const detail = item.protected ? 'Transfer plugin · stays installed on both ends' : (item.active ? 'Active' : 'Inactive');
             const different = target && item.version !== target.version;
-            html += `<label class="csm-component"><span class="${item.active ? '' : 'csm-inactive'}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${disabled}>${icon(item.icon, kind)}<span><strong>${esc(item.name)}</strong><small>${esc(detail)}</small></span></span><span class="${item.active ? '' : 'csm-inactive'}"><span class="csm-cell-label">Source</span><b>${esc(item.version)}</b>${badge(item)}</span><span class="${different ? 'csm-different' : ''} ${target && !target.active ? 'csm-inactive' : ''}"><span class="csm-cell-label">Destination</span>${target ? `<b>${esc(target.version)}</b>${badge(target)}` : '<small>Not installed</small>'}</span></label>`;
+            const sizeCell=site=>item.protected ? '' : `<small class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${site}"></small>`;
+            html += `<label class="csm-component"><span class="${item.active ? '' : 'csm-inactive'}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${disabled}>${icon(item.icon, kind)}<span><strong>${esc(item.name)}</strong><small>${esc(detail)}</small></span></span><span class="${item.active ? '' : 'csm-inactive'}"><span class="csm-cell-label">Source</span><b>${esc(item.version)}</b>${badge(item)}${sizeCell('source')}</span><span class="${different ? 'csm-different' : ''} ${target && !target.active ? 'csm-inactive' : ''}"><span class="csm-cell-label">Destination</span>${target ? `<b>${esc(target.version)}</b>${badge(target)}${sizeCell('destination')}` : '<small>Not installed</small>'}</span></label>`;
         }
         $(kind).innerHTML = html + (!src[kind].length ? '<p>No components found on the source site.</p>' : '');
     }
@@ -264,8 +281,8 @@
         $('selection-summary').textContent = `${counts.tables} table${counts.tables === 1 ? '' : 's'} · ${counts.plugins} plugin${counts.plugins === 1 ? '' : 's'} · ${counts.themes} theme${counts.themes === 1 ? '' : 's'} · ${media.toLowerCase()}`;
         const selected = counts.plugins + counts.themes + counts.tables > 0 || (mode !== 'none' && (mode !== 'selected' || counts.media_ids > 0));
         const validMediaDates = mode !== 'uploaded' || (!!($('media-after').value || $('media-before').value) && (!$('media-after').value || !$('media-before').value || $('media-after').value <= $('media-before').value));
-        $('stage').disabled = busy || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
-        $('apply').disabled = busy || !versionsMatch() || !transferVersionMatches();
+        $('stage').disabled = busy || cancelling || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
+        $('apply').disabled = busy || cancelling || !versionsMatch() || !transferVersionMatches();
         renderVersionStatus();
         syncMediaSelection();
         updateSetup();
@@ -326,8 +343,48 @@
         if (!root) return;
         const selectedTables = new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input => input.value));
         const databaseBytes = sites ? source().tables.filter(table => selectedTables.has(table.id)).reduce((sum,table) => sum + table.bytes, 0) : null;
-        const rows = [['Database',`${counts.tables} table${counts.tables === 1 ? '' : 's'}`,databaseBytes ? '~' + bytes(databaseBytes) : ''], ['Plugins',`${counts.plugins} folder${counts.plugins === 1 ? '' : 's'}`,''], ['Themes',`${counts.themes} folder${counts.themes === 1 ? '' : 's'}`,''], ['Media',media,'']];
+        const estimate=sites?source().estimates:null;
+        const overview=$('source-size-overview');
+        if (overview && !sites) overview.replaceChildren();
+        if (overview && sites) overview.innerHTML=`<span>On the source</span>${[['database','Database'],['plugins','Plugins'],['themes','Themes'],['media','Media']].map(([key,label])=>`<span>${label} <strong>${key==='database' ? '~'+bytes(source().tables.reduce((sum,table)=>sum+table.bytes,0)) : estimateSize(estimate,estimate?.bytes[key])}</strong></span>`).join('')}`;
+        const sizeFor=kind=>{ if (!sites || !counts[kind]) return ''; const selected=new Set([...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input=>input.value)); const n=Object.entries(estimate?.items?.[kind] || {}).filter(([id])=>selected.has(id)).reduce((sum,[,n])=>sum+n,0); return estimate && (estimate.complete || n>0) ? `${estimate.complete?'~':'≥ '}${bytes(n)}` : 'Estimating…'; };
+        renderSizeDetails();
+        const mediaSize=modeEstimate(media,estimate);
+        const rows = [['Database',`${counts.tables} table${counts.tables === 1 ? '' : 's'}`,databaseBytes ? '~' + bytes(databaseBytes) : ''], ['Plugins',`${counts.plugins} folder${counts.plugins === 1 ? '' : 's'}`,sizeFor('plugins')], ['Themes',`${counts.themes} folder${counts.themes === 1 ? '' : 's'}`,sizeFor('themes')], ['Media',media,mediaSize]];
+        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing size estimates…':estimate?.complete?'Estimated size before compression and matching-file skips.':'Estimating file sizes… You can keep choosing components.';
         root.innerHTML = rows.map(([label,value,note]) => `<div><dt>${label}</dt><dd>${esc(value)}${note ? `<small>${esc(note)}</small>` : ''}</dd></div>`).join('');
+    }
+    function estimateSize(estimate, size) {
+        return estimate && (estimate.complete || size>0) ? `${estimate.complete?'~':'≥ '}${bytes(size || 0)}` : 'Estimating…';
+    }
+    function renderSizeDetails() {
+        if (!sites) return;
+        document.querySelectorAll('[data-component-size]').forEach(cell=>{
+            const site=cell.dataset.sizeSite==='source'?source():destination(), kind=cell.dataset.componentSize;
+            cell.textContent=estimateSize(site.estimates,site.estimates?.items?.[kind]?.[cell.dataset.sizeId]);
+        });
+        const panel=$('media-sizes'), list=$('media-year-sizes');
+        if (!panel || !list) return;
+        const estimate=source().estimates, years=Object.entries(estimate?.items?.media || {}).sort(([a],[b])=>a==='_other'?1:b==='_other'?-1:b.localeCompare(a));
+        panel.hidden=!estimate;
+        list.innerHTML=years.map(([year,size])=>`<div><dt>${year==='_other'?'Other files':esc(year)}</dt><dd>${esc(estimateSize(estimate,size))}</dd></div>`).join('') || `<div><dt>${estimate?.complete?'No media files':'Estimating…'}</dt><dd></dd></div>`;
+    }
+    function modeEstimate(media,estimate) {
+        if (!sites || media==='No media files') return '';
+        if (!estimate || (!estimate.complete && !estimate.bytes.media)) return 'Estimating…';
+        return `${estimate.complete?'~':'≥ '}${bytes(estimate.bytes.media)}${['all','compare'].includes($('media-mode').value)?'':' in library'}`;
+    }
+    let estimateTimer=null, estimateGeneration=0;
+    async function loadEstimates(generation=++estimateGeneration) {
+        if (!sites || session || generation!==estimateGeneration) return;
+        const site=$('remote-site').value;
+        try {
+            const result=await api('estimates',{site});
+            if (session || generation!==estimateGeneration || site!==$('remote-site').value) return;
+            for (const key of ['local','remote']) { sites[key].estimates=result[key]; }
+            renderSelectionBreakdown({tables:document.querySelectorAll('input[data-kind="tables"]:checked').length,plugins:document.querySelectorAll('input[data-kind="plugins"]:checked').length,themes:document.querySelectorAll('input[data-kind="themes"]:checked').length},$('media-summary').textContent);
+            if (!result.local.complete || result.local.refreshing || !result.remote.complete || result.remote.refreshing) estimateTimer=setTimeout(()=>loadEstimates(generation),750);
+        } catch (_) { if (!session && generation===estimateGeneration) $('summary-size-note').textContent='Size estimate unavailable. Try Refresh versions.'; }
     }
     function transferVersionMatches() { return !session || (!!sites && session.plugin_version === sites.local.plugin_version); }
     function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version; }
@@ -352,7 +409,7 @@
         $('update-remote').hidden = same || !remoteUpdate?.can_update_to_target;
         $('update-remote').disabled = busy || !!session;
         $('update-remote').textContent = `Update remote Trickle to ${local}`;
-        $('trickle-update-status').textContent = !transferVersionMatches() ? 'This retained transfer was prepared with an older Trickle version. Discard and prepare again; rollback and recovery remain available.' : same ? 'Push and pull use the same Trickle version on both sites.' : session ? 'Versions changed during a retained transfer. Recovery remains available; discard and prepare again after aligning versions.' : !supported ? 'Install this Trickle build on the remote site once to enable remote updates.' : !mayUpdate ? 'Enable “Allow authenticated Trickle updates” on the remote site and use an administrator or read/write key.' : remoteUpdate ? remoteUpdate.reason : 'Check whether the remote JSON feed offers the version installed on this site. Newer remote versions require updating this site first.';
+        $('trickle-update-status').textContent = !transferVersionMatches() ? 'This retained transfer was prepared with an older Trickle version. Discard and prepare again; rollback and recovery remain available.' : same ? 'Push and pull use the same Trickle version on both sites.' : session ? 'Versions changed during a retained transfer. Recovery remains available; discard and prepare again after aligning versions.' : !supported ? 'Install this Trickle build on the remote site once to enable remote updates.' : !mayUpdate ? 'Use an administrator or read/write key to update Trickle.' : remoteUpdate ? remoteUpdate.reason : 'Check whether the remote JSON feed offers the version installed on this site. Newer remote versions require updating this site first.';
     }
     const transferDate = stamp => new Date(stamp * 1000).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
     function renderConnections(state) {
@@ -501,19 +558,21 @@
         renderMedia();
         if (session?.selection) restoreSelection(session.selection, false);
         lockSelection(); updateSelection();
+        clearTimeout(estimateTimer); if (!session && sites.local.bounded_work===2 && sites.remote.bounded_work===2 && (!sites.local.estimates?.complete || sites.local.estimates?.refreshing || !sites.remote.estimates?.complete || sites.remote.estimates?.refreshing)) loadEstimates();
     }
     async function load(refresh = false, inventory = null, selection = null) {
         const preserve = selection || (refresh && sites && !session ? currentSelection() : null);
+        if (session?.cancel_requested) { await cancelTransfer(); return; }
         if (session) {
             $('direction').value = session.direction;
             summary = await api('status', {id:session.id});
             labelRoute();
             $('workspace').hidden = false; $('source').textContent = session.source; $('destination').textContent = session.destination;
             if (['applied','restored'].includes(summary.status)) { const route = {...session}; await finishTransfer(summary, route); return; }
-            if (summary.status === 'applying') { summary = await api('recover', {id:session.id}); const route = {...session}; await finishTransfer(summary, route); return; }
+            if (['applying','restoring'].includes(summary.status)) { summary = await transferRequest('recover', {id:session.id}); const route = {...session}; await finishTransfer(summary, route); return; }
             showSummary();
         }
-        feedback(refresh ? 'Checking installed versions and available updates on both sites…' : 'Connecting and loading the site inventories…');
+        feedback(refresh ? 'Checking installed versions and available updates on both sites…' : 'Connecting and estimating site sizes…');
         sites = inventory || await api('manifest', {refresh}); remoteUpdate = null;
         await loadSelectedMedia(session?.selection || preserve); render();
         if (preserve) restoreSelection(preserve);
@@ -640,24 +699,24 @@
         $('reveal').setAttribute('aria-expanded', String(show));
         $('reveal').textContent = show ? 'Hide connection code' : 'Show connection code';
     });
-    let savedPermissions = {pull:$('allow-read').checked, push:$('allow-write').checked, updates:$('allow-updates').checked};
-    for (const id of ['allow-read', 'allow-write', 'allow-updates']) $(id).addEventListener('change', () => run(async () => {
+    let savedPermissions = {pull:$('allow-read').checked, push:$('allow-write').checked};
+    for (const id of ['allow-read', 'allow-write']) $(id).addEventListener('change', () => run(async () => {
         $('permissions-status').textContent = 'Saving permissions…';
-        const settings = {pull:$('allow-read').checked, push:$('allow-write').checked, updates:$('allow-updates').checked};
+        const settings = {pull:$('allow-read').checked, push:$('allow-write').checked};
         try {
             const result = await api('settings', settings);
             savedPermissions = settings; $('pairing').value = result.pairing;
             $('permissions-status').textContent = 'Permissions saved automatically.';
             feedback('Permissions saved.');
         } catch (error) {
-            $('allow-read').checked = savedPermissions.pull; $('allow-write').checked = savedPermissions.push; $('allow-updates').checked = savedPermissions.updates;
+            $('allow-read').checked = savedPermissions.pull; $('allow-write').checked = savedPermissions.push;
             $('permissions-status').textContent = 'Save not confirmed. Previous values shown; reload to verify before retrying.';
             throw error;
         }
     }));
     $('rotate').addEventListener('click', () => run(async () => {
         if (!confirm('Rotate this site’s key? Existing connections to this site will need its new connection code.')) return;
-        const result = await api('settings', {pull:$('allow-read').checked, push:$('allow-write').checked, updates:$('allow-updates').checked, rotate:true}); $('pairing').value = result.pairing; renderKeys([]); $('new-key').hidden = true; feedback('Connection key rotated. Update any sites that connect to this site.');
+        const result = await api('settings', {pull:$('allow-read').checked, push:$('allow-write').checked, rotate:true}); $('pairing').value = result.pairing; renderKeys([]); $('new-key').hidden = true; feedback('Connection key rotated. Update any sites that connect to this site.');
     }));
     let connectTimer;
     function connectFromCode() {
@@ -854,9 +913,9 @@
             transferMeter.begin(summary.timeline || {id:session.id,elapsed:0,components:{},streams:{},selected:[],ready:false});
             transferMeter.update(summary);
             if (['applied','restored'].includes(summary.status)) { await finishTransfer(summary, route); return; }
-            if (summary.status === 'applying') {
+            if (['applying','restoring'].includes(summary.status)) {
                 transferMeter.setPhase('recover');
-                summary = await api('recover', {id:session.id});
+                summary = await transferRequest('recover', {id:session.id});
                 await finishTransfer(summary, route); return;
             }
             showSummary();
@@ -873,12 +932,14 @@
             summary = await transferRequest('commit', {id:session.id});
             await finishTransfer(summary, route);
         } catch (error) {
-            if (error.retryExhausted && session) { const wait = Math.max(15, error.retryAfter || 0); session.retryAt = Date.now() + 1000 * wait; transferMeter.retry?.(error.message, wait); message('Connection interrupted. Transfer saved; retrying after a pause…'); return; }
-            if (error.pending || /Another transfer is running|stream is still being built/i.test(error.message)) { transferMeter.retry?.(error.message); message('Transfer is still running. Reconnecting…'); return; }
+            if (error.cancelled) return;
+            if (error.retryExhausted && session) { const retry=await api('retry_state',{id:session.id,failed:true}); if (retry.stopped) { await cancelTransfer(); throw new Error('Transfer stopped after repeated retries without progress.'); } const wait = Math.max(15, error.retryAfter || 0); session.retryAt = Date.now() + 1000 * wait; transferMeter.retry?.(error.message, wait); message('Connection interrupted. Transfer saved; retrying after a pause…'); return; }
+            if (error.pending || error.busy) { transferMeter.retry?.(error.message); message('Transfer is still running. Reconnecting…'); return; }
             if (session) {
-                const route = {...session};
+                const route = {...session}; session.automatic=false;
                 try {
-                    const recovered = await api('recover', {id:session.id, cancel:true});
+                    await api('cancel',{id:route.id});
+                    const recovered = await transferRequest('recover', {id:session.id, cancel:true});
                     if (['applied','restored'].includes(recovered.status)) await finishTransfer(recovered, route);
                     else { transferMeter.finish('cancelled'); session = null; summary = null; await load(); message('Destination unchanged.'); }
                 } catch (_) { message('Recovery will retry when this page reconnects.'); }
@@ -889,13 +950,35 @@
     $('stage').addEventListener('click', () => run(migrate));
     $('apply').addEventListener('click', () => run(migrate));
     $('rollback').addEventListener('click', () => run(migrate));
-    $('discard').addEventListener('click', () => run(async () => {
-        await api('recover', {id:session.id, cancel:true});
-        transferMeter.finish('cancelled');
-        session = null; summary = null; renderPreview();
-        for (const id of ['apply','rollback','discard','activity']) $(id).hidden = true;
-        $('stage').hidden = false; await load(); message('Transfer cancelled. Destination unchanged.');
-    }));
+    async function cancelTransfer() {
+        if (!session || cancelling) return;
+        cancelling = true; cancellation++;
+        for (const request of activeRequests) request.abort();
+        const route = {...session}; session.automatic = false;
+        $('discard').disabled = true; message('Cancelling…');
+        try {
+            await api('cancel',{id:route.id});
+            let result;
+            const deadline=Date.now()+120000;
+            for (let attempt = 0; attempt < 180 && Date.now()<deadline; attempt++) {
+                try { result = await api('recover', {id:route.id, cancel:true}); if (!result.continue) break; result=null; }
+                catch (error) {
+                    if (!error.busy) throw error;
+                    message('Cancelling… Waiting for the current request.');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
+            }
+            if (!result) throw new Error('Cancellation is waiting for the server. Automatic retries are paused; try Cancel again.');
+            if (['applied','restored'].includes(result.status)) { await finishTransfer(result, route); return; }
+            if (result.status !== 'cancelled') throw new Error('Cancellation not confirmed. Check transfer status before continuing.');
+            transferMeter.finish('cancelled');
+            session = null; summary = null; renderPreview();
+            for (const id of ['apply','rollback','discard','activity']) $(id).hidden = true;
+            $('stage').hidden = false; await load(); message('Transfer cancelled. Destination unchanged.');
+        } catch (error) { fail(error); }
+        finally { cancelling = false; $('discard').disabled = false; updateSelection(); }
+    }
+    $('discard').addEventListener('click', cancelTransfer);
     $('diagnostics').addEventListener('toggle', () => { if ($('diagnostics').open) refreshLogs(); });
     $('refresh-logs').addEventListener('click', refreshLogs);
     $('log-entries').addEventListener('click', event => {
@@ -913,8 +996,9 @@
         document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
     renderConnections(connectionState); updateSelection();
-    if (CSM.state.destination_recovery) run(async () => {
-        feedback('Recovering…'); await api('recover_destination');
+    if (CSM.state.recovery_error) { fail(new Error(`Recovery needs attention: ${CSM.state.recovery_error}. The site remains protected. Check Diagnostics, then retry recovery.`)); const retry=document.createElement('button'); retry.type='button'; retry.className='button'; retry.textContent='Retry recovery'; retry.addEventListener('click',()=>run(async()=>{ let result; do { result=await api('recover_destination'); } while (result.continue); location.reload(); })); $('error').append(retry); }
+    else if (CSM.state.destination_recovery) run(async () => {
+        feedback('Recovering…'); let result; do { result=await api('recover_destination'); } while (result.continue);
         if (connectionState.selected || session) await load();
         else feedback('Destination restored.');
     });

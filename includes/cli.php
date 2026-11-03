@@ -272,7 +272,8 @@ final class CSM_CLI {
             $site = $assoc['remote'] ?? '';
             $url = $site === '' ? site_url() : CSM_Controller::peer($site)['url'];
             WP_CLI::confirm('Restore backup ' . $args[0] . ' on ' . $url . '? Later changes to its included items will be overwritten.', $assoc);
-            self::output(CSM_Controller::execute('restore_backup', ['site' => $site, 'id' => $args[0]]), $assoc);
+            do { $result=CSM_Controller::execute('restore_backup',['site'=>$site,'id'=>$args[0]]); } while (!empty($result['continue']));
+            self::output($result,$assoc);
         });
     }
 
@@ -517,7 +518,7 @@ final class CSM_CLI {
             foreach (CSM_Plugin::kinds($selection) as $kind) { do { $summary = CSM_Controller::execute('transfer', ['id' => $summary['id'], 'kind' => $kind]); } while (!empty($summary['continue'])); }
             if (isset($assoc['apply'])) {
                 WP_CLI::confirm('Apply the verified transfer to ' . $session['destination'] . '? Selected destination tables and files will be replaced.', $assoc);
-                $summary = CSM_Controller::execute('commit', ['id' => $summary['id']]);
+                do { $summary = CSM_Controller::execute('commit', ['id' => $session['id']]); } while (!empty($summary['continue']));
             }
         } catch (Throwable $e) {
             if (!$automated) { throw $e; }
@@ -613,11 +614,29 @@ final class CSM_CLI {
      */
     public function discard($args, $assoc): void { self::guard(static fn() => self::finish('discard', 'Permanently delete the retained staging data and backup for', $assoc)); }
 
+    /** Request cancellation without waiting for the current worker lock.
+     *
+     * ## OPTIONS
+     *
+     * [--yes]
+     *
+     * [--format=<format>]
+     */
+    public function cancel($args,$assoc): void {
+        self::guard(static function() use ($assoc) {
+            $session=self::current(); WP_CLI::confirm('Cancel the transfer to '.$session['destination'].'?',$assoc);
+            CSM_Controller::execute('cancel',['id'=>$session['id']]);
+            $result=CSM_Controller::retry_cancel($session['id']);
+            $status=$result['status'] ?? (CSM_Controller::session()?'cancelling':'cancelled');
+            self::output(['id'=>$session['id'],'status'=>$status,'destination'=>$session['destination']],$assoc,['id','status','destination']);
+        },$assoc);
+    }
+
     private static function finish(string $action, string $question, array $assoc): void {
         $session = self::current();
         CSM_Controller::execute('status', ['id' => $session['id']]);
         WP_CLI::confirm($question . ' ' . $session['destination'] . '?', $assoc);
-        $result = CSM_Controller::execute($action, ['id' => $session['id']]);
+        do { $result = CSM_Controller::execute($action, ['id' => $session['id']]); } while (!empty($result['continue']));
         unset($result['nonce']);
         self::output(($result ?: ['id' => $session['id'], 'status' => 'discarded', 'tables' => 0, 'rows' => 0, 'files' => 0, 'bytes' => 0]) + ['source' => $session['source'], 'destination' => $session['destination']], $assoc);
     }

@@ -8,17 +8,17 @@ CA=Path.home()/'Library/Application Support/Caddy/pki/authorities/local/root.crt
 checks=0;VERSION=json.loads((ROOT/'update.json').read_text())['version'];OLD='0.1.8'
 
 def wp(site,*args,fail=False):
- p=subprocess.run(['cove','wp',site,*args],capture_output=True,text=True,timeout=180)
+ p=subprocess.run(['cove','wp',site,'--exec=error_reporting(E_ALL & ~E_DEPRECATED);',*args],capture_output=True,text=True,timeout=180)
  if fail:
   assert p.returncode,p.stdout
   return p.stdout+p.stderr
  if p.returncode:raise RuntimeError(p.stdout+p.stderr)
  return p.stdout
 
-def ev(site,code):return json.loads(wp(site,'eval',code))
+def ev(site,code):return json.loads(wp(site,'eval',code).splitlines()[-1])
 def cli(*args,fail=False):
  out=wp(D,'trickle',*args,'--format=json',fail=fail)
- return out if fail else json.loads(out)
+ return out if fail else json.loads(out.splitlines()[-1])
 def check(ok,label):
  global checks
  assert ok,label
@@ -67,7 +67,7 @@ return ['headers'=>[],'body'=>$body,'response'=>['code'=>200,'message'=>'OK'],'c
   check('versions must match' in result and ev(D,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job"));'),'Mismatch blocks even database-only pulls before destination staging')
   status,_=raw('prepare',master,{'selection':{'tables':['wp_csm_fixture']}})
   check(status==400 and ev(S,'echo wp_json_encode(!get_option("_csm_active_job"));'),'Signed requests cannot bypass receiver version checks')
-  check('updates on the remote site' in cli('update-remote',peer,'--yes',fail=True),'Remote updating requires its separate explicit permission')
+  check(cli('update-remote',peer,'--check')['can_update_to_target'],'Remote updates work without a separate updates permission')
   wp(S,'eval',"update_option('_csm_settings',['pull'=>true,'push'=>false,'updates'=>true],false);")
   read=ev(S,"echo wp_json_encode(CSM_Access::issue('Read-only update test',true,false,1));")
   status,_=raw('update_trickle',read['pairing'].splitlines()[1],{'target':VERSION,'from':OLD})
@@ -75,7 +75,7 @@ return ['headers'=>[],'body'=>$body,'response'=>['code'=>200,'message'=>'OK'],'c
   info=cli('update-remote',peer,'--check')
   check(info['installed']==OLD and info['release']==VERSION and info['can_update_to_target'],'Local CLI can inspect matching remote JSON release without migrating')
   wp(S,'eval',"update_option('_csm_settings',['pull'=>false,'push'=>false,'updates'=>true],false);")
-  check(cli('update-remote',peer,'--check')['can_update_to_target'] and raw('manifest',master)[0]==403,'Update permission allows version/release checks while application reads and writes stay disabled')
+  check(cli('update-remote',peer,'--check')['can_update_to_target'] and raw('manifest',master)[0]==403,'Version/release checks remain available while migration reads and writes are disabled')
   wp(S,'eval',"update_option('_csm_settings',['pull'=>true,'push'=>false,'updates'=>true],false);")
   configure(version='9.9.9')
   check('currently publishes Trickle 9.9.9' in cli('update-remote',peer,'--yes',fail=True),'A different feed version cannot update one side into another mismatch')
@@ -110,7 +110,7 @@ return ['headers'=>[],'body'=>$body,'response'=>['code'=>200,'message'=>'OK'],'c
   status,r=raw('version',master)
   check(status==200 and r['data']['plugin_version']==VERSION,'A fresh remote request verifies the new running version')
   observed=[json.loads(line) for line in events.read_text().splitlines()]
-  check(observed and all('classic-editor/classic-editor.php' in row for row in observed),'Other application plugins remain active throughout native upgrade deactivation and reactivation')
+  check(observed and all((set(active)-{'trickle/trickle.php'}).issubset(set(row)) for row in observed),'All originally active application plugins remain active throughout native upgrade deactivation and reactivation')
   check(ev(S,'echo wp_json_encode(get_option("active_plugins"));')==active,'Native upgrade retains the full active list despite recovery-request isolation')
   check(ev(S,'echo wp_json_encode([get_option("_csm_settings"),get_option("_csm_key")]);')==[{'pull':True,'push':False,'updates':True},master],'Remote upgrade preserves connection key and permissions without enabling migration writes')
   check(ev(D,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job"));'),'Updating the plugin does not silently begin a migration')

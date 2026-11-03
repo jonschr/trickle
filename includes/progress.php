@@ -18,6 +18,7 @@ final class CSM_Progress {
     }
 
     public static function start(string $id, string $phase, ?string $run = null): void {
+        CSM_Support::work($id,null);
         $run ??= self::$current && self::$current['id'] === $id && self::$current['state'] === 'running' ? self::$current['run'] : bin2hex(random_bytes(8));
         if (!preg_match('/^[a-f0-9]{16}$/D', $run)) { throw new RuntimeException('Invalid progress operation.'); }
         $events = self::read($id)['events'] ?? [];
@@ -32,6 +33,7 @@ final class CSM_Progress {
     }
 
     public static function update(array $detail, bool $force = false): void {
+        if (($detail['state'] ?? '') !== 'failed') { CSM_Support::check_source_budget(); }
         if (!self::$current) { return; }
         $changed = false;
         foreach (['phase', 'component', 'state'] as $key) { if (isset($detail[$key]) && $detail[$key] !== self::$current[$key]) { $changed = true; } }
@@ -55,7 +57,7 @@ final class CSM_Progress {
 
     public static function fail(string $error): void {
         if (!self::$current) { return; }
-        CSM_Log::write('error', 'Transfer component failed', ['transfer_id' => self::$current['id'], 'phase' => self::$current['phase'], 'component' => self::$current['component'], 'error' => $error]);
+        CSM_Log::write('error', 'Transfer component failed', ['transfer_id' => self::$current['id'], 'phase' => self::$current['phase'], 'component' => self::$current['component'], 'run'=>self::$current['run'], 'count'=>self::$current['count'], 'total'=>self::$current['total'], 'unit'=>self::$current['unit'], 'error' => $error]);
         self::update(['state' => 'failed', 'failure' => self::$current['failure'] ?? ['phase' => self::$current['phase'], 'component' => self::$current['component'], 'error' => $error]], true);
     }
 

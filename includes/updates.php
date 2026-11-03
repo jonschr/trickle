@@ -13,9 +13,8 @@ final class CSM_Updates {
     }
 
     public static function capabilities(): array {
-        $settings = CSM_Access::settings();
-        return ['remote_update' => 1, 'remote_updates_allowed' => !empty($settings['updates']),
-            'can_update_trickle' => !empty($settings['updates']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write']))];
+        return ['remote_update' => 1, 'remote_updates_allowed' => true,
+            'can_update_trickle' => !isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write'])];
     }
 
     private static function checker() {
@@ -40,6 +39,7 @@ final class CSM_Updates {
     }
 
     private static function preflight(): void {
+        CSM_Segments::prune_sources();
         if (get_option('_csm_control') || get_option('_csm_active_job') || glob(CSM_Support::private_dir() . '/segment-*.source.owner')) { throw new RuntimeException('Finish and discard retained transfers on this site and its connected controllers before updating Trickle.'); }
         if (!CSM_Plugin::loader_ready()) { throw new RuntimeException('Open the remote Trickle dashboard once to refresh its recovery loader before updating.'); }
         if (!wp_is_file_mod_allowed('trickle')) { throw new RuntimeException('WordPress disallows file modifications on the remote site.'); }

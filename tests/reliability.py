@@ -14,10 +14,10 @@ def wp(s,*args,fail=False):
  if p.returncode:raise RuntimeError(p.stdout+p.stderr)
  return p.stdout
 
-def ev(s,code):return json.loads(wp(s,'eval',code))
+def ev(s,code):return json.loads(wp(s,'eval',code).splitlines()[-1])
 def cli(*args,fail=False):
  out=wp(D,'trickle',*args,'--format=json',fail=fail)
- return out if fail else json.loads(out)
+ return out if fail else json.loads(out.splitlines()[-1])
 def check(ok,label):
  global checks
  assert ok,label
@@ -94,6 +94,11 @@ try:
  check('health check returned HTTP 500' in err and cli('status')['status']=='restored','Frontend HTTP failure triggers automatic destination rollback')
  check('intentional QA health failure' not in (P[D]/(NAME+'.php')).read_text(),'Runtime-failing active plugin is replaced with its working backup')
  wp(D,'plugin','deactivate',NAME);finish()
+ # A transport failure during the frontend check must not publish a broken destination.
+ (P[S]/(NAME+'.php')).write_text('<?php\n/* Plugin Name: Reliability fixture */\n')
+ cli('pull','--remote=https://trickle-qa-a.localhost:8453','--plugins='+NAME,'--keep-destination-plugins')
+ unreachable=ev(D,"add_filter('site_url',static fn()=>'https://127.0.0.1:1');CSM_Support::lock();try{$s=CSM_Controller::session();CSM_Plugin::commit(CSM_Support::job($s['id']));echo 'false';}catch(Throwable $e){$s=CSM_Controller::session();echo wp_json_encode(str_contains($e->getMessage(),'could not reach') && CSM_Support::job($s['id'])['status']==='restored');}finally{CSM_Support::unlock();}")
+ check(unreachable,'An unreachable frontend triggers rollback instead of completing the migration');finish()
  # Database streams use the same checkpoints and retain binary/serialized behavior.
  before=ev(D,'global $wpdb;echo wp_json_encode($wpdb->get_row("SELECT id,payload,HEX(binary_data) AS binary_data FROM wp_csm_fixture WHERE id=1",ARRAY_A));')
  db=cli('pull','--remote=https://trickle-qa-a.localhost:8453','--tables=wp_csm_fixture')

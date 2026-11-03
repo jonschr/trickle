@@ -2,7 +2,7 @@
 // TRICKLE_LOADER: generated on activation; normal site requests are unaffected.
 defined('ABSPATH') || exit;
 $csm_recovery_job = get_option('_csm_active_job');
-$csm_recovery_cron = defined('DOING_CRON') && DOING_CRON && $csm_recovery_job && in_array(get_option('_csm_job_' . $csm_recovery_job, [])['status'] ?? '', ['applying', 'backup_copy'], true);
+$csm_recovery_cron = defined('DOING_CRON') && DOING_CRON && $csm_recovery_job && in_array(get_option('_csm_job_' . $csm_recovery_job, [])['status'] ?? '', ['applying', 'backup_copy', 'restoring'], true);
 if ($csm_recovery_cron) { define('CSM_RECOVERY_CRON', true); }
 $csm_plugin = __CSM_PLUGIN__;
 $csm_active = get_option('active_plugins', []);
@@ -31,8 +31,14 @@ if (in_array($csm_plugin, $csm_active, true) && !$csm_request) {
     })();
 }
 $csm_maintenance = get_option('_csm_maintenance', []);
+$csm_protected = !empty($csm_maintenance['id']) && in_array(get_option('_csm_job_' . $csm_maintenance['id'], [])['status'] ?? '', ['applying', 'backup_copy', 'restoring'], true);
 $csm_probe = isset($csm_maintenance['probe']) && hash_equals($csm_maintenance['probe'], hash('sha256', (string)($_SERVER['HTTP_X_TRICKLE_HEALTH'] ?? '')));
-if (!$csm_probe && in_array($csm_plugin, $csm_active, true) && !$csm_request && !(defined('WP_CLI') && WP_CLI) && !is_admin() && !empty($csm_maintenance['until']) && $csm_maintenance['until'] > time()) {
+if (!$csm_probe && in_array($csm_plugin, $csm_active, true) && !$csm_request && !(defined('WP_CLI') && WP_CLI) && !is_admin() && ($csm_protected || (!empty($csm_maintenance['until']) && $csm_maintenance['until'] > time()))) {
+    if ($csm_protected && !get_option('_csm_recovery_blocked_'.$csm_maintenance['id']) && !wp_next_scheduled('trickle_recover', [$csm_maintenance['id']])) { wp_schedule_single_event(time()+5, 'trickle_recover', [$csm_maintenance['id']]); }
+    if ($csm_protected && !get_option('_csm_recovery_blocked_'.$csm_maintenance['id']) && function_exists('spawn_cron')) {
+        if (!defined('WP_CRON_LOCK_TIMEOUT')) { define('WP_CRON_LOCK_TIMEOUT',60); }
+        try { spawn_cron(); } catch (Throwable $error) { error_log('Trickle recovery cron could not start: '.$error->getMessage()); }
+    }
     status_header(503); header('Retry-After: 60'); header('Cache-Control: no-store');
     wp_die('A site update is being applied. Please try again shortly.', 'Site update in progress', ['response' => 503]);
 }
@@ -46,4 +52,4 @@ if ($csm_request && in_array($csm_plugin, $csm_active, true)) {
     add_filter('option_template', static fn() => '__csm_transfer_no_theme__', PHP_INT_MAX);
     add_filter('option_stylesheet', static fn() => '__csm_transfer_no_theme__', PHP_INT_MAX);
 }
-unset($csm_request, $csm_plugin, $csm_active, $csm_maintenance, $csm_probe, $csm_recovery_job, $csm_recovery_cron);
+unset($csm_request, $csm_plugin, $csm_active, $csm_maintenance, $csm_probe, $csm_protected, $csm_recovery_job, $csm_recovery_cron);

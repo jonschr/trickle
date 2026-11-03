@@ -21,11 +21,11 @@ def wp(site, *args, fail=False):
     return p.stdout
 
 def ev(site, code):
-    return json.loads(wp(site, 'eval', code))
+    return json.loads(wp(site, 'eval', code).splitlines()[-1])
 
 def cli(*args, fail=False):
     out = wp(D, 'trickle', *args, '--format=json', fail=fail)
-    return out if fail else json.loads(out)
+    return out if fail else json.loads(out.splitlines()[-1])
 
 def pull(*args):
     return cli('pull', '--remote=https://trickle-qa-a.localhost:8453', '--keep-destination-plugins', *args)

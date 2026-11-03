@@ -109,7 +109,7 @@
                 // A failed attempt may still be retrying inside PHP; it is not proof of rollback.
                 if (detail.state === 'failed' && !this.resolvedRuns.has(detail.run) && this.frozen == null && !this.notice) this.notice = {kind:'warning',text:'Issue reported. Waiting for the operation result.',error:detail.failure?.error || ''};
                 if (this.frozen==null && this.phase!=='recover' && detail.state!=='complete' && this.operationName!=='preflight') {
-                    if (/Receiving and verifying|Verifying staged|Checking PHP compatibility|Checking destination/.test(detail.phase)) this.setPhase('verify');
+                    if (/Receiving and verifying|Verifying (?:staged|snapshot)|Staging (?:file|table)|Checking PHP compatibility|Checking destination/.test(detail.phase)) this.setPhase('verify');
                     else if (/Backing up destination file|Replacing file|Removing obsolete file|Preparing table replacement|Replacing database tables|Checking frontend health/.test(detail.phase)) this.setPhase('apply');
                 }
             }
@@ -138,7 +138,7 @@
         acceptDetail(detail) {
             if(detail.run&&this.staleRuns.has(detail.run))return false;
             const replacing=/Backing up destination file|Replacing file|Removing obsolete file|Preparing table replacement|Replacing database tables|Checking frontend health/;
-            const verifying=/Receiving and verifying|Verifying staged|Checking PHP compatibility|Checking destination/;
+            const verifying=/Receiving and verifying|Verifying (?:staged|snapshot)|Staging (?:file|table)|Checking PHP compatibility|Checking destination/;
             if(this.operationName==='preflight'&&(replacing.test(detail.phase)||verifying.test(detail.phase)))return false;
             if(this.operationName==='transfer'&&replacing.test(detail.phase))return false;
             return true;
@@ -359,8 +359,8 @@
             });
             const keys=t.selected||Object.keys(names).filter(k=>t.components[k]>0), payload=keys.reduce((n,k)=>n+(t.components[k]||0),0), signature=JSON.stringify([keys,t.components,t.ready]);
             if(signature!==this.signature){this.signature=signature;el('segments').replaceChildren();el('legend').replaceChildren();for(const key of keys){
-                const known=t.streams[key==='database'?'database':'files']?.size!=null, segment=document.createElement('span');segment.className=`csm-meter-${key}`;segment.style.flexGrow=String(payload?t.components[key]||0:1);segment.style.flexBasis='0';segment.title=`${names[key]}: ${known?size(t.components[key]||0):'measuring'}`;el('segments').append(segment);
-                const item=document.createElement('li'),dot=document.createElement('i'),label=document.createElement('span'),value=document.createElement('strong');dot.className=`csm-meter-${key}`;dot.setAttribute('aria-hidden','true');label.textContent=names[key];value.textContent=known?size(t.components[key]||0):'Sizing…';item.append(dot,label,value);el('legend').append(item);
+                const known=t.streams[key==='database'?'database':'files']?.size!=null, segment=document.createElement('span');segment.className=`csm-meter-${key}`;segment.style.flexGrow=String(payload?t.components[key]||0:1);segment.style.flexBasis='0';segment.title=`${names[key]}: ${known?size(t.components[key]||0):(t.components[key]>0?'~'+size(t.components[key]):'measuring')}`;el('segments').append(segment);
+                const item=document.createElement('li'),dot=document.createElement('i'),label=document.createElement('span'),value=document.createElement('strong');dot.className=`csm-meter-${key}`;dot.setAttribute('aria-hidden','true');label.textContent=names[key];value.textContent=known?size(t.components[key]||0):(t.components[key]>0?'~'+size(t.components[key]):'Sizing…');item.append(dot,label,value);el('legend').append(item);
             }}
             const isTransfer=view.stage==='transfer', windows=isTransfer?this.windows():null;
             const total=view.stage==='health'&&view.finished?1:view.total, done=view.stage==='health'&&view.finished?1:view.received;
