@@ -83,3 +83,7 @@ Invoking Trickle through its dashboard, CLI or APIs must preserve the plugin’s
 
 
 `wp trickle inventory --remote=Production --format=json` includes `estimates` for database allocation and file metadata, with a `complete` flag. These are estimates before compression and matching-file skips. `wp trickle cancel --yes --format=json` persists cancellation without waiting for the transfer lock; a `cancelling` result means safe cleanup/recovery is still pending. WordPress cron continues that cancellation if the browser/CLI disappears. Check status before starting another transfer. Consistent database export stops after 45 seconds; per-file checksums stop after 15 seconds. Large or slow selections may need narrowing. Downloads, verification, import and preview acknowledge separate steps; CLI commands consume those continuations automatically.
+
+## Install the local Trickle build remotely
+
+Run `wp trickle update-remote --remote=<saved-site> --check --format=json` to check readiness, then `wp trickle update-remote --remote=<saved-site> --yes --format=json` to install this site's exact Trickle runtime. This includes same-version development changes and can replace a newer remote version. The direct installer must already be present on the remote; legacy remotes require a one-time current ZIP installation. No migration starts as part of the update.

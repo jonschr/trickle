@@ -2,11 +2,49 @@
 defined('ABSPATH') || exit;
 
 final class CSM_Database {
+    public static function rows(string $sql, string $format = ARRAY_A): array {
+        global $wpdb;
+        $rows = $wpdb->get_results($sql, $format);
+        if ($wpdb->last_error !== '' || !is_array($rows)) { throw new RuntimeException('Database read failed: ' . $wpdb->last_error); }
+        return $rows;
+    }
+
+    public static function table_exists(string $table): bool {
+        global $wpdb;
+        $rows = self::rows($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table)), ARRAY_N);
+        return ($rows[0][0] ?? null) === $table;
+    }
+
+    public static function primary_keys(string $table): array {
+        $keys = self::rows('SHOW INDEX FROM ' . CSM_Support::ident($table) . " WHERE Key_name = 'PRIMARY'");
+        usort($keys, static fn($a, $b) => (int)$a['Seq_in_index'] <=> (int)$b['Seq_in_index']);
+        return array_column($keys, 'Column_name');
+    }
+
+    public static function page_sql(array $keys, ?array $last, int $offset, array $columns): string {
+        global $wpdb;
+        $where = '';
+        if ($keys && $last !== null) {
+            $clauses = [];
+            foreach ($keys as $index => $key) {
+                $terms = [];
+                for ($j = 0; $j <= $index; $j++) {
+                    if (!array_key_exists($keys[$j], $last)) { throw new RuntimeException('Database row checkpoint is incomplete.'); }
+                    $terms[] = CSM_Support::ident($keys[$j]) . ($j === $index ? ' > ' : ' = ') . $wpdb->prepare('%s', $last[$keys[$j]]);
+                }
+                $clauses[] = '(' . implode(' AND ', $terms) . ')';
+            }
+            $where = ' WHERE ' . implode(' OR ', $clauses);
+        }
+        $order = $keys ? ' ORDER BY ' . implode(',', array_map([CSM_Support::class, 'ident'], $keys)) : self::keyless_order($columns);
+        return $where . $order . ($keys ? ' LIMIT 250' : ' LIMIT ' . $offset . ',250');
+    }
+
     public static function inventory(): array {
         global $wpdb;
         $sql = $wpdb->prepare('SELECT TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH AS bytes FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = %s ORDER BY TABLE_NAME', DB_NAME, 'BASE TABLE');
         $result = [];
-        foreach ($wpdb->get_results($sql, ARRAY_A) as $row) {
+        foreach (self::rows($sql) as $row) {
             if (!str_starts_with($row['TABLE_NAME'], $wpdb->prefix) || str_starts_with($row['TABLE_NAME'], '_csm_')) { continue; }
             $result[] = ['id' => $row['TABLE_NAME'], 'name' => $row['TABLE_NAME'], 'engine' => $row['ENGINE'], 'rows' => (int)$row['TABLE_ROWS'], 'bytes' => (int)$row['bytes']];
         }
@@ -116,39 +154,21 @@ final class CSM_Database {
             foreach ($tables as $table) {
                 CSM_Progress::update(['phase' => 'Exporting table', 'component' => $table, 'count' => $rows, 'total' => null, 'unit' => 'rows', 'bytes' => 0]);
                 $quoted = CSM_Support::ident($table);
-                $ddl = $wpdb->get_row('SHOW CREATE TABLE ' . $quoted, ARRAY_N);
+                $ddl = self::rows('SHOW CREATE TABLE ' . $quoted, ARRAY_N)[0] ?? null;
                 if (!$ddl) { throw new RuntimeException('Cannot read table schema.'); }
                 if (preg_match('/\bFOREIGN KEY\b/i', $ddl[1])) {
                     throw new RuntimeException('Foreign-key tables are not supported in this release: ' . $table);
                 }
-                $columns = $wpdb->get_results('SHOW COLUMNS FROM ' . $quoted, ARRAY_A);
+                $columns = self::rows('SHOW COLUMNS FROM ' . $quoted);
                 $columns = array_values(array_filter($columns, fn($column) => !str_contains($column['Extra'], 'GENERATED')));
                 $names = array_column($columns, 'Field');
                 $text_columns = array_column(array_filter($columns, fn($column) => (bool)preg_match('/^(char|varchar|tinytext|text|mediumtext|longtext|enum|set|json)\b/i', $column['Type'])), 'Field');
                 $line = CSM_Support::json(['type' => 'table', 'name' => $table, 'schema' => $ddl[1], 'columns' => $names, 'text_columns' => $text_columns]);
                 if ($chain) { $hash = CSM_Package::chain($hash,$line); } else { hash_update($hash,$line); } yield $line;
-                $keys = $wpdb->get_results('SHOW INDEX FROM ' . $quoted . " WHERE Key_name = 'PRIMARY'", ARRAY_A);
-                if ($wpdb->last_error) { throw new RuntimeException($wpdb->last_error); }
-                usort($keys, static fn($a, $b) => (int)$a['Seq_in_index'] <=> (int)$b['Seq_in_index']);
-                $keys = array_column($keys, 'Column_name');
+                $keys = self::primary_keys($table);
                 $last = null; $offset = 0;
                 do {
-                    $where = '';
-                    if ($last && $keys) {
-                        $clauses = [];
-                        foreach ($keys as $index => $key) {
-                            $terms = [];
-                            for ($j = 0; $j <= $index; $j++) {
-                                $terms[] = CSM_Support::ident($keys[$j]) . ($j === $index ? ' > ' : ' = ') . $wpdb->prepare('%s', $last[$keys[$j]]);
-                            }
-                            $clauses[] = '(' . implode(' AND ', $terms) . ')';
-                        }
-                        $where = ' WHERE ' . implode(' OR ', $clauses);
-                    }
-                    $order = $keys ? ' ORDER BY ' . implode(',', array_map([CSM_Support::class, 'ident'], $keys)) : self::keyless_order($names);
-                    $limit = $keys ? ' LIMIT 250' : ' LIMIT ' . $offset . ',250';
-                    $batch = $wpdb->get_results('SELECT ' . implode(',', array_map([CSM_Support::class, 'ident'], $names)) . ' FROM ' . $quoted . $where . $order . $limit, ARRAY_A);
-                    if ($wpdb->last_error) { throw new RuntimeException($wpdb->last_error); }
+                    $batch = self::rows('SELECT ' . implode(',', array_map([CSM_Support::class, 'ident'], $names)) . ' FROM ' . $quoted . self::page_sql($keys, $last, $offset, $names));
                     foreach ($batch as $row) {
                         $last = $row;
                         if ($table === $wpdb->options && isset($row['option_name']) && str_starts_with($row['option_name'], '_csm_')) { continue; }
@@ -177,7 +197,7 @@ final class CSM_Database {
         CSM_Activation::source($job, $header);
         $prefix = $header['prefix'];
         if (!$prefix || !is_array($header['tables']) || $header['tables'] !== $job['selection']['tables']) { throw new RuntimeException('Database stream does not match the selected tables.'); }
-        $job['database'] = []; CSM_Support::save($job);
+        $job['database'] = []; CSM_Jobs::save($job);
         $hash = hash_init('sha256'); $rows = 0; $current = null; $columns = []; $seen = [];
         $pairs = self::replacement_pairs($header, self::identity(), $job['selection']);
         while (true) {
@@ -206,7 +226,7 @@ final class CSM_Database {
                 $columns = $record['columns']; $text_columns = $record['text_columns'] ?? [];
                 foreach ($columns as $column) { CSM_Support::ident($column); }
                 $job['database'][] = ['target' => $target, 'stage' => $current, 'backup' => $backup];
-                CSM_Support::save($job);
+                CSM_Jobs::save($job);
                 $ddl = preg_replace('/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . CSM_Support::ident($current), $ddl, 1);
                 CSM_Support::query($ddl);
             } elseif ($record['type'] === 'row' && $current) {
@@ -245,14 +265,14 @@ final class CSM_Database {
         if (fseek($fp,$state['offset'])!==0) { throw new RuntimeException('Cannot resume table import.'); }
         CSM_Support::step(); $transaction=false;
         $checkpoint=static function() use (&$job,&$state,&$transaction,$fp):void {
-            $state['offset']=ftell($fp); $job['imports']['database']=$state; $job['rows']=$state['rows']; if ($transaction) { CSM_Support::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options'); $transaction=false; } else { CSM_Support::save($job); }
+            $state['offset']=ftell($fp); $job['imports']['database']=$state; $job['rows']=$state['rows']; if ($transaction) { CSM_Jobs::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options'); $transaction=false; } else { CSM_Jobs::save($job); }
         };
         try {
             do {
                 CSM_Support::check_cancel(); $record=CSM_Support::line($fp); $type=$record['type'] ?? '';
                 if ($type==='end') {
                     if ($state['current'] || $state['rows']!==$record['rows'] || !hash_equals($state['hash'],$record['sha256']) || $state['seen']!==$state['header']['tables'] || fread($fp,1)!=='') { throw new RuntimeException('Database stream is incomplete or checksum failed.'); }
-                    $checkpoint(); unset($job['imports']['database']); $job['rows']=$state['rows']; CSM_Support::save($job); return true;
+                    $checkpoint(); unset($job['imports']['database']); $job['rows']=$state['rows']; CSM_Jobs::save($job); return true;
                 }
                 $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($record));
                 if ($type==='table') {
@@ -264,7 +284,7 @@ final class CSM_Database {
                     if (preg_match('/;|\b(FOREIGN KEY|DATA DIRECTORY|INDEX DIRECTORY|TABLESPACE|CONNECTION|SELECT|INSERT|DROP)\b/i',$ddl) || !preg_match('/\bENGINE=InnoDB\b/i',$ddl) || !str_starts_with($ddl,'CREATE TABLE '.CSM_Support::ident($record['name']).' (')) { throw new RuntimeException('Unsupported or unsafe table schema.'); }
                     foreach ($record['columns'] as $column) { CSM_Support::ident($column); }
                     // Register orphan cleanup before DDL; replaying this record safely recreates only the private stage table.
-                    $job['database'][$index]=['target'=>$target,'stage'=>$current,'backup'=>$backup]; CSM_Support::save($job);
+                    $job['database'][$index]=['target'=>$target,'stage'=>$current,'backup'=>$backup]; CSM_Jobs::save($job);
                     CSM_Support::query('DROP TABLE IF EXISTS '.CSM_Support::ident($current));
                     CSM_Support::query(preg_replace('/^CREATE TABLE `[^`]+`/','CREATE TABLE '.CSM_Support::ident($current),$ddl,1));
                     $state['seen'][]=$record['name']; $state['current']=$current; $state['columns']=$record['columns']; $state['text_columns']=$record['text_columns'] ?? [];
@@ -289,6 +309,44 @@ final class CSM_Database {
             } while (!CSM_Support::due());
             $checkpoint(); return false;
         } catch (Throwable $error) { if ($transaction) { CSM_Support::query('ROLLBACK'); } throw $error; }
+    }
+
+    public static function replace_tables(array &$job): void {
+        $renames = [];
+        foreach ($job['database'] as &$table) {
+            CSM_Progress::update(['phase' => 'Preparing table replacement', 'component' => $table['target'], 'count' => 0, 'total' => count($job['database']), 'unit' => 'tables']);
+            $exists = self::table_exists($table['target']);
+            $table['existed'] = $exists;
+            if ($exists) { $renames[] = CSM_Support::ident($table['target']) . ' TO ' . CSM_Support::ident($table['backup']); }
+            $renames[] = CSM_Support::ident($table['stage']) . ' TO ' . CSM_Support::ident($table['target']);
+        }
+        unset($table);
+        CSM_Jobs::save($job);
+        self::preserve_options($job);
+        if ($renames) { CSM_Progress::update(['phase' => 'Replacing database tables atomically', 'component' => implode(', ', array_column($job['database'], 'target'))], true); }
+        if ($renames) {
+            CSM_Support::query('RENAME TABLE ' . implode(', ', $renames));
+            CSM_Progress::update(['count' => count($job['database'])], true);
+        }
+        wp_cache_flush();
+    }
+
+    public static function restore_tables(array $job): void {
+        $renames = [];
+        foreach ($job['database'] as $table) {
+            CSM_Progress::update(['phase' => 'Restoring table', 'component' => $table['target']]);
+            $backup_exists = self::table_exists($table['backup']);
+            $stage_exists = self::table_exists($table['stage']);
+            if ($backup_exists) {
+                self::preserve_options(['database' => [['target' => $table['target'], 'stage' => $table['backup']]]], true);
+                if (self::table_exists($table['target'])) { $renames[] = CSM_Support::ident($table['target']) . ' TO ' . CSM_Support::ident($table['stage']); }
+                $renames[] = CSM_Support::ident($table['backup']) . ' TO ' . CSM_Support::ident($table['target']);
+            } elseif (!$stage_exists && isset($table['existed']) && !$table['existed']) {
+                CSM_Support::query('DROP TABLE IF EXISTS ' . CSM_Support::ident($table['target']));
+            }
+        }
+        if ($renames) { CSM_Support::query('RENAME TABLE ' . implode(', ', $renames)); }
+        wp_cache_flush();
     }
 
     public static function preserve_options(array $job, bool $connection_only = false): void {

@@ -45,6 +45,6 @@ try {
 '''
 p = subprocess.run(['cove', 'wp', 'trickle-qa-a', 'eval', code], capture_output=True, text=True, timeout=120)
 assert p.returncode == 0, p.stdout + p.stderr
-checks = json.loads(p.stdout)
+checks = json.loads(p.stdout.splitlines()[-1])
 assert len(checks) == 4 and all(checks), checks
 print('4 database checks passed: compound-key order, keyset pages, complete rows, and tables without keys.')

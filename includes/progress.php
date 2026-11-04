@@ -40,9 +40,7 @@ final class CSM_Progress {
         self::$current = array_replace(self::$current, $detail, ['updated' => microtime(true)]);
         if ($changed || (!self::$current['events'] && $force)) {
             $event = array_intersect_key(self::$current, array_flip(['updated', 'phase', 'component', 'state', 'failure']));
-            $event['id'] = substr(hash('sha256', CSM_Support::json($event)), 0, 20);
-            self::$current['events'][] = $event;
-            self::$current['events'] = array_slice(self::$current['events'], -12);
+            self::activity($event);
         }
         if (!$force && microtime(true) - self::$written < .25) { return; }
         // A separate atomic file stays readable while the transfer owns the mutation lock or swaps wp_options.
@@ -53,6 +51,31 @@ final class CSM_Progress {
         @chmod($temp, 0600);
         if (!@rename($temp, $path)) { @unlink($temp); return; }
         self::$written = microtime(true);
+    }
+
+    private static function important(array $event): bool {
+        return !empty($event['error']) || !empty($event['failure']) || in_array($event['state'] ?? '', ['retry', 'failed', 'resumed'], true);
+    }
+
+    private static function activity(array $event): void {
+        if (!self::important($event)) {
+            $component = $event['component'] ?? '';
+            if (($event['state'] ?? '') === 'complete') { $component = ''; }
+            elseif (preg_match('#^(plugins|themes)/[^/]+#', $component, $match)) { $component = $match[0]; }
+            elseif (str_starts_with($component, 'uploads/')) { $component = preg_match('#^uploads/[0-9]{4}(?:/|$)#', $component) ? substr($component, 0, 12) : 'uploads'; }
+            elseif (str_contains(strtolower($event['phase']), 'media') && preg_match('#^[0-9]{4}(?:/|$)#', $component)) { $component = 'uploads/' . substr($component, 0, 4); }
+            $event['component'] = $component;
+            $event['phase'] = preg_replace('/\bfile$/', 'files', $event['phase']);
+            foreach (self::$current['events'] as $previous) {
+                if (!self::important($previous) && $previous['phase'] === $event['phase'] && ($previous['component'] ?? '') === $component && ($previous['state'] ?? '') === ($event['state'] ?? '')) { return; }
+            }
+        }
+        $event['id'] = substr(hash('sha256', CSM_Support::json($event)), 0, 20);
+        self::$current['events'][] = $event;
+        $events = self::$current['events'];
+        $routine = array_slice(array_filter($events, static fn($item) => !self::important($item)), -64, null, true);
+        $important = array_slice(array_filter($events, [self::class, 'important']), -16, null, true);
+        self::$current['events'] = array_values(array_intersect_key($events, $routine + $important));
     }
 
     public static function fail(string $error): void {

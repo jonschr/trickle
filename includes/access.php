@@ -38,15 +38,15 @@ final class CSM_Access {
 
     public static function authorize(array $token, string $action): void {
         if ($action==='cancel' && (!empty($token['read']) || !empty($token['write']))) { $GLOBALS['_csm_credential']=$token; return; }
-        if ($action === 'update_trickle') {
+        if (in_array($action, ['update_trickle','update_trickle_build'],true)) {
             if (empty($token['write'])) { throw new RuntimeException('Use an administrator or read/write connection key to update Trickle.', 403); }
             $GLOBALS['_csm_credential'] = $token; return;
         }
         $reads = ['export', 'manifest', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'component_manifest', 'media_manifest', 'bundle', 'bundle_stream', 'bundle_chunk', 'bundle_discard', 'estimates'];
-        $status = ['backups', 'version', 'update_info', 'progress', 'status', 'preview', 'segment_state','cancel'];
+        $status = ['backups', 'version', 'update_info', 'build_info', 'progress', 'status', 'preview', 'segment_state','cancel'];
         $settings = self::settings();
         $read = !empty($settings['pull']) && !empty($token['read']); $write = !empty($settings['push']) && !empty($token['write']);
-        if (in_array($action, ['version', 'update_info'], true) && !empty($token['write'])) { $GLOBALS['_csm_credential'] = $token; return; }
+        if (in_array($action, ['version', 'update_info','build_info'], true) && !empty($token['write'])) { $GLOBALS['_csm_credential'] = $token; return; }
         if (in_array($action, $reads, true) ? !$read : (in_array($action, $status, true) ? !$read && !$write : !$write)) {
             throw new RuntimeException('This connection does not permit ' . (in_array($action, $reads, true) ? 'remote reads' : 'this operation') . '. Check the key scope and remote access settings.', 403);
         }

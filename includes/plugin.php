@@ -9,9 +9,11 @@ final class CSM_Plugin {
     public static function install_loader(): void {
         $path = WPMU_PLUGIN_DIR . '/0-trickle-loader.php';
         if (is_file($path) && !str_contains(file_get_contents($path), 'TRICKLE_LOADER')) { throw new RuntimeException('An unrelated file occupies the Trickle loader path.'); }
-        if (!wp_mkdir_p(WPMU_PLUGIN_DIR) || file_put_contents($path, self::loader_code(), LOCK_EX) === false) {
+        if (!wp_mkdir_p(WPMU_PLUGIN_DIR)) {
             throw new RuntimeException('Trickle needs permission to install its recovery loader in wp-content/mu-plugins.');
         }
+        CSM_Support::atomic_bytes($path, self::loader_code(), 0644);
+        if (function_exists('opcache_invalidate')) { opcache_invalidate($path, true); }
     }
 
     public static function loader_ready(): bool {
@@ -37,6 +39,7 @@ final class CSM_Plugin {
         add_action('admin_menu', static function () { add_management_page('Trickle Migrate', 'Trickle Migrate', 'manage_options', 'trickle', [self::class, 'page']); });
         add_action('admin_enqueue_scripts', [self::class, 'assets']);
         add_action('wp_ajax_csm_admin', [self::class, 'ajax']);
+        add_action('wp_ajax_nopriv_csm_admin', [self::class, 'ajax']);
         add_action('trickle_prune_sources', [CSM_Segments::class, 'prune_sources']);
         if (!wp_next_scheduled('trickle_prune_sources')) { wp_schedule_event(time()+300, 'hourly', 'trickle_prune_sources'); }
         add_action('trickle_cancel_transfer',[CSM_Controller::class,'retry_cancel']);
@@ -45,23 +48,25 @@ final class CSM_Plugin {
     }
 
     public static function recover_interrupted(string $id): void {
-        try { $job = CSM_Support::job($id); } catch (Throwable $e) { return; }
+        try { $job = CSM_Jobs::get($id); } catch (Throwable $e) { return; }
         if (!in_array($job['status'], ['applying', 'backup_copy', 'restoring'], true) || get_option('_csm_recovery_blocked_'.$id)) { return; }
         $heartbeat=0; foreach (['-heartbeat','-apply.json','-restore.json'] as $suffix) { $path=CSM_Support::private_dir().'/'.$id.$suffix; clearstatcache(true,$path); if (is_file($path)) { $heartbeat=max($heartbeat,filemtime($path)); } }
         if ($heartbeat>time()-30) { wp_schedule_single_event(time()+30,'trickle_recover',[$id]); return; }
         try { CSM_Support::lock(); }
         catch (Throwable $e) { wp_schedule_single_event(time() + 60, 'trickle_recover', [$id]); return; }
         try {
-            $job = CSM_Support::job($id);
+            $job = CSM_Jobs::get($id);
             if (!in_array($job['status'], ['applying', 'backup_copy', 'restoring'], true)) { return; }
             CSM_Support::work($id,false);
+            $previous = CSM_Progress::read($id);
+            CSM_Log::write('warning', 'Recovering interrupted transfer', ['transfer_id'=>$id, 'phase'=>$previous['phase'] ?? '', 'component'=>$previous['component'] ?? '', 'count'=>$previous['count'] ?? null, 'total'=>$previous['total'] ?? null]);
             CSM_Progress::start($id, 'Recovering interrupted transfer');
             $restore = get_option('_csm_backup_restore');
             if (($restore['job_id'] ?? '') === $id) { $result=CSM_Backups::restore($restore['backup_id']); if (!empty($result['continue'])) { return; } }
             else { $result=self::rollback($job); if (!empty($result['continue'])) { return; } }
             CSM_Log::write('info', 'Interrupted transfer recovered', ['transfer_id' => $id]);
         } catch (Throwable $e) {
-            $current=CSM_Support::job($id);
+            $current=CSM_Jobs::get($id);
             $cursor=CSM_Support::private_dir().'/'.$id.'-restore.json';
             $stamp=hash('sha256',CSM_Support::json([$current['status'],$current['backup_copy'] ?? null,is_file($cursor)?file_get_contents($cursor):$current['restore_cursor'] ?? 0]));
             $failures=get_option('_csm_recovery_attempts_'.$id,[]); $count=($failures['stamp'] ?? '')===$stamp?($failures['count'] ?? 0)+1:1;
@@ -97,7 +102,7 @@ final class CSM_Plugin {
         try {
             if ($_SERVER['REQUEST_METHOD'] !== 'POST') { throw new RuntimeException('POST required.', 405); }
             self::supported(); CSM_Support::long_request();
-            if (!in_array($action, ['manifest', 'version', 'update_info', 'update_trickle', 'backups', 'restore_backup', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'component_manifest', 'media_manifest', 'bundle', 'bundle_stream', 'stream_data', 'bundle_chunk', 'bundle_discard', 'cancel', 'estimates', 'segment_state', 'segment_data', 'export', 'prepare', 'receive', 'status', 'preview', 'progress', 'commit', 'rollback', 'discard'], true)) { throw new RuntimeException('Unknown action.', 404); }
+            if (!in_array($action, ['manifest', 'version', 'update_info', 'update_trickle', 'build_info', 'update_trickle_build', 'backups', 'restore_backup', 'media', 'media_hashes', 'file_policy', 'component_hashes', 'component_manifest', 'media_manifest', 'bundle', 'bundle_stream', 'stream_data', 'bundle_chunk', 'bundle_discard', 'cancel', 'estimates', 'segment_state', 'segment_data', 'export', 'prepare', 'receive', 'status', 'preview', 'progress', 'commit', 'rollback', 'discard'], true)) { throw new RuntimeException('Unknown action.', 404); }
             $data = CSM_Transport::authenticate($action);
             $work_id=$data['id'] ?? $data['selection']['comparison_id'] ?? '';
             if (is_string($work_id) && preg_match('/^[a-f0-9]{32}$/D',$work_id) && in_array($action,['component_hashes','media_hashes'],true)) {
@@ -116,6 +121,8 @@ final class CSM_Plugin {
             if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Authenticated incoming request', ['operation' => $action, 'transfer_id' => $data['id'] ?? null]); }
             self::prune_nonces();
             if ($action === 'version') { self::respond(['url' => site_url(), 'canonical_url' => (string)get_option('siteurl')] + CSM_Updates::capabilities() + ['plugin_version' => CSM_VERSION, 'instance_fingerprint' => CSM_Controller::fingerprint()]); }
+            if ($action === 'build_info') { self::respond(CSM_Updates::build_info()); }
+            if ($action === 'update_trickle_build') { CSM_Support::lock(); self::respond(CSM_Updates::install_build($data)); }
             if ($action === 'update_info') { self::respond(CSM_Updates::info()); }
             if ($action === 'update_trickle') { CSM_Support::lock(); self::respond(CSM_Updates::install($data['target'] ?? '', $data['from'] ?? '')); }
             if ($action === 'backups') { self::respond(CSM_Backups::listing()); }
@@ -158,8 +165,8 @@ final class CSM_Plugin {
             if ($action === 'file_policy') { self::respond(['git_folders' => CSM_Files::git_folders($data['selection'] ?? [])]); }
             if ($action === 'media_hashes') { $result=CSM_Media::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Media checksums ready'); self::respond($result); }
             if ($action === 'progress') { CSM_Segments::assert_progress_owner($data['id'] ?? ''); self::respond(CSM_Progress::read($data['id'] ?? '')); }
-            if ($action === 'preview') { $job = CSM_Support::job($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::preview_page($job, (int)($data['offset'] ?? 0))); }
-            if ($action === 'status') { $job = CSM_Support::job($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::summary($job)); }
+            if ($action === 'preview') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::preview_page($job, (int)($data['offset'] ?? 0))); }
+            if ($action === 'status') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::summary($job)); }
             if ($action === 'export') {
                 CSM_Support::lock();
                 if (!empty($data['progress_id'])) { CSM_Progress::start($data['progress_id'], 'Exporting ' . ($data['kind'] ?? 'stream'), $data['progress_run'] ?? null); }
@@ -177,7 +184,7 @@ final class CSM_Plugin {
             }
             CSM_Support::lock();
             if ($action === 'prepare') { self::respond(self::prepare($data['selection'] ?? [], $data['context'] ?? [])); }
-            $id = $data['id'] ?? ''; $job = CSM_Support::job($id); CSM_Access::assert_owner($job);
+            $id = $data['id'] ?? ''; $job = CSM_Jobs::get($id); CSM_Access::assert_owner($job);
             if ($action === 'segment_state') { self::respond(CSM_Segments::state($job, $data['kind'] ?? '', $data['bundle'] ?? [])); }
             if ($action === 'segment_data') {
                 ignore_user_abort(true);
@@ -228,7 +235,7 @@ final class CSM_Plugin {
     public static function prepare(array $selection, array $context = []): array {
         $active = get_option('_csm_active_job');
         if ($active) {
-            $previous = CSM_Support::job($active);
+            $previous = CSM_Jobs::get($active);
             if ($previous['status'] === 'applied') { CSM_Backups::retain($previous); }
             elseif ($previous['status'] === 'restored') { self::discard($previous); }
             else { throw new RuntimeException('Finish or cancel the active transfer before starting another on this destination. Saved backups do not block new transfers.'); }
@@ -241,7 +248,7 @@ final class CSM_Plugin {
         }
         if (!$selection['tables'] && !$selection['plugins'] && !$selection['themes'] && $selection['media'] === 'none') { throw new RuntimeException('Select something to transfer.'); }
         $job = ['plugin_version' => CSM_VERSION, 'credential' => CSM_Access::owner(), 'source' => esc_url_raw($context['source'] ?? '', ['http', 'https']), 'id' => bin2hex(random_bytes(16)), 'status' => 'staging', 'created' => time(), 'selection' => $selection, 'received' => [], 'database' => [], 'files' => [], 'ops' => []];
-        CSM_Support::private_dir(); CSM_Support::save($job); update_option('_csm_active_job', $job['id'], false); return self::summary($job);
+        CSM_Support::private_dir(); CSM_Jobs::save($job); update_option('_csm_active_job', $job['id'], false); return self::summary($job);
     }
 
     public static function receive(array $job, string $kind, $fp, ?string $run = null): array {
@@ -250,7 +257,7 @@ final class CSM_Plugin {
         CSM_Progress::start($job['id'], 'Receiving ' . $kind, $run);
         unset($job['received'][$kind]);
         if ($kind === 'files') { $job['files'] = []; }
-        CSM_Support::save($job);
+        CSM_Jobs::save($job);
         CSM_Support::decompress($fp);
         try {
             if ($kind === 'database') {
@@ -263,15 +270,15 @@ final class CSM_Plugin {
             $job['received'][$kind] = true; unset($job['error']);
         } catch (Throwable $e) {
             CSM_Progress::fail($e->getMessage());
-            unset($job['received'][$kind]); $job['error'] = $e->getMessage(); CSM_Support::save($job); throw $e;
+            unset($job['received'][$kind]); $job['error'] = $e->getMessage(); CSM_Jobs::save($job); throw $e;
         }
         if (!array_diff(self::kinds($job['selection']), array_keys($job['received']))) {
             $preview = self::preview($job); $raw = CSM_Support::json($preview['items']);
             $path = CSM_Support::private_dir() . '/' . $job['id'] . '-preview.json';
-            if (file_put_contents($path, $raw, LOCK_EX) !== strlen($raw)) { throw new RuntimeException('Could not save transfer preview.'); }
-            chmod($path, 0600); $preview['file_hash'] = hash('sha256', $raw); $preview['items'] = array_slice($preview['items'], 0, 200); $job['preview'] = $preview;
+            CSM_Support::atomic_bytes($path, $raw);
+            $preview['file_hash'] = hash('sha256', $raw); $preview['items'] = array_slice($preview['items'], 0, 200); $job['preview'] = $preview;
         }
-        CSM_Support::save($job); CSM_Progress::finish(ucfirst($kind) . ' verified'); return $job;
+        CSM_Jobs::save($job); CSM_Progress::finish(ucfirst($kind) . ' verified'); return $job;
     }
 
     public static function receive_step(array $job, string $kind, $fp): array {
@@ -283,12 +290,12 @@ final class CSM_Plugin {
         if ($done) { $job['import_done'][$kind]=true; }
         if ($done) { $job['received'][$kind]=true; unset($job['error']); }
         if (!array_diff(self::kinds($job['selection']),array_keys($job['received']))) {
-            if (!$already) { unset($job['received'][$kind]); CSM_Support::save($job); return $job; }
+            if (!$already) { unset($job['received'][$kind]); CSM_Jobs::save($job); return $job; }
             $preview=self::preview_step($job);
             if ($preview) { $job['preview']=$preview; }
             else { unset($job['received'][$kind]); }
         }
-        CSM_Support::save($job);
+        CSM_Jobs::save($job);
         if (!empty($job['received'][$kind])) { CSM_Progress::finish(ucfirst($kind).' verified'); }
         return $job;
     }
@@ -337,9 +344,7 @@ final class CSM_Plugin {
         $checked = 0;
         foreach ($paths as $relative => $target) {
             CSM_Progress::update(['phase' => 'Checking destination file', 'component' => $relative, 'count' => $checked++, 'total' => count($paths), 'unit' => 'files', 'bytes' => 0]);
-            $ancestor = dirname($target);
-            while (!file_exists($ancestor)) { $ancestor = dirname($ancestor); }
-            if (!is_writable($ancestor) || (file_exists($target) && (!is_file($target) || !is_writable($target) || !is_writable(dirname($target))))) { throw new RuntimeException('Destination is not writable: ' . $relative); }
+            CSM_Files::assert_writable($target, $relative);
         }
         CSM_Progress::update(['count' => $checked]);
         return ['new' => $new, 'paths' => $paths];
@@ -391,7 +396,7 @@ final class CSM_Plugin {
                 if (!empty($file['unchanged'])) { $state['counts']['unchanged']++; }
                 else { $state['paths'][$file['path']]=$target; }
                 $state['index']++;
-                if (CSM_Support::due()) { $job['preview_work']=$state; CSM_Support::save($job); return null; }
+                if (CSM_Support::due()) { $job['preview_work']=$state; CSM_Jobs::save($job); return null; }
             }
             $state['phase']='obsolete'; $state['index']=0;
         }
@@ -404,7 +409,7 @@ final class CSM_Plugin {
                     if (isset($state['walked'][$relative])) { continue; }
                     $state['walked'][$relative]=true;
                     if (empty($state['new'][$relative]['unchanged'])) { $state['paths'][$relative]=CSM_Files::destination($relative,$job['selection']); }
-                    if (CSM_Support::due()) { $job['preview_work']=$state; CSM_Support::save($job); return null; }
+                    if (CSM_Support::due()) { $job['preview_work']=$state; CSM_Jobs::save($job); return null; }
                 }
                 $state['index']++;
             }
@@ -413,24 +418,23 @@ final class CSM_Plugin {
         $paths=array_keys($state['paths']);
         while ($state['index']<count($paths)) {
             $relative=$paths[$state['index']]; $target=$state['paths'][$relative]; $exists=is_file($target); $file=$state['new'][$relative] ?? null;
-            $ancestor=dirname($target); while (!file_exists($ancestor)) { $ancestor=dirname($ancestor); }
-            if (!is_writable($ancestor) || (file_exists($target) && (!is_file($target) || !is_writable($target) || !is_writable(dirname($target))))) { throw new RuntimeException('Destination is not writable: '.$relative); }
+            CSM_Files::assert_writable($target, $relative);
             $action=!$file?'delete':($exists?'replace':'add'); $size=$exists?filesize($target):0;
             $state['counts'][$action]++; $state['backup']+=$size;
             $state['items'][]=['path'=>$relative,'action'=>$action,'before'=>$size,'after'=>$file['size'] ?? 0];
             $state['signature'][$relative]=[$action,$exists?CSM_Support::hash_file($target):null,$file['sha256'] ?? null];
             CSM_Progress::update(['phase'=>'Checking destination file','component'=>$relative,'count'=>++$state['index'],'total'=>count($paths),'unit'=>'files']);
-            if (CSM_Support::due()) { $job['preview_work']=$state; CSM_Support::save($job); return null; }
+            if (CSM_Support::due()) { $job['preview_work']=$state; CSM_Jobs::save($job); return null; }
         }
         $free=disk_free_space(CSM_Support::private_dir());
         if ($free!==false && $free<$state['backup']+16777216) { throw new RuntimeException('Insufficient private storage for the destination rollback backup.'); }
         ksort($state['signature'],SORT_STRING);
         usort($state['items'],static fn($a,$b)=>(['delete'=>0,'replace'=>1,'add'=>2][$a['action']]<=>['delete'=>0,'replace'=>1,'add'=>2][$b['action']])?:strcmp($a['path'],$b['path']));
         $raw=CSM_Support::json($state['items']); $path=CSM_Support::private_dir().'/'.$job['id'].'-preview.json';
-        CSM_Support::atomic_json($path,$state['items']);
+        CSM_Support::atomic_bytes($path,$raw);
         $preview=['counts'=>$state['counts'],'backup_bytes'=>$state['backup'],'items'=>array_slice($state['items'],0,200),'total'=>count($state['items']),'warnings'=>$job['database']?['Selected database tables replace destination tables completely.']:[], 'token'=>hash('sha256',CSM_Support::json($state['signature'])),'checked_at'=>time(),'file_hash'=>hash('sha256',$raw)];
         $job['file_plan']=['new'=>$state['new'],'paths'=>$state['paths'],'signature'=>$state['signature']];
-        unset($job['preview_work']); CSM_Support::save($job); return $preview;
+        unset($job['preview_work']); CSM_Jobs::save($job); return $preview;
     }
 
     public static function preview(array $job): array {
@@ -466,15 +470,14 @@ final class CSM_Plugin {
 
     public static function commit(array $job, ?string $run = null): array {
         CSM_Updates::assert_job($job);
-        global $wpdb;
         CSM_Progress::start($job['id'], 'Checking destination', $run);
         $actor = current_user_can('manage_options') ? wp_get_current_user() : null;
         if (!in_array($job['status'],['staging','applying'],true) || !self::summary($job)['ready']) { throw new RuntimeException('Both selected streams must be complete before applying.'); }
         if ($job['files'] && !wp_is_file_mod_allowed('trickle')) { throw new RuntimeException('WordPress configuration disallows file modifications on this destination.'); }
         if ($job['files'] && !self::loader_ready()) { throw new RuntimeException('Activate Trickle again to install its required recovery loader before applying file transfers.'); }
         $base = $job['backup_dir'] ?? CSM_Support::backup_dir() . '/' . $job['id'] . '-backup';
-        $job['backup_dir'] = $base; if (empty($job['apply_work'])) { CSM_Activation::capture($job); } CSM_Support::save($job);
-        if (CSM_Support::job($job['id']) !== $job) { throw new RuntimeException('Could not persist the transfer recovery state.'); }
+        $job['backup_dir'] = $base; if (empty($job['apply_work'])) { CSM_Activation::capture($job); } CSM_Jobs::save($job);
+        if (CSM_Jobs::get($job['id']) !== $job) { throw new RuntimeException('Could not persist the transfer recovery state.'); }
         if (!is_dir($base) && !mkdir($base, 0700)) { throw new RuntimeException('Cannot create rollback storage.'); }
         CSM_Support::step();
         if (empty($job['apply_work'])) {
@@ -483,89 +486,152 @@ final class CSM_Plugin {
             if (isset($job['preview']) && !hash_equals($job['preview']['token'],$preview['token'])) { throw new RuntimeException('Destination code changed after preview. Discard and prepare again.'); }
             $plan=$job['file_plan']; $backup_paths=$plan['paths'];
             foreach ($job['files'] as $file) { if (!str_starts_with($file['path'],'uploads/')) { $backup_paths[$file['path']]=CSM_Files::destination($file['path'],$job['selection']); } }
-            $job['apply_work']=['phase'=>'backup','backup_paths'=>$backup_paths,'ops'=>[],'cursor'=>0]; CSM_Support::save($job);
+            $job['apply_work']=['phase'=>'backup','backup_paths'=>$backup_paths,'ops'=>[],'cursor'=>0]; CSM_Jobs::save($job);
         }
         $work=&$job['apply_work']; $cursor_path=CSM_Support::private_dir().'/'.$job['id'].'-apply.json';
         if (is_file($cursor_path)) { $work=array_replace($work,json_decode(file_get_contents($cursor_path),true)); }
-        $new=$job['file_plan']['new']; $paths=$job['file_plan']['paths'];
+        $paths=$job['file_plan']['paths'];
+        if (!self::backup_files($job, $base)) { return self::summary($job) + ['continue'=>true]; }
+        self::save_recovery_plan($job, $base);
+        wp_clear_scheduled_hook('trickle_recover', [$job['id']]); wp_schedule_single_event(time() + 60, 'trickle_recover', [$job['id']]);
+        $probe = bin2hex(random_bytes(32));
+        if ($paths || $job['database'] || isset($job['active_plugins_before'])) { update_option('_csm_maintenance', ['probe' => hash('sha256', $probe), 'id' => $job['id'], 'until' => time() + 15 * MINUTE_IN_SECONDS], false); }
+        try {
+            if (!self::replace_files($job, $cursor_path)) { return self::summary($job) + ['continue'=>true]; }
+            CSM_Support::check_cancel();
+            $token = $actor ? wp_get_session_token() : '';
+            $authenticated_session = $token !== '' ? WP_Session_Tokens::get_instance($actor->ID)->get($token) : null;
+            CSM_Database::replace_tables($job);
+            $authentication = self::retain_controller($actor, $job, $authenticated_session ?: null);
+            return self::finish_apply($job, $probe, $authentication);
+        } catch (Throwable $e) {
+            CSM_Progress::fail($e->getMessage());
+            $job['error'] = $e->getMessage(); CSM_Jobs::save($job);
+            try { $recovered=self::rollback($job); if (!empty($recovered['continue'])) { return $recovered; } } catch (Throwable $rollback_error) { throw new RuntimeException($e->getMessage() . ' Rollback needs attention: ' . $rollback_error->getMessage()); }
+            throw new RuntimeException('Apply failed; changes rolled back. ' . $e->getMessage());
+        }
+    }
+
+    private static function backup_files(array &$job, string $base): bool {
+        $work = &$job['apply_work'];
+        $new = $job['file_plan']['new'];
         if ($work['phase']==='backup') {
             $backup_paths=$work['backup_paths']; $keys=array_keys($backup_paths);
             while (count($work['ops'])<count($keys)) {
                 $relative=$keys[count($work['ops'])]; $target=$backup_paths[$relative];
                 if (CSM_Files::destination($relative,$job['selection'])!==$target) { throw new RuntimeException('Destination path changed after preview: '.$relative); } $existed=is_file($target); $backup=$base.'/'.count($work['ops']);
                 CSM_Progress::update(['phase'=>'Backing up destination file','component'=>$relative,'count'=>count($work['ops']),'total'=>count($keys),'unit'=>'files']);
-                if ($existed && !self::copy_step($target,$backup,$work['copy'])) { CSM_Support::save($job); return self::summary($job)+['continue'=>true]; }
+                if ($existed && !self::copy_step($target,$backup,$work['copy'])) { CSM_Jobs::save($job); return false; }
                 $digest=$existed?CSM_Support::hash_file($backup):null;
                 $expected=array_key_exists($relative,$job['file_plan']['signature'])?$job['file_plan']['signature'][$relative][1]:($new[$relative]['sha256'] ?? null);
                 if ($expected!==$digest) { throw new RuntimeException('Destination changed while backing up: '.$relative); }
                 $work['ops'][]=['path'=>$relative,'backup'=>$backup,'existed'=>$existed,'mtime'=>$existed?filemtime($target):0,'mode'=>$existed?(fileperms($target)&0777):0644,'sha256'=>$digest];
                 unset($work['copy']);
-                if (CSM_Support::due()) { CSM_Support::save($job); return self::summary($job)+['continue'=>true]; }
+                if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
             }
-            $work['phase']='apply'; CSM_Support::save($job);
+            $work['phase']='apply'; CSM_Jobs::save($job);
         }
-        $ops=$work['ops'];
+        return true;
+    }
+
+    private static function save_recovery_plan(array &$job, string $base): void {
+        $ops=$job['apply_work']['ops'];
         // Persist the complete recovery plan before mutation, without rewriting the large job per file.
         $plan = CSM_Support::json($ops);
-        if (file_put_contents($base . '/operations.json', $plan, LOCK_EX) !== strlen($plan)) { throw new RuntimeException('Could not save the file recovery plan.'); }
-        chmod($base . '/operations.json', 0600);
+        CSM_Support::atomic_bytes($base . '/operations.json', $plan);
         $job['backup_dir'] = $base; $job['ops_hash'] = hash('sha256', $plan); $job['ops'] = []; $job['code_snapshot'] = true;
-        $job['status'] = 'applying'; CSM_Support::save($job);
-        if (CSM_Support::job($job['id']) !== $job) { throw new RuntimeException('Could not persist the transfer recovery state.'); }
-        wp_clear_scheduled_hook('trickle_recover', [$job['id']]); wp_schedule_single_event(time() + 60, 'trickle_recover', [$job['id']]);
-        $probe = bin2hex(random_bytes(32));
-        if ($paths || $job['database'] || isset($job['active_plugins_before'])) { update_option('_csm_maintenance', ['probe' => hash('sha256', $probe), 'id' => $job['id'], 'until' => time() + 15 * MINUTE_IN_SECONDS], false); }
-        try {
-            $completed = $work['cursor']; $index=0;
-            foreach ($paths as $relative => $target) {
-                if ($index++ < $work['cursor']) { continue; }
-                if (CSM_Files::destination($relative,$job['selection'])!==$target) { throw new RuntimeException('Destination path changed after preview: '.$relative); }
-                CSM_Progress::update(['phase' => isset($new[$relative]) ? 'Replacing file' : 'Removing obsolete file', 'component' => $relative, 'count' => $completed, 'total' => count($paths), 'unit' => 'files']);
-                if (isset($new[$relative])) { if (!self::install_file_step($new[$relative]['stage'],$target,$new[$relative]['mtime'],$new[$relative]['mode'],$work['install'],static function($state) use ($cursor_path,&$work) { CSM_Support::atomic_json($cursor_path,['cursor'=>$work['cursor'],'install'=>$state]); })) { CSM_Support::atomic_json($cursor_path,['cursor'=>$work['cursor'],'install'=>$work['install']]); CSM_Support::save($job); return self::summary($job)+['continue'=>true]; } unset($work['install']); }
-                elseif (is_file($target) && !unlink($target)) { throw new RuntimeException('Could not remove obsolete file.'); }
-                CSM_Progress::update(['count' => ++$completed]);
-                $work['cursor']=$completed; CSM_Support::atomic_json($cursor_path,['cursor'=>$completed,'install'=>null]);
-                do_action('csm_checkpoint',$job['id'],'apply',$completed);
-                if (CSM_Support::due()) { CSM_Support::save($job); return self::summary($job)+['continue'=>true]; }
-            }
-            CSM_Support::check_cancel();
-            $renames = [];
-            foreach ($job['database'] as &$table) {
-                CSM_Progress::update(['phase' => 'Preparing table replacement', 'component' => $table['target'], 'count' => 0, 'total' => count($job['database']), 'unit' => 'tables']);
-                $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table['target']))) === $table['target'];
-                $table['existed'] = $exists;
-                if ($exists) { $renames[] = CSM_Support::ident($table['target']) . ' TO ' . CSM_Support::ident($table['backup']); }
-                $renames[] = CSM_Support::ident($table['stage']) . ' TO ' . CSM_Support::ident($table['target']);
-            }
-            unset($table);
-            CSM_Support::save($job);
-            CSM_Database::preserve_options($job);
-            if ($renames) { CSM_Progress::update(['phase' => 'Replacing database tables atomically', 'component' => implode(', ', array_column($job['database'], 'target'))], true); }
-            if ($renames) {
-                CSM_Support::query('RENAME TABLE ' . implode(', ', $renames));
-                CSM_Progress::update(['count' => count($job['database'])], true);
-            }
-            wp_cache_flush();
-            CSM_Activation::apply($job);
-            CSM_Progress::update(['phase' => 'Checking frontend health', 'component' => 'WordPress frontend', 'unit' => '', 'count' => 0, 'total' => null, 'bytes' => 0], true);
-            $job['health'] = CSM_Transport::health(site_url(), $probe);
-            if ($job['health']['status']===0) { throw new RuntimeException('Destination health check could not reach the site.'); }
-            if ($job['health']['status'] >= 500 && $job['health']['status'] <= 599) { throw new RuntimeException('Destination health check returned HTTP ' . $job['health']['status']); }
-            $job['db_applied'] = true; $job['status'] = 'applied'; $job['applied'] = time(); CSM_Support::save($job);
-            if (function_exists('opcache_reset')) { opcache_reset(); }
-            self::end_maintenance($job['id']);
-            wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
-            unset($job['apply_work'],$job['file_plan']); CSM_Support::save($job);
-            CSM_Progress::finish('Transfer complete');
-            $result = array_merge(self::summary($job), self::retain_controller($actor, $job));
-            CSM_Backups::retain($job);
-            return $result;
-        } catch (Throwable $e) {
-            CSM_Progress::fail($e->getMessage());
-            $job['error'] = $e->getMessage(); CSM_Support::save($job);
-            try { $recovered=self::rollback($job); if (!empty($recovered['continue'])) { return $recovered; } } catch (Throwable $rollback_error) { throw new RuntimeException($e->getMessage() . ' Rollback needs attention: ' . $rollback_error->getMessage()); }
-            throw new RuntimeException('Apply failed; changes rolled back. ' . $e->getMessage());
+        $job['status'] = 'applying'; CSM_Jobs::save($job);
+        if (CSM_Jobs::get($job['id']) !== $job) { throw new RuntimeException('Could not persist the transfer recovery state.'); }
+    }
+
+    private static function replace_files(array &$job, string $cursor_path): bool {
+        $work = &$job['apply_work'];
+        $new = $job['file_plan']['new'];
+        $paths = $job['file_plan']['paths'];
+        $replacement=['plugins'=>['done'=>0,'total'=>0],'themes'=>['done'=>0,'total'=>0],'media'=>['done'=>0,'total'=>0]];
+        $position=0;
+        foreach($paths as $relative=>$target){
+            $kind=explode('/',$relative,2)[0];if($kind==='uploads')$kind='media';
+            if(isset($replacement[$kind])){++$replacement[$kind]['total'];if($position<$work['cursor'])++$replacement[$kind]['done'];}
+            ++$position;
         }
+        CSM_Progress::update(['replacement'=>$replacement]);
+        $completed = $work['cursor']; $index=0;
+        foreach ($paths as $relative => $target) {
+            if ($index++ < $work['cursor']) { continue; }
+            if (CSM_Files::destination($relative,$job['selection'])!==$target) { throw new RuntimeException('Destination path changed after preview: '.$relative); }
+            CSM_Progress::update(['phase' => isset($new[$relative]) ? 'Replacing file' : 'Removing obsolete file', 'component' => $relative, 'count' => $completed, 'total' => count($paths), 'unit' => 'files']);
+            if (isset($new[$relative])) {
+                $file = $new[$relative];
+                $done = self::install_file_step($file['stage'], $target, $file['mtime'], $file['mode'], $work['install'], static function($state) use ($cursor_path, &$work) {
+                    CSM_Support::atomic_json($cursor_path, ['cursor'=>$work['cursor'], 'install'=>$state]);
+                });
+                if (!$done) {
+                    CSM_Support::atomic_json($cursor_path, ['cursor'=>$work['cursor'], 'install'=>$work['install']]);
+                    CSM_Jobs::save($job);
+                    return false;
+                }
+                unset($work['install']);
+            } elseif (is_file($target) && !unlink($target)) {
+                throw new RuntimeException('Could not remove obsolete file.');
+            }
+            $kind=explode('/',$relative,2)[0];if($kind==='uploads')$kind='media';
+            if(isset($replacement[$kind]))++$replacement[$kind]['done'];
+            CSM_Progress::update(['count' => ++$completed,'replacement'=>$replacement]);
+            $work['cursor']=$completed; CSM_Support::atomic_json($cursor_path,['cursor'=>$completed,'install'=>null]);
+            do_action('csm_checkpoint',$job['id'],'apply',$completed);
+            if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
+        }
+        return true;
+    }
+
+    private static function finish_apply(array &$job, string $probe, array $authentication): array {
+        CSM_Activation::apply($job);
+        CSM_Progress::update(['phase' => 'Checking frontend health', 'component' => 'WordPress frontend', 'unit' => '', 'count' => 0, 'total' => null, 'bytes' => 0], true);
+        $job['health'] = CSM_Transport::health(site_url(), $probe);
+        if ($job['health']['status']===0) { throw new RuntimeException('Destination health check could not reach the site.'); }
+        if ($job['health']['status'] >= 500 && $job['health']['status'] <= 599) { throw new RuntimeException('Destination health check returned HTTP ' . $job['health']['status']); }
+        $job['db_applied'] = true; $job['status'] = 'applied'; $job['applied'] = time(); CSM_Jobs::save($job);
+        if (function_exists('opcache_reset')) { opcache_reset(); }
+        self::end_maintenance($job['id']);
+        wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
+        unset($job['apply_work'],$job['file_plan']); CSM_Jobs::save($job);
+        CSM_Progress::finish('Transfer complete');
+        $result = array_merge(self::summary($job), $authentication);
+        CSM_Backups::retain($job);
+        return $result;
+    }
+
+    private static function restore_files(array &$job, array $ops): bool {
+        $restore_path=CSM_Support::private_dir().'/'.$job['id'].'-restore.json';
+        if (is_file($restore_path)) { $cursor=json_decode(file_get_contents($restore_path),true); $job['restore_cursor']=$cursor['cursor']; $job['restore_install']=$cursor['install'] ?? null; }
+        $restored=$job['restore_cursor'] ?? 0; $index=0;
+        foreach (array_reverse($ops) as $op) {
+            if ($index++<$restored) { continue; }
+            CSM_Progress::update(['phase' => 'Restoring file', 'component' => $op['path']]);
+            if (CSM_Files::excluded($op['path'])) { continue; }
+            $target = CSM_Files::destination($op['path'], $job['selection']);
+            if ($op['existed']) {
+                $verify = empty($job['restore_install']['copy']['stamp']) && isset($op['sha256']);
+                if (!is_file($op['backup']) || ($verify && !hash_equals($op['sha256'], CSM_Support::hash_file($op['backup'])))) {
+                    throw new RuntimeException('Backup file is missing or changed: ' . $op['path']);
+                }
+                $done = self::install_file_step($op['backup'], $target, $op['mtime'], $op['mode'], $job['restore_install'], static function($state) use ($restore_path, &$job) {
+                    CSM_Support::atomic_json($restore_path, ['cursor'=>$job['restore_cursor'] ?? 0, 'install'=>$state]);
+                });
+                if (!$done) {
+                    CSM_Support::atomic_json($restore_path, ['cursor'=>$job['restore_cursor'] ?? 0, 'install'=>$job['restore_install']]);
+                    CSM_Jobs::save($job);
+                    return false;
+                }
+                unset($job['restore_install']);
+            } elseif (is_file($target) && !unlink($target)) {
+                throw new RuntimeException('Could not remove restored file.');
+            }
+            $job['restore_cursor']=$index; CSM_Support::atomic_json($restore_path,['cursor'=>$index,'install'=>null]);
+            if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
+        }
+        return true;
     }
 
     private static function end_maintenance(string $id): void {
@@ -623,14 +689,13 @@ final class CSM_Plugin {
     }
 
     public static function rollback(array $job): array {
-        global $wpdb;
         CSM_Support::work($job['id'],false);
         CSM_Progress::update(['phase' => 'Restoring destination backup', 'component' => '', 'count' => 0, 'total' => null, 'unit' => '']);
         $actor = current_user_can('manage_options') ? wp_get_current_user() : null;
         if (!in_array($job['status'], ['applied', 'applying','restoring'], true)) { throw new RuntimeException('Only applied or interrupted transfers can be restored.'); }
         $active = get_option('_csm_active_job');
         if ($active && $active !== $job['id']) { throw new RuntimeException('Finish the active transfer before restoring another backup.'); }
-        $job['status']='restoring'; CSM_Support::save($job);
+        $job['status']='restoring'; CSM_Jobs::save($job);
         CSM_Support::work($job['id'],false); CSM_Support::step();
         if (empty(get_option('_csm_maintenance'))) { update_option('_csm_maintenance',['id'=>$job['id'],'until'=>time()+900],false); }
         wp_clear_scheduled_hook('trickle_recover',[$job['id']]); wp_schedule_single_event(time()+60,'trickle_recover',[$job['id']]);
@@ -638,43 +703,17 @@ final class CSM_Plugin {
         if (is_file($apply_cursor)) { $cursor=json_decode(file_get_contents($apply_cursor),true); if (isset($job['apply_work'])) { $job['apply_work']=array_replace($job['apply_work'],$cursor); } }
         if (!empty($job['apply_work']['install']['temp'])) { @unlink($job['apply_work']['install']['temp']); unset($job['apply_work']['install']); }
         $ops = self::recovery_operations($job);
-        $renames = [];
-        foreach ($job['database'] as $table) {
-            CSM_Progress::update(['phase' => 'Restoring table', 'component' => $table['target']]);
-            $backup_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table['backup']))) === $table['backup'];
-            $stage_exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table['stage']))) === $table['stage'];
-            if ($backup_exists) {
-                CSM_Database::preserve_options(['database' => [['target' => $table['target'], 'stage' => $table['backup']]]], true);
-                if ($wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table['target']))) === $table['target']) { $renames[] = CSM_Support::ident($table['target']) . ' TO ' . CSM_Support::ident($table['stage']); }
-                $renames[] = CSM_Support::ident($table['backup']) . ' TO ' . CSM_Support::ident($table['target']);
-            } elseif (!$stage_exists && isset($table['existed']) && !$table['existed']) {
-                CSM_Support::query('DROP TABLE IF EXISTS ' . CSM_Support::ident($table['target']));
-            }
-        }
-        if ($renames) { CSM_Support::query('RENAME TABLE ' . implode(', ', $renames)); }
-        wp_cache_flush();
-        $restore_path=CSM_Support::private_dir().'/'.$job['id'].'-restore.json';
-        if (is_file($restore_path)) { $cursor=json_decode(file_get_contents($restore_path),true); $job['restore_cursor']=$cursor['cursor']; $job['restore_install']=$cursor['install'] ?? null; }
-        $restored=$job['restore_cursor'] ?? 0; $index=0;
-        foreach (array_reverse($ops) as $op) {
-            if ($index++<$restored) { continue; }
-            CSM_Progress::update(['phase' => 'Restoring file', 'component' => $op['path']]);
-            if (CSM_Files::excluded($op['path'])) { continue; }
-            $target = CSM_Files::destination($op['path'], $job['selection']);
-            if ($op['existed']) { if (!is_file($op['backup']) || (empty($job['restore_install']['copy']['stamp']) && isset($op['sha256']) && !hash_equals($op['sha256'],CSM_Support::hash_file($op['backup'])))) { throw new RuntimeException('Backup file is missing or changed: '.$op['path']); } if (!self::install_file_step($op['backup'],$target,$op['mtime'],$op['mode'],$job['restore_install'],static function($state) use ($restore_path,&$job) { CSM_Support::atomic_json($restore_path,['cursor'=>$job['restore_cursor'] ?? 0,'install'=>$state]); })) { CSM_Support::atomic_json($restore_path,['cursor'=>$job['restore_cursor'] ?? 0,'install'=>$job['restore_install']]); CSM_Support::save($job); return self::summary($job)+['continue'=>true]; } unset($job['restore_install']); }
-            elseif (is_file($target) && !unlink($target)) { throw new RuntimeException('Could not remove restored file.'); }
-            $job['restore_cursor']=$index; CSM_Support::atomic_json($restore_path,['cursor'=>$index,'install'=>null]);
-            if (CSM_Support::due()) { CSM_Support::save($job); return self::summary($job)+['continue'=>true]; }
-        }
+        CSM_Database::restore_tables($job);
+        if (!self::restore_files($job, $ops)) { return self::summary($job) + ['continue'=>true]; }
         CSM_Activation::restore($job);
         self::end_maintenance($job['id']);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
-        $job['status'] = 'restored'; CSM_Support::save($job); CSM_Backups::forget($job['id']);
+        $job['status'] = 'restored'; CSM_Jobs::save($job); CSM_Backups::forget($job['id']);
         if (get_option('_csm_active_job') === $job['id']) { delete_option('_csm_active_job'); }
         CSM_Progress::finish('Destination restored'); return array_merge(self::summary($job), self::retain_controller($actor, $job));
     }
 
-    private static function retain_controller(?WP_User $actor, array $job): array {
+    private static function retain_controller(?WP_User $actor, array $job, ?array $authenticated_session = null): array {
         global $wpdb;
         if (!$actor || !array_intersect(array_column($job['database'], 'target'), [$wpdb->users, $wpdb->usermeta])) { return []; }
         // Keep the authenticated local operator in control even when importing a different users table.
@@ -687,7 +726,11 @@ final class CSM_Plugin {
         }
         if ($wpdb->update($wpdb->users, ['user_pass' => $actor->user_pass], ['ID' => $user->ID]) === false) { throw new RuntimeException('Could not preserve administrator credentials.'); }
         clean_user_cache($user->ID); $user = new WP_User($user->ID); $user->set_role('administrator');
-        $token = WP_Session_Tokens::get_instance($user->ID)->create(time() + 2 * DAY_IN_SECONDS);
+        $manager = WP_Session_Tokens::get_instance($user->ID);
+        $token = wp_get_session_token();
+        // Keep in-flight polling requests valid when their authenticated user ID stays the same.
+        if ($token !== '') { $session = $authenticated_session ?? ($manager->get($token) ?: []); $session['expiration'] = time() + 2 * DAY_IN_SECONDS; $manager->update($token, $session); }
+        else { $token = $manager->create(time() + 2 * DAY_IN_SECONDS); }
         wp_set_current_user($user->ID); wp_set_auth_cookie($user->ID, false, '', $token);
         $_COOKIE[LOGGED_IN_COOKIE] = wp_generate_auth_cookie($user->ID, time() + 2 * DAY_IN_SECONDS, 'logged_in', $token);
         return ['nonce' => wp_create_nonce('csm_admin')];
@@ -707,22 +750,36 @@ final class CSM_Plugin {
         CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id'] . '-preview.json');
         foreach (['-apply.json','-restore.json','-retry.json','-heartbeat'] as $suffix) { CSM_Support::remove_tree(CSM_Support::private_dir().'/'.$job['id'].$suffix); }
         CSM_Progress::remove($job['id']);
-        CSM_Support::remove_tree(CSM_Support::private_dir().'/job-records/'.$job['id']);
-        delete_option('_csm_cursor_'.$job['id']);
-        delete_option('_csm_job_' . $job['id']); CSM_Backups::forget($job['id']);
+        CSM_Jobs::forget($job['id']); CSM_Backups::forget($job['id']);
         if (get_option('_csm_active_job') === $job['id']) { delete_option('_csm_active_job'); }
     }
 
     public static function peer(): array { return CSM_Controller::peer(); }
 
     public static function ajax(): void {
-        if (!current_user_can('manage_options')) { self::respond([], 'Administrator access required.', 403); }
-        check_ajax_referer('csm_admin', 'nonce');
+        $action = sanitize_key($_POST['op'] ?? '');
+        if (!current_user_can('manage_options') || !is_string($_POST['nonce'] ?? null) || !wp_verify_nonce($_POST['nonce'], 'csm_admin')) {
+            CSM_Log::write('warning', 'Dashboard control authentication rejected', ['operation'=>$action, 'http_status'=>403]);
+            self::respond([], 'Administrator session expired. Reopen Trickle to reconnect.', 403);
+        }
+        $responded = false; $started = microtime(true); $id = null;
+        register_shutdown_function(static function () use (&$responded, &$id, $action, $started) {
+            if ($responded) { return; }
+            $previous = $id ? CSM_Progress::read($id) : [];
+            $fatal = error_get_last();
+            CSM_Log::write('error', 'Dashboard request ended without a response', ['operation'=>$action, 'transfer_id'=>$id, 'phase'=>$previous['phase'] ?? '', 'component'=>$previous['component'] ?? '', 'duration_ms'=>(int)((microtime(true)-$started)*1000), 'error'=>$fatal && in_array($fatal['type'], [E_ERROR,E_PARSE,E_CORE_ERROR,E_COMPILE_ERROR], true) ? $fatal['message'] : 'PHP exited before the operation returned.']);
+        });
         try {
             $data = json_decode(wp_unslash($_POST['data'] ?? '{}'), true, 64, JSON_THROW_ON_ERROR);
-            $action = sanitize_key($_POST['op'] ?? '');
-            self::respond(CSM_Controller::execute($action, $data));
-        } catch (Throwable $e) { CSM_Log::write('error', 'Dashboard request failed', ['operation' => $action ?? 'unknown', 'error' => $e->getMessage()]); self::respond($e instanceof CSM_Network_Error ? ['retryable'=>true,'busy'=>$e instanceof CSM_Busy_Error,'retry_exhausted'=>$e->exhausted, 'retry_after'=>$e->retry_after] : [], $e->getMessage(), 400); }
+            if (preg_match('/^[a-f0-9]{32}$/D', $data['id'] ?? '')) { $id = $data['id']; }
+            $result = CSM_Controller::execute($action, $data);
+            $responded = true;
+            self::respond($result);
+        } catch (Throwable $e) {
+            CSM_Log::write('error', 'Dashboard request failed', ['operation'=>$action, 'transfer_id'=>$id, 'error'=>$e->getMessage()]);
+            $responded = true;
+            self::respond($e instanceof CSM_Network_Error ? ['retryable'=>true,'busy'=>$e instanceof CSM_Busy_Error,'retry_exhausted'=>$e->exhausted, 'retry_after'=>$e->retry_after] : [], $e->getMessage(), 400);
+        }
     }
 
     public static function pairing(): string { return site_url() . "\n" . get_option('_csm_key'); }
@@ -748,16 +805,12 @@ final class CSM_Plugin {
         wp_enqueue_style('trickle-workspace', plugins_url('assets/workspace.css', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/workspace.css'));
         $script = ($_GET['view'] ?? '') === 'backups' ? 'backups' : 'admin';
         if ($script === 'admin') {
-            wp_enqueue_script('trickle-chart-library', plugins_url('assets/vendor/chartjs/chart.umd.js', CSM_FILE), [], '4.6.1', true);
-            wp_add_inline_script('trickle-chart-library', 'window._csmPreviousChart = window.Chart;', 'before');
-            wp_add_inline_script('trickle-chart-library', 'window.CSMChart = window.Chart; window.Chart = window._csmPreviousChart; delete window._csmPreviousChart;', 'after');
-            wp_enqueue_script('trickle-progress-chart', plugins_url('assets/progress-chart.js', CSM_FILE), ['trickle-chart-library'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/progress-chart.js'), true);
-            wp_enqueue_script('trickle-progress', plugins_url('assets/transfer-progress.js', CSM_FILE), ['trickle-progress-chart'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/transfer-progress.js'), true);
+            wp_enqueue_script('trickle-progress', plugins_url('assets/transfer-progress.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/transfer-progress.js'), true);
         }
-        wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-progress'] : [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
+        wp_enqueue_script('trickle-request', plugins_url('assets/request.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/request.js'), true);
+        wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-request', 'trickle-progress'] : ['trickle-request'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
         if ($script === 'admin') { wp_enqueue_script('trickle-tabs', plugins_url('assets/admin-tabs.js', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin-tabs.js'), true); }
-        if ($script === 'admin') { wp_enqueue_script('trickle-sticky', plugins_url('assets/sticky-actions.js', CSM_FILE), ['trickle-tabs'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/sticky-actions.js'), true); }
-        wp_localize_script('trickle', 'CSM', ['ajax' => admin_url('admin-ajax.php'), 'nonce' => wp_create_nonce('csm_admin'), 'state' => CSM_Controller::state(), 'keys' => CSM_Access::list()]);
+        wp_localize_script('trickle', 'CSM', ['ajax' => admin_url('admin-ajax.php'), 'nonce' => wp_create_nonce('csm_admin'), 'state' => CSM_Controller::state(), 'local' => ['url'=>site_url(), 'name'=>get_bloginfo('name'), 'icon'=>get_site_icon_url(64), 'wordpress'=>get_bloginfo('version'), 'plugin_version'=>CSM_VERSION, 'php'=>PHP_VERSION]]);
     }
 
     public static function page(): void {

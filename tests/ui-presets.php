@@ -5,6 +5,7 @@ $options = ['siteurl'=>'https://local.test', 'home'=>'https://local.test', '_csm
 $writes = [];
 function get_option($k,$default=false){return $GLOBALS['options'][$k]??$default;}
 function update_option($k,$v,$autoload=null){$GLOBALS['writes'][]=$k;}
+function wp_cache_delete(...$args){}
 function site_url(){return 'https://local.test';}
 function home_url(){return site_url();}
 function wp_parse_url($url,$part=-1){return parse_url($url,$part);}

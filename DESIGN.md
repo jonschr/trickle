@@ -109,15 +109,10 @@ components:
     rounded: "{rounded.badge}"
     padding: "3px 6px"
     typography: "{typography.label}"
-  summary-card:
-    backgroundColor: "{colors.surface}"
-    rounded: "{rounded.panel}"
-    padding: "23px 20px"
-    width: "270px"
   component-rail:
     backgroundColor: "{colors.rail}"
     rounded: "{rounded.panel}"
-    width: "171px"
+    width: "260px"
   telemetry-card:
     backgroundColor: "{colors.telemetry}"
     textColor: "{colors.telemetry-text}"
@@ -139,10 +134,10 @@ components:
 
 Trickle gives administrators a compact, deliberate workspace for consequential transfers. Source and destination remain explicit, selection details sit beside comparison data, and primary actions retain WordPress blue. The interface uses short labels, quiet supporting text, thin dividers, and rounded white surfaces.
 
-Monitoring changes the working material to a dark navy telemetry canvas. Bright measurements and muted chart scaffolding make received, pending, and verified work distinguishable. Pipeline and recent activity explain the operation beneath the chart. This document records the implemented migration workspace and monitor; the shared settings, backups, and diagnostics components remain an incumbent system rather than a newly redesigned surface.
+Monitoring stays on a compact white surface. A single weighted component bar distinguishes pending, transferred and replaced work. Pipeline and recent activity explain the operation beneath the chart. This document records the implemented migration workspace and monitor; the shared settings, backups, and diagnostics components remain an incumbent system rather than a newly redesigned surface.
 
 **Key Characteristics:**
-- Dense comparison data with a persistent wide-screen selection summary.
+- Dense comparison data with inclusion, counts and source sizes consolidated in the component tabs.
 - White, bordered setup surfaces and a navy monitoring canvas.
 - Measured progress, separate verification state, and readable activity history.
 - WordPress blue actions and concise operational copy.
@@ -185,38 +180,39 @@ The hierarchy is compact and practical: the setup headline leads, component titl
 
 ## Layout
 
-The centered wrapper is capped at 1360px, with padding of 24px 28px 48px. The header aligns identity, navigation, and connection-code action. Source and destination share a route row around an arrow.
+The centered wrapper is capped at 1360px, with padding of 24px 28px 48px. The header aligns identity, navigation, and connection-code action. The local card stays on the left and the remote card on the right. A 72px center button shows the direction arrow with Pull/Push below; clicking reverses direction.
 
 Site identity boxes keep the current site first (left on desktop, above on mobile) and the remote second. The arrow points toward the destination: right/down for push, left/up for pull. Source and Destination labels follow their actual roles.
 
-Setup places a flexible comparison area beside a 270px summary with a 20px gap. The summary sticks below the WordPress admin bar with a 16px offset. A 171px component rail borders the current component; its rows are 70px tall and the workbench has a 585px minimum height. Database tables retain a 610px minimum width, horizontal scrolling, a 420px maximum scroll height, and sticky headings. Plugin/theme comparison columns use a 1.4:1:1 proportion.
+The Migrate route owns remote selection. An empty remote is a dashed card with Add source; a connected remote has a three-dot menu for saved sites, adding/updating connections and refreshing versions. Connection fields use a 540px native modal with inline errors, automatic connection after a complete code, and private-code clearing on close. This site’s public identity is available before any remote request. Preset and Recent share a compact row, stacking on narrow screens. Route changes are disabled while a transfer is retained.
 
-Monitoring becomes full width, with a 230px transfer plot or 84px processing plot. Pipeline and activity occupy equal columns with a 29px gap; activity scrolls after 360px.
+Setup uses one comparison workspace with a 260px component rail. Each of the four 88px rows combines inclusion, selection count and estimated source size in MB. The primary transfer action sits immediately beneath these rows. There is no separate summary sidebar or source-size strip. The workbench has a 585px minimum height. Database tables retain a 610px minimum width, horizontal scrolling, a 420px maximum scroll height, and sticky headings. Plugin/theme comparison columns use a 1.4:1:1 proportion.
 
-- **1200px:** wrapper horizontal padding 20px, summary 238px, rail 151px, workspace gap 16px.
-- **1050px:** summary follows comparison, loses stickiness, and uses a four-column breakdown.
+Monitoring opens in a native modal dialog, up to 850px wide with a dimmed backdrop. One weighted component bar, notices and activity appear without duplicating controls. The site route stays on the setup screen. The header and cancellation stay outside its scrollable body; active work cannot be dismissed with Escape or backdrop clicks. Completion provides Done to return to setup. The component bar is 22px high. Compact component labels pair names with sizes and text states. Pending estimates keep their weights and use ~ until their own stream is prepared. The color-explanation legend is omitted. Activity uses a native details control, starts open, and scrolls after 220px. Transfer activity groups routine events by plugin, theme, media year or database table, retaining up to 64 milestones and 16 issues. Exact filenames remain available for failures.
+
+- **1200px:** wrapper horizontal padding 20px and component rail 245px.
 - **1000px:** header navigation moves to a second row.
 - **782px:** inherited rules stack route endpoints and expose source/destination labels in component rows.
-- **700px:** wrapper padding 16px 12px 32px; rail becomes a 65px horizontal strip; summary breakdown uses two columns; pipeline/activity stack; telemetry padding becomes 20px 15px; transfer plot becomes 190px. The first table column keeps a 180px minimum width.
-- **600px:** inherited rules tighten stage labels and widen the transfer tab proportionally.
+- **700px:** wrapper padding 16px 12px 32px; component tabs become a 108px horizontal strip with source sizes, followed by the transfer action. The dialog uses 8px viewport margins and a scrolling body; the component legend uses two columns. The first table column keeps a 180px minimum width.
+- **600px:** compact labels retain readable spacing; there are no monitoring stage tabs.
 
-The rail and summary are migration composition choices, not mandatory layouts for other plugin surfaces.
+The component rail and modal are migration composition choices, not mandatory layouts for other plugin surfaces.
 
 ## Elevation & Depth
 
-The migration workspace uses flat surfaces, one-pixel borders, and tonal layering. There is no custom card-shadow vocabulary. The summary stays visible through position, and the monitor gains emphasis through its navy material. Focus uses a two-pixel blue outline with a three-pixel offset; focus does not add a shadow. Existing WordPress control styling can supply its own native state treatments.
+The migration workspace uses flat surfaces, one-pixel borders, and tonal layering. The modal uses one offset shadow over a dimmed backdrop; setup and monitoring both use flat white surfaces. Focus uses a two-pixel blue outline with a three-pixel offset; focus does not add a shadow. Existing WordPress control styling can supply its own native state treatments.
 
-Progress fill changes use a 0.6s cubic-bezier(.16,1,.3,1) transition; the verification track uses 0.4s ease-out. Both disable their transitions under reduced-motion preferences. Chart rendering and measured updates should preserve these existing behaviors.
+Component fill changes use a 0.35s ease-out width transition, disabled under reduced-motion preferences.
 
 ## Shapes
 
-Controls use the control radius, endpoints use the endpoint radius, workbench/summary/pipeline surfaces use the panel radius, and the navy canvas uses the telemetry radius. The rail and canvas clip their contents. Chips are compact, gently rounded rectangles rather than pills. Dividers and quiet border colors carry structure inside these rounded outer boundaries.
+Controls use the control radius, endpoints use the endpoint radius, workbench/pipeline surfaces use the panel radius, and the navy canvas uses the telemetry radius. The rail and canvas clip their contents. Chips are compact, gently rounded rectangles rather than pills. Dividers and quiet border colors carry structure inside these rounded outer boundaries.
 
 ## Components
 
 ### Buttons
 
-Primary actions retain the WordPress blue treatment. Shared buttons use a 35px minimum height; the wide-screen transfer action is at least 41px tall and fills the summary width. Secondary buttons retain WordPress control states with the shared rounded shape and compact padding. Focus stays visible. Labels state the operation and destination, such as “Pull into this site.”
+Primary actions retain the WordPress blue treatment. Shared buttons use a 35px minimum height; the wide-screen transfer action is at least 44px tall and fills the rail width. Secondary buttons retain WordPress control states with the shared rounded shape and compact padding. Focus stays visible. Labels state the operation and destination, such as “Pull into this site.”
 
 ### Inputs / Fields
 
@@ -224,7 +220,7 @@ Search fields and selects use the field border and control radius. Search tools 
 
 ### Navigation
 
-Top-level tabs are compact text controls with a selected blue wash and no surrounding tab border. Stage navigation is a separate four-part row: Prepare, Transfer & verify, Replace, and Health. The selected stage uses its matching wash and a colored lower border; unavailable stages remain disabled. Observed elapsed times sit beside their stage labels; unavailable times leave no empty timer row. Users can inspect prior stages while live following is explicit.
+Top-level tabs are compact text controls with a selected blue wash and no surrounding tab border. Monitoring has no stage tabs. One status line summarizes current work, with a single elapsed timer beside the modal title.
 
 ### Chips
 
@@ -232,19 +228,19 @@ Relative-size chips use the small, medium, and large color pairs. They supplemen
 
 ### Cards / Containers
 
-The selection summary is a white bordered card with per-component counts, measured-size context, verification/backup copy, a primary action, and destination identity. Endpoint cards make the route readable before selection. Shared disclosure cards elsewhere retain the incumbent 8px radius and existing padding.
+Component selection and source-size context appear together in the tab rail. The action sits beneath the four tabs; it moves into the dialog only when an interrupted transfer needs a resume action. Endpoint cards make the route readable before selection. Shared disclosure cards elsewhere retain the incumbent 8px radius and existing padding.
 
 ### Component Rail and Comparison Workspace
 
-Each rail entry has a component inclusion checkbox, name, selection summary, and disclosure control. Only the current component body is shown. The active rail entry uses a light blue wash. Comparison rows keep source and destination information aligned; database replacement rules belong below the database table list.
+Each rail entry has a separate inclusion checkbox and a full-row navigation button containing its name, estimated source size in MB, selection count, and caret. The full row always opens the component, including unchecked components; repeated clicks never collapse it or change inclusion. Only the current component body is shown. The active rail entry uses a light blue wash. Plugin/theme rows use two columns: component identity and installed → incoming version effect. Green Upgrade, amber Downgrade, neutral Same version, and blue New install labels distinguish outcomes. Each version has an explicit Active/Inactive badge; active parent themes are identified as Active parent. Inactive incoming names and artwork are muted, without dimming warnings. Update-available notices stay separate from installed versions. Database replacement rules belong below the database table list.
 
 ### Telemetry Canvas
 
-Measured bytes, speed, elapsed time, and remaining time use explicit units. Speed and ETA appear only when progress supports them. The transfer chart uses bytes on its horizontal axis and speed on its vertical axis; count-based stages show completed work instead. Pending, received, and verified ranges stay distinct. The chart supports pointer inspection and focus plus arrow-key inspection.
+The component bar uses relative uncompressed sizes. Pending segments are light, received portions dark, and replaced portions gold. Database transfer follows its own stream; plugin/theme/media transfer follows their shared stream. Replacement fill uses actual per-component completed-file counts, not byte or file-order guesses. Text states and accessible descriptions accompany every selected component; color is not the only status cue.
 
-### Pipeline and Recent Activity
+### Transfer Activity
 
-The pipeline lists database, files, replacement, and health with text states beside their tracks. Verified streams turn lavender. Recent activity remains beside or below the pipeline and shows time, event, optional path, and recovery/retry context. It is not hidden inside an accordion.
+Transfer activity sits below the bar in a native details control styled like Destination changes. It starts open and keeps the user’s open/closed choice while polling. Compact desktop rows emphasize the plugin, theme, year or table name, with a muted time and operation; mobile rows wrap the operation beneath the name. Health checks run in the background; failures retain exact paths and copyable details.
 
 ## Do's and Don'ts
 
@@ -254,7 +250,7 @@ The pipeline lists database, files, replacement, and health with text states bes
 - **Do** preserve source, destination, and selected-component context throughout the workflow.
 - **Do** distinguish received bytes from verified streams using both color and text.
 - **Do** show measured units and omit unsupported speed or ETA estimates.
-- **Do** keep pipeline and recent activity visible in monitoring, stacking them on narrow screens.
+- **Do** keep the component bar visible and activity available in its collapsible section.
 - **Do** preserve the existing shared components when extending settings, backups, and diagnostics.
 
 ### Don't:
@@ -262,4 +258,4 @@ The pipeline lists database, files, replacement, and health with text states bes
 - **Don't** apply the dark telemetry material to the entire setup workspace.
 - **Don't** mark received bytes as verified before stream verification succeeds.
 - **Don't** squeeze comparison tables into unreadable mobile columns; preserve horizontal scrolling.
-- **Don't** promote the migration rail and summary arrangement into a requirement for unrelated plugin surfaces.
+- **Don't** promote the migration rail and modal arrangement into a requirement for unrelated plugin surfaces.

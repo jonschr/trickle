@@ -151,7 +151,7 @@ final class CSM_CLI {
     }
 
     /**
-     * Check or update remote Trickle to this site's version through its JSON feed.
+     * Install this site's exact Trickle build on a connected remote site.
      *
      * @subcommand update-remote
      *
@@ -161,7 +161,7 @@ final class CSM_CLI {
      * : Saved site ID, exact URL, or unique name.
      *
      * [--check]
-     * : Only inspect the published release and permission status.
+     * : Only check installation readiness and permissions.
      *
      * [--yes]
      * : Confirm the plugin update without an interactive prompt.
@@ -173,8 +173,8 @@ final class CSM_CLI {
             if (empty($assoc['remote']) && count(CSM_Controller::peers()) !== 1) { throw new RuntimeException('Specify --remote before checking or updating a remote Trickle installation.'); }
             $peer = CSM_Controller::peer($assoc['remote'] ?? '');
             if (isset($assoc['check'])) { $result = CSM_Controller::execute('remote_update_info', ['site' => $peer['id']]); }
-            else { WP_CLI::confirm('Update Trickle on ' . $peer['url'] . ' to ' . CSM_VERSION . ' before migrating?', $assoc); $result = CSM_Controller::execute('update_remote', ['site' => $peer['id']]); }
-            self::output($result, $assoc, isset($assoc['check']) ? ['installed', 'target', 'release', 'can_update_to_target', 'reason'] : ['installed', 'updated']);
+            else { WP_CLI::confirm('Update Trickle on ' . $peer['url'] . ' with this site’s installed Trickle build (' . CSM_VERSION . ')?', $assoc); $result = CSM_Controller::execute('update_remote', ['site' => $peer['id']]); }
+            self::output($result, $assoc, isset($assoc['check']) ? (isset($result['target_build']) ? ['installed','target','can_update_to_target','reason'] : ['installed', 'target', 'release', 'can_update_to_target', 'reason']) : ['installed', 'updated']);
         });
     }
 

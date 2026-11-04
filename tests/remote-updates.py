@@ -27,11 +27,11 @@ def raw(action,key,data=None,version=VERSION):
  body=(json.dumps(data or {},separators=(',',':'))+'\n').encode();stamp=str(int(__import__('time').time()));nonce=secrets.token_hex(16)
  digest=hashlib.sha256(body).hexdigest();params=base64.b64encode((json.dumps({'trickle_version':version})+'\n').encode()).decode()
  signature=hmac.new(key.encode(),'\n'.join([action,stamp,nonce,digest,params]).encode(),hashlib.sha256).hexdigest()
- h={'X-CSM-Key-Id':hashlib.sha256(key.encode()).hexdigest()[:24],'X-CSM-Time':stamp,'X-CSM-Nonce':nonce,'X-CSM-Hash':digest,'X-CSM-Params':params,'X-CSM-Signature':signature,'Content-Type':'application/json'}
+ h={'X-CSM-Key-Id':hashlib.sha256(key.encode()).hexdigest()[:24],'X-CSM-Time':stamp,'X-CSM-Nonce':nonce,'X-CSM-Hash':digest,'X-CSM-Params':params,'X-CSM-Signature':signature,'Content-Type':'application/json','User-Agent':'T3Code (user-directed AI agent; agent=Codex; model=gpt-6.1-sol)'}
  c=http.client.HTTPSConnection(S+'.localhost',8453,context=CTX,timeout=120);c.request('POST','/?trickle='+action,body,h);r=c.getresponse();payload=r.read();status=r.status;c.close();return status,json.loads(payload)
 
 for site in [S,D]:assert ev(site,'echo wp_json_encode(!get_option("_csm_control")&&!get_option("_csm_active_job"));')
-assert not MU.exists();original=MAIN.read_bytes();settings=ev(S,'echo wp_json_encode(get_option("_csm_settings"));');tokens=ev(S,'echo wp_json_encode(get_option("_csm_tokens",[]));');active=ev(S,'echo wp_json_encode(get_option("active_plugins"));');recents=ev(D,'echo wp_json_encode(get_option("_csm_recents",[]));')
+assert not MU.exists();original=MAIN.read_bytes();original_updates=(PLUGIN/'includes/updates.php').read_bytes();settings=ev(S,'echo wp_json_encode(get_option("_csm_settings"));');tokens=ev(S,'echo wp_json_encode(get_option("_csm_tokens",[]));');active=ev(S,'echo wp_json_encode(get_option("active_plugins"));');recents=ev(D,'echo wp_json_encode(get_option("_csm_recents",[]));')
 master=ev(S,'echo wp_json_encode(get_option("_csm_key"));');peer='--remote=https://trickle-qa-a.localhost:8453'
 with tempfile.TemporaryDirectory(prefix='trickle-remote-update-') as tmp:
  tmp=Path(tmp);config=tmp/'config.json';events=tmp/'activation-events.jsonl';good=tmp/'valid.zip';bad=tmp/'wrong.zip'
@@ -46,10 +46,12 @@ with tempfile.TemporaryDirectory(prefix='trickle-remote-update-') as tmp:
     z.writestr('trickle/'+p.relative_to(ROOT).as_posix(),content)
  def configure(**changes):
   state={'version':VERSION,'package':str(good),'status':200,'locked':False};state.update(changes);config.write_text(json.dumps(state));config.chmod(0o600)
- def source_version(version):MAIN.write_bytes(original.replace(VERSION.encode(),version.encode()))
+ def source_version(version):
+  MAIN.write_bytes(original.replace(VERSION.encode(),version.encode()))
+  (PLUGIN/'includes/updates.php').write_bytes(original_updates.replace(b"'remote_build_update'=>1",b"'remote_build_update'=>0"))
  hook="""<?php
 if(realpath(ABSPATH)!==realpath(getenv('HOME').'/Cove/Sites/trickle-qa-a.localhost/public'))return;
-opcache_invalidate(WP_PLUGIN_DIR.'/trickle/trickle.php',true);
+opcache_invalidate(WP_PLUGIN_DIR.'/trickle/trickle.php',true);opcache_invalidate(WP_PLUGIN_DIR.'/trickle/includes/updates.php',true);
 add_action('updated_option',static function($name,$old,$new){if($name==='active_plugins')file_put_contents(__EVENTS__,wp_json_encode(array_values($new))."\n",FILE_APPEND);},10,3);
 add_filter('file_mod_allowed',static function($allow){$c=json_decode(file_get_contents(__CONFIG__),true);return empty($c['locked'])?$allow:false;});
 add_filter('pre_http_request',static function($pre,$args,$url){
@@ -119,6 +121,7 @@ return ['headers'=>[],'body'=>$body,'response'=>['code'=>200,'message'=>'OK'],'c
   print(f'{checks} remote update checks passed.',flush=True)
  finally:
   MAIN.write_bytes(original)
+  (PLUGIN/'includes/updates.php').write_bytes(original_updates)
   control=ev(D,'echo wp_json_encode(CSM_Controller::session());')
   if control:cli('discard','--yes')
   job=ev(S,'echo wp_json_encode(get_option("_csm_active_job"));')

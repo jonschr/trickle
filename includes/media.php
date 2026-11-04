@@ -82,10 +82,7 @@ final class CSM_Media {
             $years[$year] = ['fingerprint' => $fingerprint, 'hash' => self::digest($year_hashes), 'months' => $result];
         }
         $index = ['years' => $years]; $index['token'] = self::digest($years);
-        $raw = CSM_Support::json($index); $path = self::path(); $temp = $path . '.' . bin2hex(random_bytes(8));
-        if (file_put_contents($temp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($temp); throw new RuntimeException('Cannot save media checksums.'); }
-        chmod($temp, 0600);
-        if (!rename($temp, $path)) { @unlink($temp); throw new RuntimeException('Cannot save media checksums.'); }
+        CSM_Support::atomic_json(self::path(), $index);
         CSM_Support::atomic_json(CSM_Support::private_dir().'/media-snapshot-'.$index['token'].'.json',$index); @unlink($build_path);
         return $index + ['stats' => $stats];
     }

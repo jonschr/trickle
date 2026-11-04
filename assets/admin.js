@@ -1,4 +1,4 @@
-/* global CSM, CSMTransferProgress */
+/* global CSM, CSMTransferProgress, CSMRequest */
 (() => {
     'use strict';
     const $ = id => document.getElementById(`csm-${id}`);
@@ -6,13 +6,14 @@
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
     const transferMeter = new CSMTransferProgress($('transfer-meter'));
+    let transferView = false;
+    const actionHome = $('stage').parentElement;
     const tableSort = {key:'source_bytes', descending:true};
     const componentKinds = ['tables', 'plugins', 'themes', 'media'];
     function setPanelOpen(kind, open) {
         $(kind + '-body').hidden = !open;
         const button = $('disclose-' + kind);
         button.setAttribute('aria-expanded', String(open));
-        button.setAttribute('aria-label', `${open ? 'Collapse' : 'Expand'} ${kind === 'tables' ? 'database' : kind === 'media' ? 'media library' : kind}`);
         if (open) showComponent(kind); else syncComponentView();
     }
     function showComponent(kind) {
@@ -31,7 +32,7 @@
             panel.toggleAttribute('data-current', current);
             const button = $('disclose-' + key);
             button.setAttribute('aria-expanded', String(current && !$(key + '-body').hidden));
-            button.setAttribute('aria-label', `${current && open ? 'Hide' : 'View'} ${labels[key]} selection`);
+            button.setAttribute('aria-label', `View ${labels[key]} selection`);
             if (current) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
         });
         $('selection-placeholder').hidden = open;
@@ -55,21 +56,16 @@
     function cancelled() { return Object.assign(new Error("Transfer cancelled."), {cancelled:true}); }
     async function api(op, data = {}, generation = null) {
         if (generation===null && data.id && !['cancel','recover','rollback'].includes(op)) generation=cancellation;
-        const body = new URLSearchParams({action:'csm_admin', nonce:CSM.nonce, op, data:JSON.stringify(data)});
-        const controller=new AbortController();
-        if (generation!==null) activeRequests.add(controller);
-        const timer=setTimeout(()=>controller.abort(),['progress','logs'].includes(op)?8000:['cancel','recover'].includes(op)?20000:150000);
-        let response,text;
-        try { response=await fetch(CSM.ajax,{method:'POST',credentials:'same-origin',body,signal:controller.signal}); text=await response.text(); }
-        catch (error) { if (generation!==null && generation!==cancellation) throw cancelled(); error.retryable=true; throw error; }
-        finally { clearTimeout(timer); activeRequests.delete(controller); }
-        if (generation !== null && generation !== cancellation) throw cancelled();
+        const controller = new AbortController();
+        if (generation !== null) activeRequests.add(controller);
         let result;
-        try { result = JSON.parse(text); } catch (_) { throw Object.assign(new Error(`Unexpected response (HTTP ${response.status}). Check Diagnostics.`),{retryable:[429,502,503,504].includes(response.status)}); }
-        if (!result.ok) { const error = new Error(result.error || 'Request failed.'); error.retryable=!!result.retryable; error.busy=!!result.busy; error.retryExhausted = !!result.retry_exhausted; error.retryAfter = result.retry_after || 0; throw error; }
-        if (result.data?.nonce) CSM.nonce = result.data.nonce;
-        if (Array.isArray(result.data?.state?.connections)) renderConnections(result.data.state);
-        return result.data;
+        try { result = await CSMRequest(op, data, controller); }
+        catch (error) { if (generation !== null && generation !== cancellation) throw cancelled(); throw error; }
+        finally { activeRequests.delete(controller); }
+        if (generation !== null && generation !== cancellation) throw cancelled();
+        if (result?.nonce) CSM.nonce = result.nonce;
+        if (Array.isArray(result?.state?.connections)) renderConnections(result.state);
+        return result;
     }
     function message(text) { $('status').textContent = text; }
     function fail(error) {
@@ -80,7 +76,7 @@
         $('error').append(copy);
         $('error').hidden = false;
         $('error').scrollIntoView({block:'nearest'});
-        feedback('Request failed. Details are available in the Diagnostics tab.');
+        feedback('');
         if ($('diagnostics').open) refreshLogs();
     }
     function feedback(text) { $('feedback').textContent = text; $('feedback').hidden = !text; }
@@ -167,13 +163,13 @@
     async function run(fn) {
         if (busy || cancelling) return;
         busy = true; $('error').hidden = true;
-        document.querySelector('.csm').setAttribute('aria-busy', 'true');
-        feedback('Working… Keep this page open.');
-        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-discard'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
+        $('transfer-setup').setAttribute('aria-busy', 'true');
+        feedback('');
+        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-discard','csm-close-transfer','csm-close-connection'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
-        finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; document.querySelector('.csm').setAttribute('aria-busy', 'false'); if ($('feedback').textContent === 'Working… Keep this page open.') feedback('Done.'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
+        finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; $('transfer-setup').setAttribute('aria-busy', 'false'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
         document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
@@ -187,6 +183,9 @@
         flow.prepend($(pull ? 'destination' : 'source').closest('.csm-endpoint'));
         flow.append($(pull ? 'source' : 'destination').closest('.csm-endpoint'));
         flow.querySelector('.csm-route-arrow path').setAttribute('d', pull ? 'M19 12H5m6-6-6 6 6 6' : 'M5 12h14m-6-6 6 6-6 6');
+        $('direction-label').textContent=pull?'Pull':'Push';
+        $('flip-direction').title=pull?'Pull from remote. Click to switch to push.':'Push to remote. Click to switch to pull.';
+        $('flip-direction').setAttribute('aria-label',$('flip-direction').title);
         for (const [id, local] of [['source', !pull], ['destination', pull]]) {
             $(id + '-location').textContent = local ? 'This site' : 'Remote site';
             $(id + '-location').classList.toggle('csm-this-site', local);
@@ -194,7 +193,6 @@
     }
     const source = () => direction() === 'pull' ? sites.remote : sites.local;
     const destination = () => direction() === 'pull' ? sites.local : sites.remote;
-    const badge = item => item?.update ? `<span class="csm-update">Update: ${esc(item.update)}</span>` : '';
     function icon(url, kind) {
         const shapes = {
             plugins:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
@@ -209,20 +207,34 @@
         return `<span class="csm-identity-icon csm-icon-${kind}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">${shapes[kind]}</svg>${image}</span>`;
     }
     const selectAll = kind => `<label class="csm-select-heading"><input type="checkbox" class="csm-select-all" data-select-kind="${kind}" aria-label="Select all ${kind === 'tables' ? 'database tables' : kind}"><span${kind === 'tables' ? ' class="screen-reader-text"' : ''}>Select all ${kind === 'tables' ? 'database tables' : kind}</span></label>`;
+    function componentState(kind, item, inventory) {
+        if(!item)return '';
+        const parent=kind==='themes' && inventory.some(theme=>theme.active && theme.parent===item.id);
+        return parent?'Active parent':item.active?'Active':'Inactive';
+    }
+    function versionChange(item, target) {
+        if(item.protected)return {kind:'protected',label:'Protected'};
+        if(!target)return {kind:'install',label:'New install'};
+        if(item.version && (item.version===target.version || item.version_order===0))return {kind:'same',label:'Same version'};
+        if(item.version_order>0)return {kind:'upgrade',label:'Upgrade'};
+        if(item.version_order<0)return {kind:'downgrade',label:'Downgrade'};
+        return {kind:'different',label:'Different'};
+    }
     function components(kind) {
         if (kind === 'tables') { renderTables(); return; }
-        const src = source(), dst = destination();
-        const lookup = new Map(dst[kind].map(item => [item.id, item]));
-        let html = `<div class="csm-columns">${selectAll(kind)}<span aria-hidden="true">Source</span><span aria-hidden="true">Destination</span></div>`;
-        for (const item of src[kind]) {
-            const target = lookup.get(item.id);
-            const disabled = item.protected ? 'disabled' : '';
-            const detail = item.protected ? 'Transfer plugin · stays installed on both ends' : (item.active ? 'Active' : 'Inactive');
-            const different = target && item.version !== target.version;
-            const sizeCell=site=>item.protected ? '' : `<small class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${site}"></small>`;
-            html += `<label class="csm-component"><span class="${item.active ? '' : 'csm-inactive'}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${disabled}>${icon(item.icon, kind)}<span><strong>${esc(item.name)}</strong><small>${esc(detail)}</small></span></span><span class="${item.active ? '' : 'csm-inactive'}"><span class="csm-cell-label">Source</span><b>${esc(item.version)}</b>${badge(item)}${sizeCell('source')}</span><span class="${different ? 'csm-different' : ''} ${target && !target.active ? 'csm-inactive' : ''}"><span class="csm-cell-label">Destination</span>${target ? `<b>${esc(target.version)}</b>${badge(target)}${sizeCell('destination')}` : '<small>Not installed</small>'}</span></label>`;
+        const src=source(), dst=destination(), lookup=new Map(dst[kind].map(item=>[item.id,item]));
+        let html=`<div class="csm-columns csm-code-columns">${selectAll(kind)}<span>Installed → Incoming</span></div>`;
+        for(const item of src[kind]){
+            const target=lookup.get(item.id), change=versionChange(item,target), state=componentState(kind,item,src[kind]);
+            const sizeCell=site=>item.protected?'':`<small class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${site}"></small>`;
+            const cell=(plugin,inventory,side)=>{
+                const activity=componentState(kind,plugin,inventory), label=side==='source'?'Incoming from source':'Installed on destination';
+                return `<span class="csm-version-endpoint"><span class="screen-reader-text">${label}: </span><b>${esc(plugin?.version || (plugin?'Unknown':'Not installed'))}</b>${plugin?`<span class="csm-activation ${activity==='Inactive'?'is-inactive':'is-active'}" title="${esc(label)}">${esc(activity)}</span>${sizeCell(side)}`:''}</span>`;
+            };
+            const updates=item.update && item.update===target?.update?`<span class="csm-update" title="Update available on both sites">Update available: ${esc(item.update)}</span>`:[target?.update?`<span class="csm-update">Destination update available: ${esc(target.update)}</span>`:'',item.update?`<span class="csm-update">Source update available: ${esc(item.update)}</span>`:''].join('');
+            html+=`<label class="csm-component csm-code-component" data-change="${change.kind}" data-source-active="${state!=='Inactive'}"><span class="csm-component-identity ${state==='Inactive'?'csm-inactive':''}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}>${icon(item.icon,kind)}<span><strong>${esc(item.name)}</strong>${item.protected?'<small>Managed separately</small>':''}</span></span><span class="csm-version-comparison"><span class="csm-version-change">${cell(target,dst[kind],'destination')}<svg class="csm-version-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>${cell(item,src[kind],'source')}<span class="csm-version-outcome">${change.label}</span></span>${updates}</span></label>`;
         }
-        $(kind).innerHTML = html + (!src[kind].length ? '<p>No components found on the source site.</p>' : '');
+        $(kind).innerHTML=html+(!src[kind].length?'<p>No components found on the source site.</p>':'');
     }
     function renderTables() {
         const selected = new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input => input.value));
@@ -253,7 +265,7 @@
             const path = active ? (tableSort.descending ? 'm6 9 6 6 6-6' : 'm6 15 6-6 6 6') : 'm8 9 4-4 4 4m-8 6 4 4 4-4';
             return `<th scope="col" aria-sort="${active ? (tableSort.descending ? 'descending' : 'ascending') : 'none'}">${key === 'name' ? '<div class="csm-table-name-heading">' + selectAll('tables') : ''}<button type="button" class="csm-sort" data-sort="${key}">${label}<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="${path}"/></svg></button>${key === 'name' ? '</div>' : ''}</th>`;
         }).join('');
-        $('tables').innerHTML = `<div class="csm-table-toolbar"><span class="csm-size-legend">Relative size on each site <span class="csm-size csm-size-small">Smaller</span><span class="csm-size csm-size-large">Larger</span></span></div><p class="csm-scroll-hint">Scroll horizontally to compare both sites.</p><div class="csm-table-scroll" role="region" aria-label="Database table comparison" tabindex="0"><table class="csm-data-table"><caption class="screen-reader-text">Database tables. Activate a column heading to sort; activate it again to reverse the order. Sizes include data and indexes.</caption><thead><tr>${headers}</tr></thead><tbody>${rows.map(({item, target}) => `<tr><th scope="row"><label><input type="checkbox" data-kind="tables" value="${esc(item.id)}" aria-label="Transfer ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''} ${session ? 'disabled' : ''}><span><strong>${esc(item.name)}</strong></span></label></th><td class="csm-table-engine">${esc(item.engine)}</td><td>~${item.rows.toLocaleString()}</td><td>${pill(item, ranges[0], 'source')}</td><td>${target ? '~' + target.rows.toLocaleString() : '<span class="csm-missing">Not installed</span>'}</td><td>${pill(target, ranges[1], 'destination')}</td></tr>`).join('') || '<tr><td colspan="6">No database tables found on the source site.</td></tr>'}</tbody></table></div>`;
+        $('tables').innerHTML = `<p class="csm-scroll-hint">Scroll horizontally to compare both sites.</p><div class="csm-table-scroll" role="region" aria-label="Database table comparison" tabindex="0"><table class="csm-data-table"><caption class="screen-reader-text">Database tables. Activate a column heading to sort; activate it again to reverse the order. Sizes include data and indexes.</caption><thead><tr>${headers}</tr></thead><tbody>${rows.map(({item, target}) => `<tr><th scope="row"><label><input type="checkbox" data-kind="tables" value="${esc(item.id)}" aria-label="Transfer ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''} ${session ? 'disabled' : ''}><span><strong>${esc(item.name)}</strong></span></label></th><td class="csm-table-engine">${esc(item.engine)}</td><td>~${item.rows.toLocaleString()}</td><td>${pill(item, ranges[0], 'source')}</td><td>${target ? '~' + target.rows.toLocaleString() : '<span class="csm-missing">Not installed</span>'}</td><td>${pill(target, ranges[1], 'destination')}</td></tr>`).join('') || '<tr><td colspan="6">No database tables found on the source site.</td></tr>'}</tbody></table></div>`;
     }
     function updateSelection() {
         const counts = {};
@@ -286,7 +298,7 @@
         renderVersionStatus();
         syncMediaSelection();
         updateSetup();
-        renderSelectionBreakdown(counts, media);
+        renderComponentSizes();
         $('include-current').disabled = !sites || busy || !!session;
         for (const kind of ['tables','plugins','themes']) filterComponents(kind);
         for (const id of ['media-select-visible', 'media-clear', 'media-more']) $(id).disabled = busy || !!session;
@@ -294,7 +306,7 @@
         $('apply').textContent = transferAction();
         if (!session) {
             $('stage').textContent = destinationAction();
-            $('action-title').textContent = selected ? `Ready to ${transferAction().toLowerCase()}` : 'Choose what to transfer';
+            if ($('completion').hidden && !transferView) $('action-title').textContent = destinationAction();
         }
     }
     function destinationAction() {
@@ -304,13 +316,49 @@
     }
     function updateSetup() {
         $('action-destination').textContent = session?.destination || (sites ? destination().url : '');
-        const setup = $('transfer-setup');
-        if (!setup) return;
-        const monitoring = !!session || !$('completion').hidden;
-        if (setup.dataset.monitoring !== String(monitoring)) { setup.open = !monitoring; setup.dataset.monitoring = String(monitoring); }
-        $('setup-summary').textContent = $('selection-summary').textContent;
         $('preset').disabled = busy || !!session || !sites;
-        $('stage').hidden = !!session && busy || !session && !$('completion').hidden;
+        $('selection-workspace').hidden=!sites && !session;
+        $('transfer-shortcuts').hidden=!sites && !connectionState.recents?.length;
+        $('flip-direction').disabled=busy || !!session || !sites;
+        const menu=$('site-menu');if(busy || session)menu.open=false;
+        $('site-menu-toggle').setAttribute('aria-disabled',String(busy || !!session));
+        for(const button of document.querySelectorAll('[data-select-site], [data-add-site], #csm-update-connection'))button.disabled=busy || !!session || button.hasAttribute('data-select-site') && button.dataset.selectSite===connectionState.selected;
+        $('refresh').disabled=busy || !!session || !connectionState.selected;
+        $('stage').hidden = busy && (!!session || transferView) || !session && !$('completion').hidden;
+        syncTransferDialog();
+    }
+    function syncTransferDialog() {
+        const dialog = $('transfer-dialog');
+        const active = transferView || !!session || !$('completion').hidden;
+        $('close-transfer').hidden = busy || !!session;
+        $('completion-elapsed').hidden = $('transfer-meter').hidden || !$('completion-elapsed').textContent;
+        if (active && !dialog.open) {
+            $('transfer-notices').append($('error'), $('feedback'));
+            $('transfer-controls').prepend($('stage'));
+            dialog.showModal();
+            document.body.classList.add('csm-transfer-open');
+            $('action-title').focus({preventScroll:true});
+        } else if (!active && dialog.open) {
+            $('app-notices').append($('error'), $('feedback'));
+            actionHome.prepend($('stage'));
+            dialog.close();
+            document.body.classList.remove('csm-transfer-open');
+            ($('stage').disabled ? $('enable-tables') : $('stage')).focus({preventScroll:true});
+        }
+    }
+    function closeTransferView() {
+        if (busy || session) return;
+        transferView = false;
+        $('completion').hidden = true; $('transfer-meter').hidden = true;
+        transferMeter.clear?.(); updateSelection();
+    }
+    function containTransferFocus(event) {
+        if (event.key !== 'Tab') return;
+        const dialog = $('transfer-dialog');
+        const controls = [...dialog.querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')].filter(node => node.getClientRects().length && !node.closest('[hidden]'));
+        const target = event.shiftKey ? controls.at(-1) : controls[0];
+        if (!controls.length) { event.preventDefault(); $('action-title').focus(); }
+        else if (event.shiftKey && (document.activeElement === controls[0] || !controls.includes(document.activeElement)) || !event.shiftKey && document.activeElement === controls.at(-1)) { event.preventDefault(); target.focus(); }
     }
     function filterComponents(kind) {
         const search = $('search-' + kind), filter = $('filter-' + kind);
@@ -323,7 +371,7 @@
             const item = inventory.get(input.value), target = lookup.get(kind === 'tables' ? input.value.slice(source().prefix.length) : input.value);
             const row = input.closest(kind === 'tables' ? 'tr' : '.csm-component');
             if (!item || !row) return;
-            const matches = `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || item.version !== target.version));
+            const matches = `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || item.version !== target.version && item.version_order !== 0));
             row.hidden = !matches; total++; if (matches) shown++;
         });
         $('filter-count-' + kind).textContent = `${shown} of ${total}`;
@@ -338,21 +386,17 @@
         $('preset').value = name;
         $('preset-status').textContent = 'Preset loaded. Review or edit the selections.'; feedback('');
     }
-    function renderSelectionBreakdown(counts, media) {
-        const root = $('selection-breakdown');
-        if (!root) return;
-        const selectedTables = new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input => input.value));
-        const databaseBytes = sites ? source().tables.filter(table => selectedTables.has(table.id)).reduce((sum,table) => sum + table.bytes, 0) : null;
+    function renderComponentSizes() {
         const estimate=sites?source().estimates:null;
-        const overview=$('source-size-overview');
-        if (overview && !sites) overview.replaceChildren();
-        if (overview && sites) overview.innerHTML=`<span>On the source</span>${[['database','Database'],['plugins','Plugins'],['themes','Themes'],['media','Media']].map(([key,label])=>`<span>${label} <strong>${key==='database' ? '~'+bytes(source().tables.reduce((sum,table)=>sum+table.bytes,0)) : estimateSize(estimate,estimate?.bytes[key])}</strong></span>`).join('')}`;
-        const sizeFor=kind=>{ if (!sites || !counts[kind]) return ''; const selected=new Set([...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input=>input.value)); const n=Object.entries(estimate?.items?.[kind] || {}).filter(([id])=>selected.has(id)).reduce((sum,[,n])=>sum+n,0); return estimate && (estimate.complete || n>0) ? `${estimate.complete?'~':'≥ '}${bytes(n)}` : 'Estimating…'; };
+        for (const kind of componentKinds) {
+            const size = kind === 'tables' ? (sites ? source().tables.reduce((sum,table)=>sum+table.bytes,0) : null) : estimate?.bytes[kind];
+            const complete = kind === 'tables' ? !!sites : estimate?.complete;
+            const cell = $(kind + '-source-size');
+            cell.textContent = size != null && (complete || size > 0) ? `${complete ? '~' : '≥ '}${(size / 1048576).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1})} MB` : 'Estimating…';
+            cell.title = size != null ? `${kind === 'tables' ? 'Database' : kind} on the source · ${bytes(size)} before compression and matching-file skips` : 'Source size not yet available';
+        }
         renderSizeDetails();
-        const mediaSize=modeEstimate(media,estimate);
-        const rows = [['Database',`${counts.tables} table${counts.tables === 1 ? '' : 's'}`,databaseBytes ? '~' + bytes(databaseBytes) : ''], ['Plugins',`${counts.plugins} folder${counts.plugins === 1 ? '' : 's'}`,sizeFor('plugins')], ['Themes',`${counts.themes} folder${counts.themes === 1 ? '' : 's'}`,sizeFor('themes')], ['Media',media,mediaSize]];
-        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing size estimates…':estimate?.complete?'Estimated size before compression and matching-file skips.':'Estimating file sizes… You can keep choosing components.';
-        root.innerHTML = rows.map(([label,value,note]) => `<div><dt>${label}</dt><dd>${esc(value)}${note ? `<small>${esc(note)}</small>` : ''}</dd></div>`).join('');
+        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing source sizes…':estimate?.complete?'Source sizes before compression. Matching files are skipped.':'Estimating source sizes…';
     }
     function estimateSize(estimate, size) {
         return estimate && (estimate.complete || size>0) ? `${estimate.complete?'~':'≥ '}${bytes(size || 0)}` : 'Estimating…';
@@ -369,11 +413,6 @@
         panel.hidden=!estimate;
         list.innerHTML=years.map(([year,size])=>`<div><dt>${year==='_other'?'Other files':esc(year)}</dt><dd>${esc(estimateSize(estimate,size))}</dd></div>`).join('') || `<div><dt>${estimate?.complete?'No media files':'Estimating…'}</dt><dd></dd></div>`;
     }
-    function modeEstimate(media,estimate) {
-        if (!sites || media==='No media files') return '';
-        if (!estimate || (!estimate.complete && !estimate.bytes.media)) return 'Estimating…';
-        return `${estimate.complete?'~':'≥ '}${bytes(estimate.bytes.media)}${['all','compare'].includes($('media-mode').value)?'':' in library'}`;
-    }
     let estimateTimer=null, estimateGeneration=0;
     async function loadEstimates(generation=++estimateGeneration) {
         if (!sites || session || generation!==estimateGeneration) return;
@@ -382,26 +421,48 @@
             const result=await api('estimates',{site});
             if (session || generation!==estimateGeneration || site!==$('remote-site').value) return;
             for (const key of ['local','remote']) { sites[key].estimates=result[key]; }
-            renderSelectionBreakdown({tables:document.querySelectorAll('input[data-kind="tables"]:checked').length,plugins:document.querySelectorAll('input[data-kind="plugins"]:checked').length,themes:document.querySelectorAll('input[data-kind="themes"]:checked').length},$('media-summary').textContent);
+            renderComponentSizes();
             if (!result.local.complete || result.local.refreshing || !result.remote.complete || result.remote.refreshing) estimateTimer=setTimeout(()=>loadEstimates(generation),750);
         } catch (_) { if (!session && generation===estimateGeneration) $('summary-size-note').textContent='Size estimate unavailable. Try Refresh versions.'; }
     }
     function transferVersionMatches() { return !session || (!!sites && session.plugin_version === sites.local.plugin_version); }
-    function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version; }
+    function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version && (!sites.remote.remote_build_update || sites.local.trickle_build === sites.remote.trickle_build); }
     function renderEndpoints() {
-        for (const [id, site] of [['source', source()], ['destination', destination()]]) {
-            const versions = [['Trickle', site.plugin_version], ['WordPress', site.wordpress], ['PHP', site.php]];
-            $(id).innerHTML = `${icon(site.icon, 'site')}<span class="csm-site-identity"><strong>${esc(site.url)}</strong>${site.name ? `<small>${esc(site.name)}</small>` : ''}<span class="csm-site-versions">${versions.map(([label, version]) => `<span>${label} <b>${esc(version || 'unknown')}</b></span>`).join('')}</span></span>`;
+        const peer=connectionState.connections.find(site=>site.id===connectionState.selected), pull=(session?.direction || direction())==='pull';
+        const local=sites?.local || CSM.local, remote=sites?.remote || peer;
+        labelRoute();
+        for(const [id,site] of [['source',pull?remote:local],['destination',pull?local:remote]]){
+            const card=$(id).closest('.csm-endpoint'), isRemote=id===(pull?'source':'destination');
+            card.classList.toggle('csm-empty-endpoint',!site);card.classList.toggle('csm-remote-endpoint',isRemote);
+            if(!site){$(id).innerHTML=`<button type="button" class="button" data-add-site>Add ${pull?'source':'destination'}</button>`;continue;}
+            const versions=[['Trickle',site.plugin_version],['WordPress',site.wordpress],['PHP',site.php]].filter(([,value])=>value);
+            $(id).innerHTML=`${icon(site.icon,'site')}<span class="csm-site-identity"><strong>${esc(site.url)}</strong>${site.name?`<small>${esc(site.name)}</small>`:''}${versions.length?`<span class="csm-site-versions">${versions.map(([label,version])=>`<span>${label} <b>${esc(version)}</b></span>`).join('')}</span>`:''}</span>`;
         }
+        $(pull?'source':'destination').closest('.csm-endpoint').append($('site-menu'));
+        $('site-menu').hidden=!connectionState.connections.length;
+        $('update-connection').hidden=!peer;
     }
     function renderVersionStatus() {
         $('trickle-versions').hidden = !sites;
+        $('install-local-build').hidden = !sites;
+        $('install-local-build').textContent = sites?.remote.remote_build_update ? 'Install local Trickle build' : 'Install the new ZIP once to enable build sync';
+        $('install-local-build').disabled = busy || !!session || !sites?.remote.remote_build_update || !sites?.remote.can_update_trickle || sites?.remote.file_modifications===false;
         if (!sites) return;
         renderEndpoints();
         const same = versionsMatch(), local = sites.local.plugin_version;
         $('trickle-versions').hidden = same && transferVersionMatches();
         $('trickle-versions').classList.toggle('csm-version-mismatch', !same || !transferVersionMatches());
         $('trickle-version-status').textContent = same ? '' : 'Trickle update required before transferring';
+        if (sites.remote.remote_build_update) {
+            const mayUpdate=!!sites.remote.can_update_trickle;
+            $('check-remote-update').hidden=true;
+            $('update-remote').hidden=same||!mayUpdate;
+            $('update-remote').disabled=busy||!!session||sites.remote.file_modifications===false;
+            $('update-remote').textContent='Install local Trickle build';
+            $('trickle-version-status').textContent=same?'':'Trickle builds differ';
+            $('trickle-update-status').textContent=session?'Finish the transfer before changing Trickle.':sites.remote.file_modifications===false?'WordPress disallows file modifications on the remote site.':!mayUpdate?'Use an administrator or read/write key to update Trickle.':'Copy this site’s installed Trickle files to the remote site.';
+            return;
+        }
         const supported = sites.remote.remote_update === 1;
         const mayUpdate = !!sites.remote.can_update_trickle;
         $('check-remote-update').hidden = same || !supported;
@@ -414,25 +475,22 @@
     const transferDate = stamp => new Date(stamp * 1000).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
     function renderConnections(state) {
         connectionState = state; session = state.session;
-        $('no-connection').hidden = !!state.selected || !!session;
-        $('remote-site').innerHTML = (state.selected ? '' : '<option value="" disabled>Choose a remote site…</option>') + state.connections.map(site => `<option value="${esc(site.id)}">${esc(site.name === site.url ? site.url : site.name + ' · ' + site.url)}</option>`).join('');
+        if(state.selected!==$('remote-site').value && !session)sites=null;
         $('remote-site').value = state.selected;
         const recent = $('recent').value;
-        $('recent').innerHTML = '<option value="">Reuse settings from a recent transfer…</option>' + state.recents.map(item => `<option value="${esc(item.id)}">${esc(transferDate(item.started_at))} · ${item.direction === 'push' ? 'Push to' : 'Pull from'} ${esc(item.remote_name)} · ${esc(item.status)}</option>`).join('');
+        $('recent').innerHTML = '<option value="">Reuse a recent transfer…</option>' + state.recents.map(item => `<option value="${esc(item.id)}">${esc(transferDate(item.started_at))} · ${item.direction === 'push' ? 'Push to' : 'Pull from'} ${esc(item.remote_name)} · ${esc(item.status)}</option>`).join('');
         $('recent').value = recent;
         $('recent-wrap').hidden = !state.recents.length;
         $('retained-note').hidden = !session;
-        $('connection-summary').textContent = `${state.connections.length} saved site${state.connections.length === 1 ? '' : 's'}`;
-        const selected = state.connections.find(site => site.id === state.selected);
-        $('saved-connection').textContent = selected ? `Saved connection: ${selected.name}. Use it for both push and pull.` : 'Save a connection once to use it for both push and pull.';
-        if (state.connections.length || session) $('workspace').hidden = false;
+        $('saved-sites').innerHTML=state.connections.map(site=>`<button type="button" data-select-site="${esc(site.id)}" aria-pressed="${site.id===state.selected}"><strong>${esc(site.name)}</strong><small>${esc(site.url)}</small></button>`).join('');
+        $('workspace').hidden=false;renderEndpoints();
     }
     function clearInventory() {
         sites = null; remoteUpdate = null; resetComponents(); $('ignore-active-plugins').checked = false;
         $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
-        $('source').textContent = 'Loading source…'; $('destination').textContent = 'Loading destination…';
+        renderEndpoints();
         $('version-note').textContent = 'Loading site inventories…';
         updateSelection();
     }
@@ -587,7 +645,7 @@
         const action = transferAction();
         $('apply').hidden = true;
         $('rollback').hidden = summary.status !== 'applying';
-        $('discard').hidden = summary.status !== 'staging';
+        $('discard').hidden = !['staging','applying','restoring','backup_copy'].includes(summary.status);
         $('stage').hidden = summary.status !== 'staging';
         $('stage').textContent = `Continue ${destinationAction().toLowerCase()}`;
         $('action-title').textContent = summary.status === 'applied' ? `${action} complete` : summary.status === 'restored' ? 'Destination restored' : summary.status === 'applying' ? 'Recovering…' : `${action === 'Push' ? 'Pushing' : 'Pulling'}…`;
@@ -598,21 +656,6 @@
         renderActivity(summary.progress);
         renderPreview(); updateSetup();
     }
-    function completionReceipt(result, metrics) {
-        const rows = [];
-        if (result.status === 'applied') {
-            rows.push(['Transferred', `${Number(result.tables || 0).toLocaleString()} tables · ${Number(result.files || 0).toLocaleString()} files`]);
-            const media = result.media_comparison;
-            const sameMedia = Number.isFinite(media?.source_hashing?.scanned_files) && Number.isFinite(media.files_selected) ? Math.max(0, media.source_hashing.scanned_files - media.files_selected) : 0;
-            rows.push(['Unchanged', `${(Number(result.unchanged_files || 0) + sameMedia).toLocaleString()} files`]);
-            const skipped = (result.skipped_folders || []).length;
-            rows.push(['Skipped', `${skipped} protected folder${skipped === 1 ? '' : 's'}`]);
-            rows.push(['Health', result.health?.verified ? `Homepage passed${result.health.status ? ' · HTTP ' + result.health.status : ''}` : 'Not confirmed']);
-            rows.push(['Backup', 'Saved on destination']);
-        } else rows.push(['Result', 'Destination restored']);
-        if (metrics?.elapsed != null) rows.push(['Elapsed', `${Math.floor(metrics.elapsed / 60)}m ${Math.floor(metrics.elapsed % 60)}s`]);
-        return rows;
-    }
     async function finishTransfer(result, route) {
         transferMeter.finish(result.status, result);
         const finished = await api('finish', {id:route.id});
@@ -621,8 +664,6 @@
         $('stage').hidden = false;
         $('completion').hidden = false;
         $('completion-title').textContent = result.status === 'applied' ? `${route.direction === 'push' ? 'Push' : 'Pull'} complete` : 'Destination restored';
-        const receipt = completionReceipt(result, transferMeter.metrics?.());
-        $('completion-receipt').innerHTML = receipt.map(([label,value]) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`).join('');
         $('completion-detail').textContent = result.status === 'applied' ? 'Destination updated.' : 'Previous changes recovered.';
         $('view-site').href = route.view_url || route.destination;
         const backupUrl = new URL($('backup-link').href);
@@ -638,7 +679,7 @@
         $('action-title').textContent = $('completion-title').textContent;
         const warnings = [finished.cleanup_warning];
         if (result.health && !result.health.verified) warnings.push('Check the site; its health check was inconclusive.');
-        if (result.activation_missing?.length) warnings.push(`Could not activate ${result.activation_missing.length} missing plugin${result.activation_missing.length === 1 ? '' : 's'}. See Diagnostics.`);
+        if (result.activation_missing?.length) warnings.push(`Not activated — missing plugin files: ${result.activation_missing.join(', ')}.`);
         feedback(warnings.filter(Boolean).join(' '));
     }
     let previewItems = [], previewId = '';
@@ -658,23 +699,6 @@
         const page = await api('preview', {id:session.id, offset:previewItems.length});
         previewItems = [...previewItems, ...page.items]; renderPreview();
     }));
-    function renderKeys(keys) {
-        $('keys').innerHTML = keys.length ? '<ul class="csm-key-list">' + keys.map(key => `<li><span><strong>${esc(key.name)}</strong><small>${key.write ? 'Read and write' : 'Read only'} · expires ${esc(transferDate(key.expires))}</small></span><button type="button" class="button-link button-link-delete" data-revoke-key="${esc(key.id)}">Revoke</button></li>`).join('') + '</ul>' : '<p>No named connection keys.</p>';
-    }
-    $('issue-key').addEventListener('click', () => run(async () => {
-        const key = await api('issue_key', {name:$('key-name').value, read:true, write:$('key-write').checked, days:Number($('key-days').value)});
-        renderKeys(key.keys); $('new-code').value = key.pairing; $('new-key').hidden = false;
-        $('new-code').focus(); $('new-code').select();
-    }));
-    $('copy-key').addEventListener('click', async () => {
-        try { await navigator.clipboard.writeText($('new-code').value); $('copy-key').textContent = 'Code copied'; setTimeout(() => { $('copy-key').textContent = 'Copy new code'; }, 2000); }
-        catch (_) { $('new-code').focus(); $('new-code').select(); }
-    });
-    $('keys').addEventListener('click', event => {
-        const id = event.target.dataset.revokeKey; if (!id) return;
-        run(async () => { if (!confirm('Revoke this connection key immediately? Transfers using it will need an administrator connection to recover.')) return; renderKeys((await api('revoke_key', {id})).keys); });
-    });
-    renderKeys(CSM.keys || []);
     let copyResetTimer;
     $('copy').addEventListener('click', async () => {
         try {
@@ -715,45 +739,83 @@
         }
     }));
     $('rotate').addEventListener('click', () => run(async () => {
-        if (!confirm('Rotate this site’s key? Existing connections to this site will need its new connection code.')) return;
-        const result = await api('settings', {pull:$('allow-read').checked, push:$('allow-write').checked, rotate:true}); $('pairing').value = result.pairing; renderKeys([]); $('new-key').hidden = true; feedback('Connection key rotated. Update any sites that connect to this site.');
+        if (!confirm('Regenerate this site’s connection key? Existing connections will stop working until you give them the new code.')) return;
+        const result = await api('settings', {pull:$('allow-read').checked, push:$('allow-write').checked, rotate:true}); $('pairing').value = result.pairing; feedback('Connection key regenerated. Copy the new code to reconnect your other sites.');
     }));
-    let connectTimer;
+    let connectTimer, connectionTrigger;
+    function openConnection(update=false) {
+        if(busy || session)return;
+        connectionTrigger=document.activeElement;$('site-menu').open=false;
+        const peer=update?connectionState.connections.find(site=>site.id===connectionState.selected):null;
+        $('add-site-title').textContent=update?'Update connection':'Add a site';
+        $('remote-name').value=peer?.name || '';$('remote-code').value='';
+        $('connect-status').textContent='Paste a complete code to connect automatically.';$('connect-status').dataset.tone='';
+        $('connection-dialog').showModal();$('remote-code').focus();
+    }
+    async function selectSite(id) {
+        if(busy || session)return;
+        $('site-menu').open=false;
+        await run(async()=>{
+            try{renderConnections(await api('select',{site:id}));}
+            catch(error){renderConnections(connectionState);throw error;}
+            clearInventory();await load();$('site-menu-toggle').focus();
+        });
+    }
+    $('site-menu-toggle').addEventListener('click',event=>{if(busy || session)event.preventDefault();});
+    document.querySelector('.csm-route').addEventListener('click',event=>{
+        if(event.target.closest('[data-add-site]'))openConnection();
+        const site=event.target.closest('[data-select-site]');if(site)selectSite(site.dataset.selectSite);
+    });
+    document.addEventListener('click',event=>{if(!$('site-menu').contains(event.target))$('site-menu').open=false;});
+    $('site-menu').addEventListener('keydown',event=>{if(event.key==='Escape'){$('site-menu').open=false;$('site-menu-toggle').focus();event.preventDefault();}});
+    $('update-connection').addEventListener('click',()=>openConnection(true));
+    $('close-connection').addEventListener('click',()=>$('connection-dialog').close());
+    $('connection-dialog').addEventListener('cancel',()=>{clearTimeout(connectTimer);$('remote-code').value='';});
+    $('connection-dialog').addEventListener('close',()=>{
+        clearTimeout(connectTimer);$('remote-code').value='';
+        if(connectionTrigger?.isConnected && connectionTrigger.getClientRects().length)connectionTrigger.focus();else if(connectionState.selected)$('site-menu-toggle').focus();
+    });
     function connectFromCode() {
-        const code = $('remote-code').value.trim();
-        if (!code) { $('connect-status').textContent = 'Paste a complete connection code to connect automatically.'; return; }
-        let complete = /^https?:\/\/\S+\s+[a-f0-9]{64}$/.test(code);
-        if (!complete) {
-            try {
-                const peer = JSON.parse(atob(code));
-                complete = typeof peer?.url === 'string' && /^https?:\/\//.test(peer.url) && typeof peer.key === 'string' && /^[a-f0-9]{64}$/.test(peer.key);
-            } catch (_) { /* Incomplete input stays local until a complete code is pasted. */ }
+        if(!$('connection-dialog').open || session)return;
+        const code=$('remote-code').value.trim();
+        if(!code){$('connect-status').textContent='Paste a complete code to connect automatically.';return;}
+        let complete=/^https?:\/\/\S+\s+[a-f0-9]{64}$/.test(code);
+        if(!complete){
+            try{const peer=JSON.parse(atob(code));complete=typeof peer?.url==='string'&&/^https?:\/\//.test(peer.url)&&typeof peer.key==='string'&&/^[a-f0-9]{64}$/.test(peer.key);}
+            catch(_){/* Incomplete input stays local. */}
         }
-        if (!complete) { $('connect-status').textContent = 'The code is incomplete. Include both the site URL and its full private key.'; return; }
-        if (busy) { connectTimer = setTimeout(connectFromCode, 200); return; }
-        run(async () => {
-            $('connect-status').textContent = 'Connecting and checking the remote site…';
-            try {
-                const result = await api('connect', {pairing:code, name:$('remote-name').value});
-                $('remote-code').value = ''; $('remote-name').value = '';
-                $('connect-status').textContent = 'Connection saved. Its code has been cleared; choose the site in the transfer settings.';
-                if (result.state.selected === result.saved) { if (!session) clearInventory(); await load(); }
-                else feedback('Remote site saved. The retained transfer stays attached to its original site; select the new site after discarding that transfer.');
-            } catch (error) {
-                $('connect-status').textContent = 'Could not connect. Check the code and the remote site’s permissions, then paste it again.';
-                throw error;
+        if(!complete){$('connect-status').textContent='Include the site URL and its full private key.';return;}
+        if(busy){connectTimer=setTimeout(connectFromCode,200);return;}
+        run(async()=>{
+            $('connect-status').textContent='Connecting…';
+            try{
+                const result=await api('connect',{pairing:code,name:$('remote-name').value});
+                $('remote-code').value='';$('remote-name').value='';
+                renderConnections(result.state);clearInventory();await load();
+                $('connection-dialog').close();feedback('');
+            }catch(error){
+                if(!$('connection-dialog').open)throw error;
+                $('connect-status').textContent=error.message;$('connect-status').dataset.tone='error';
             }
         });
     }
-    $('remote-code').addEventListener('input', () => {
-        clearTimeout(connectTimer);
-        $('connect-status').textContent = $('remote-code').value.trim() ? 'Checking connection code…' : 'Paste a complete connection code to connect automatically.';
-        connectTimer = setTimeout(connectFromCode, 600);
+    $('remote-code').addEventListener('input',()=>{
+        clearTimeout(connectTimer);$('connect-status').dataset.tone='';
+        $('connect-status').textContent=$('remote-code').value.trim()?'Checking code…':'Paste a complete code to connect automatically.';
+        connectTimer=setTimeout(connectFromCode,600);
     });
     $('check-remote-update').addEventListener('click', () => run(async () => {
         remoteUpdate = await api('remote_update_info', {site:$('remote-site').value}); renderVersionStatus();
     }));
+    async function installLocalBuild() {
+        if (!sites?.remote.remote_build_update || !sites.remote.can_update_trickle || session) return;
+        $('site-menu').open=false;feedback('Installing local Trickle build…');
+        await api('update_remote',{site:$('remote-site').value});
+        await load();feedback('Remote Trickle matches this site.');
+    }
+    $('install-local-build').addEventListener('click',()=>run(installLocalBuild));
     $('update-remote').addEventListener('click', () => run(async () => {
+        if (sites?.remote.remote_build_update) { await installLocalBuild(); return; }
         if (!remoteUpdate?.can_update_to_target) return;
         if (!confirm(`Update Trickle on ${sites.remote.url} from ${sites.remote.plugin_version} to ${sites.local.plugin_version}? This updates the migration plugin before any transfer begins.`)) return;
         feedback('Updating remote Trickle through its configured JSON feed…');
@@ -763,13 +825,7 @@
     $('preset').addEventListener('change', () => run(() => applyPreset($('preset').value)));
     document.querySelectorAll('[data-search-kind]').forEach(input => input.addEventListener('input', () => filterComponents(input.dataset.searchKind)));
     document.querySelectorAll('[data-filter-kind]').forEach(input => input.addEventListener('change', () => filterComponents(input.dataset.filterKind)));
-    $('refresh').addEventListener('click', () => run(() => load(true)));
-    $('remote-site').addEventListener('change', () => run(async () => {
-        const chosen = $('remote-site').value;
-        try { renderConnections(await api('select', {site:chosen})); }
-        catch (error) { renderConnections(connectionState); throw error; }
-        clearInventory(); await load();
-    }));
+    $('refresh').addEventListener('click', () => { $('site-menu').open=false;run(() => load(true)); });
     $('recent').addEventListener('change', () => {
         const id = $('recent').value;
         if (!id) return;
@@ -781,6 +837,10 @@
             $('recent').value = id;
             feedback(`Loaded the ${profile.direction} settings from ${transferDate(profile.started_at)}. Nothing has been staged or applied.`);
         });
+    });
+    $('flip-direction').addEventListener('click',()=>{
+        if(busy || session || !sites)return;
+        $('direction').value=direction()==='pull'?'push':'pull';$('direction').dispatchEvent(new Event('change'));
     });
     $('direction').addEventListener('change', () => { if (sites) { $('media-mode').value = 'none'; $('replace').checked = true; $('recent').value = ''; render(); } });
     let savedTransferSettings = {transport:$('transport').value, file_verify:$('file-verify').checked};
@@ -841,9 +901,7 @@
         updateSelection();
     });
     document.querySelectorAll('.csm-panel-disclosure').forEach(button => button.addEventListener('click', () => {
-        const kind = button.dataset.disclose;
-        if ($('component-workbench').dataset.current !== kind) { showComponent(kind); if ($('enable-' + kind).checked) setPanelOpen(kind, true); }
-        else setPanelOpen(kind, $(kind + '-body').hidden && $('enable-' + kind).checked);
+        setPanelOpen(button.dataset.disclose, true);
     }));
     $('include-current').addEventListener('click', () => {
         if (busy || session || !sites) return;
@@ -891,7 +949,10 @@
         if (event.target.checked && !confirm(`Include ${event.target.value}? This can replace or delete actively developed destination code. Repository metadata, node_modules, .gitignore and environment files remain excluded.`)) event.target.checked = false;
     });
     async function migrate() {
+        if(!session)transferMeter.clear?.();
         $('completion').hidden = true;
+        transferView = true; $('action-title').textContent = destinationAction();
+        message('Connecting…'); updateSetup();
         try {
             if (!session) {
                 previewId = ''; previewItems = [];
@@ -902,14 +963,13 @@
                     const review = await api('review', {site:$('remote-site').value, direction:direction(), selection});
                     if (review.git_folders.length) {
                         git_confirmed = await reviewGitFolders(review.git_folders);
-                        if (git_confirmed === null) return;
+                        if (git_confirmed === null) { transferView = false; updateSetup(); return; }
                     }
                 }
                 summary = await api('prepare', {site:$('remote-site').value, direction:direction(), selection, git_confirmed, automatic:true});
                 session = {view_url:destination().home || dest, plugin_version:sites.local.plugin_version, id:summary.id, remote_id:$('remote-site').value, direction:direction(), source:source().url, destination:dest, selection, automatic:true};
             } else summary = await api('status', {id:session.id});
             const route = {...session};
-            transferMeter.configure?.({direction:session.direction, transport:session.selection?.transport || 'stream'});
             transferMeter.begin(summary.timeline || {id:session.id,elapsed:0,components:{},streams:{},selected:[],ready:false});
             transferMeter.update(summary);
             if (['applied','restored'].includes(summary.status)) { await finishTransfer(summary, route); return; }
@@ -972,13 +1032,19 @@
             if (['applied','restored'].includes(result.status)) { await finishTransfer(result, route); return; }
             if (result.status !== 'cancelled') throw new Error('Cancellation not confirmed. Check transfer status before continuing.');
             transferMeter.finish('cancelled');
-            session = null; summary = null; renderPreview();
+            session = null; summary = null; transferView = false; renderPreview();
             for (const id of ['apply','rollback','discard','activity']) $(id).hidden = true;
             $('stage').hidden = false; await load(); message('Transfer cancelled. Destination unchanged.');
         } catch (error) { fail(error); }
         finally { cancelling = false; $('discard').disabled = false; updateSelection(); }
     }
     $('discard').addEventListener('click', cancelTransfer);
+    $('close-transfer').addEventListener('click', closeTransferView);
+    $('transfer-dialog').addEventListener('cancel', event => { event.preventDefault(); closeTransferView(); });
+    $('transfer-dialog').addEventListener('keydown', containTransferFocus);
+    window.addEventListener('beforeunload', event => {
+        if (session || transferView && busy) { event.preventDefault(); event.returnValue = ''; }
+    });
     $('diagnostics').addEventListener('toggle', () => { if ($('diagnostics').open) refreshLogs(); });
     $('refresh-logs').addEventListener('click', refreshLogs);
     $('log-entries').addEventListener('click', event => {

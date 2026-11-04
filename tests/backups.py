@@ -12,7 +12,7 @@ def wp(site,*args,fail=False):
  if p.returncode:raise RuntimeError(p.stdout+p.stderr)
  return p.stdout
 
-def ev(site,code):return json.loads(wp(site,'eval',code))
+def ev(site,code):return json.loads(wp(site,'eval',code).splitlines()[-1])
 def op(action,data=None):return ev(D,'echo wp_json_encode(CSM_Controller::execute('+json.dumps(action)+',json_decode('+repr(json.dumps(data or {}))+',true)));')
 def check(ok,label):
  global checks
@@ -99,7 +99,17 @@ try:
  (P[D]/'code.txt').write_text('partial replacement')
  wp(D,'eval','wp_schedule_single_event(time()-10,"trickle_fixture_ordinary");')
  ca=Path.home()/'Library/Application Support/Caddy/pki/authorities/local/root.crt'
- c=http.client.HTTPSConnection(D+'.localhost',8453,context=ssl.create_default_context(cafile=str(ca)),timeout=90);c.request('POST','/wp-cron.php',headers={'User-Agent':'Trickle/QA recovery test'});r=c.getresponse();r.read();c.close()
+ def cron():
+  c=http.client.HTTPSConnection(D+'.localhost',8453,context=ssl.create_default_context(cafile=str(ca)),timeout=90)
+  try:
+   c.request('POST','/wp-cron.php',headers={'User-Agent':'T3Code (user-directed AI agent; agent=Codex; model=gpt-6.1-sol)'})
+   r=c.getresponse();r.read();assert r.status==200,r.status
+  finally:c.close()
+ cron()
+ check(ev(D,'echo wp_json_encode(get_option("_csm_active_job"));')==staged['id'] and (P[D]/'code.txt').read_text()=='partial replacement','Fresh heartbeat defers automatic recovery without touching destination files')
+ # Simulate the crashed worker's heartbeat expiring; do not wait on wall-clock time.
+ ev(D,'$id='+json.dumps(staged['id'])+';foreach(["-heartbeat","-apply.json","-restore.json"] as $suffix){$path=CSM_Support::private_dir()."/".$id.$suffix;if(is_file($path))touch($path,time()-120);}echo "true";')
+ cron()
  # wp-cron can finish its HTTP response before bootstrap/recovery runs.
  for _ in range(40):
   if ev(D,'echo wp_json_encode(!get_option("_csm_active_job"));'):break

@@ -11,18 +11,12 @@ final class CSM_Segments {
         return CSM_Support::private_dir() . '/segment-' . $id . '-' . $kind . $suffix;
     }
 
-    private static function write_json(string $path, array $value): void {
-        $raw = CSM_Support::json($value); $temp = $path . '.tmp';
-        if (file_put_contents($temp, $raw, LOCK_EX) !== strlen($raw)) { throw new RuntimeException('Could not save transfer checkpoint.'); }
-        chmod($temp, 0600); if (!rename($temp, $path)) { throw new RuntimeException('Could not save transfer checkpoint.'); }
-    }
-
     public static function lease(string $id): void {
         $path=self::path($id,'files','.source.owner'); $lock=fopen(self::path($id,'files','.source.lock'),'c');
         if (!$lock || !flock($lock,LOCK_EX|LOCK_NB)) { if ($lock) fclose($lock); throw new CSM_Busy_Error('Source preparation is busy.'); }
         try {
             if (is_file($path)) { CSM_Access::assert_owner(json_decode(file_get_contents($path),true,32,JSON_THROW_ON_ERROR)); @touch($path); }
-            else { self::write_json($path,['credential'=>CSM_Access::owner(),'created'=>time()]); }
+            else { CSM_Support::atomic_json($path,['credential'=>CSM_Access::owner(),'created'=>time()]); }
         } finally { flock($lock,LOCK_UN); fclose($lock); }
     }
 
@@ -40,7 +34,7 @@ final class CSM_Segments {
                 throw new RuntimeException('Source checkpoint is missing. Discard and prepare again.');
             }
             if (is_file($path . '.owner')) { $owner=json_decode(file_get_contents($path . '.owner'),true,32,JSON_THROW_ON_ERROR); CSM_Access::assert_owner($owner); if (isset($owner['selection']) && !hash_equals($owner['selection'],$digest)) { throw new RuntimeException('This package is pinned to a different selection.'); } }
-            self::write_json($path . '.owner', ['credential' => CSM_Access::owner(),'selection'=>$digest,'touched'=>time()]);
+            CSM_Support::atomic_json($path . '.owner', ['credential' => CSM_Access::owner(),'selection'=>$digest,'touched'=>time()]);
             ignore_user_abort(true);
             CSM_Support::begin_source_budget();
             $previous_limit = (int)ini_get('max_execution_time');
@@ -50,7 +44,7 @@ final class CSM_Segments {
                 $built = CSM_Package::build($path, $kind, $selection);
                 if (!empty($built['continue'])) { return $built; }
                 $info = $built + ['credential'=>CSM_Access::owner(),'selection'=>$digest,'created'=>time()];
-                self::write_json($meta, $info); return $info;
+                CSM_Support::atomic_json($meta, $info); return $info;
             } catch (Throwable $error) {
                 if ($kind === 'database') { @unlink($path . '.part'); }
                 throw $error;
@@ -92,7 +86,7 @@ final class CSM_Segments {
     public static function pull(array $peer, array $job, string $kind, array $bundle): array {
         $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
         if ($state['offset'] < $bundle['size']) {
-            self::write_json($path . '.json', $bundle);
+            CSM_Support::atomic_json($path . '.json', $bundle);
             $fp = fopen($path, 'c+b');
             if (!$fp || fseek($fp, $state['offset']) !== 0) { throw new RuntimeException('Cannot resume destination stream.'); }
             chmod($path, 0600);
@@ -110,7 +104,7 @@ final class CSM_Segments {
         if ($offset !== $state['offset']) { throw new RuntimeException('Destination offset changed. Refresh its checkpoint before resuming.'); }
         if ($length !== null && ($length < 0 || $length > self::UPLOAD_SIZE || $length > $bundle['size'] - $offset || ($length === 0 && $offset !== $bundle['size']))) { throw new RuntimeException('Invalid upload window length.'); }
         $end = $offset + ($length ?? ($bundle['size'] - $offset));
-        self::write_json($path . '.json', $bundle);
+        CSM_Support::atomic_json($path . '.json', $bundle);
         $fp = fopen($path, 'c+b');
         if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Cannot resume destination stream.'); }
         chmod($path, 0600);
@@ -154,7 +148,7 @@ final class CSM_Segments {
             @touch($path.'.owner'); $fp = fopen($path, 'rb'); fseek($fp, $offset); $old = fread($fp, strlen($bytes)); fclose($fp);
             if ($offset + strlen($bytes) > $state['offset'] || !hash_equals($old, $bytes)) { throw new RuntimeException('Conflicting retry at an acknowledged offset.'); }
         } elseif ($bytes !== '') {
-            self::write_json($path . '.json', $bundle);
+            CSM_Support::atomic_json($path . '.json', $bundle);
             $fp = fopen($path, 'c+b'); if (!$fp || fseek($fp, $offset) !== 0) { throw new RuntimeException('Cannot write destination checkpoint.'); }
             chmod($path, 0600);
             try { CSM_Support::write($fp, $bytes); fflush($fp); }
@@ -204,7 +198,7 @@ final class CSM_Segments {
     }
 
     public static function prune_sources(): void {
-        CSM_Support::prune_job_records();
+        CSM_Jobs::prune();
         foreach (glob(CSM_Support::private_dir().'/media-compare-*.json') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
         foreach (glob(CSM_Support::private_dir().'/*.comparison-*.json') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
         foreach (glob(CSM_Support::private_dir().'/*.build-*') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }

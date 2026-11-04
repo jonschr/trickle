@@ -7,7 +7,7 @@ class CSM_Progress {
     public static array $events = [], $current = [];
     public static function update(array $detail): void { self::$current = array_replace(self::$current, $detail); self::$events[] = self::$current; }
 }
-class CSM_Files { public static function destination($path, $selection) { return $GLOBALS['base'] . '/destination/' . basename($path); } }
+class CSM_Files { public static function assert_writable($target,$relative) {} public static function destination($path, $selection) { return $GLOBALS['base'] . '/destination/' . basename($path); } }
 class CSM_Support { public static function hash_file($path) { return hash_file('sha256',$path); } public static function private_dir() { return $GLOBALS['base']; } public static function json($data) { return json_encode($data); } }
 require __DIR__ . '/../includes/plugin.php';
 $check = static function ($ok, $label) { if (!$ok) throw new RuntimeException($label); };

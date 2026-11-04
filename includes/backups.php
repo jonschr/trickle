@@ -16,7 +16,7 @@ final class CSM_Backups {
             CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id']);
         } catch (Throwable $e) { CSM_Log::write('error', 'Completed staging cleanup needs attention', ['transfer_id' => $job['id'], 'error' => $e->getMessage()]); }
         foreach (array_slice($ids, 3) as $id) {
-            try { CSM_Plugin::discard(CSM_Support::job($id)); }
+            try { CSM_Plugin::discard(CSM_Jobs::get($id)); }
             catch (Throwable $e) { CSM_Log::write('error', 'Old backup cleanup needs attention', ['transfer_id' => $id, 'error' => $e->getMessage()]); }
         }
     }
@@ -24,7 +24,7 @@ final class CSM_Backups {
     public static function listing(): array {
         $items = [];
         foreach (get_option('_csm_backups', []) as $id) {
-            try { $job = CSM_Support::job($id); } catch (Throwable $e) { continue; }
+            try { $job = CSM_Jobs::get($id); } catch (Throwable $e) { continue; }
             try { self::authorize($job); } catch (Throwable $e) { continue; }
             if ($job['status'] !== 'applied') { continue; }
             $items[] = ['id' => $id, 'created' => $job['applied'], 'source' => $job['source'] ?? '',
@@ -32,7 +32,7 @@ final class CSM_Backups {
                 'media' => ($job['selection']['media'] ?? 'none') !== 'none', 'temporary' => !isset($job['backup_dir']) || str_starts_with($job['backup_dir'], CSM_Support::private_dir() . '/'), 'plugin_version' => $job['plugin_version'] ?? ''];
         }
         $restore = get_option('_csm_backup_restore');
-        if ($restore) { self::authorize(CSM_Support::job($restore['backup_id'])); }
+        if ($restore) { self::authorize(CSM_Jobs::get($restore['backup_id'])); }
         return ['backups' => $items, 'destination' => site_url(), 'recovery' => $restore ?: null];
     }
 
@@ -41,13 +41,12 @@ final class CSM_Backups {
     }
 
     public static function restore(string $id): array {
-        global $wpdb;
         if (!in_array($id, get_option('_csm_backups', []), true)) { throw new RuntimeException('Backup not found. Refresh the backup list.'); }
-        $original = CSM_Support::job($id); self::authorize($original);
+        $original = CSM_Jobs::get($id); self::authorize($original);
         $restore = get_option('_csm_backup_restore');
         if ($restore && $restore['backup_id'] !== $id) { throw new RuntimeException('Finish restoring the interrupted backup first.'); }
         if (get_option('_csm_active_job') && get_option('_csm_active_job') !== ($restore['job_id'] ?? '')) { throw new RuntimeException('Finish or cancel the active transfer before restoring a backup.'); }
-        if ($restore) { $job = CSM_Support::job($restore['job_id']); }
+        if ($restore) { $job = CSM_Jobs::get($restore['job_id']); }
         else {
             if ($original['status'] !== 'applied') { throw new RuntimeException('This backup is no longer available.'); }
             $ops = CSM_Plugin::recovery_operations($original);
@@ -74,7 +73,7 @@ final class CSM_Backups {
                 }
             }
             foreach ($original['database'] as $table) {
-                if (!empty($table['existed']) && $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $wpdb->esc_like($table['backup']))) !== $table['backup']) { throw new RuntimeException('A backup table is missing: ' . $table['target']); }
+                if (!empty($table['existed']) && !CSM_Database::table_exists($table['backup'])) { throw new RuntimeException('A backup table is missing: ' . $table['target']); }
             }
             $job = $original; $job['id'] = bin2hex(random_bytes(16)); $job['selection'] = $selection; $job['ops'] = $ops; $job['database'] = [];
             unset($job['ops_hash'], $job['error'], $job['backup_dir']);
@@ -82,7 +81,7 @@ final class CSM_Backups {
                 $copy = '_csm_' . substr($job['id'], 0, 10) . '_' . $i;
                 $job['database'][] = array_merge($table, ['stage' => $copy, 'backup' => $copy . '_old']);
             }
-            $job['status'] = 'backup_copy'; CSM_Support::save($job);
+            $job['status'] = 'backup_copy'; CSM_Jobs::save($job);
             update_option('_csm_backup_restore', ['backup_id' => $id, 'job_id' => $job['id']], false);
             update_option('_csm_active_job', $job['id'], false);
             wp_schedule_single_event(time() + 60, 'trickle_recover', [$job['id']]);
@@ -98,37 +97,32 @@ final class CSM_Backups {
                 CSM_Progress::update(['phase'=>'Copying backup table','component'=>$table['target'],'count'=>$cursor['offset'],'total'=>null,'unit'=>'rows']);
                 if (!$cursor['initialized']) {
                     CSM_Support::query('DROP TABLE IF EXISTS '.$copy); CSM_Support::query('CREATE TABLE '.$copy.' LIKE '.$source);
-                    $cursor['initialized']=true; $job['backup_copy']=$cursor; CSM_Support::save($job);
+                    $cursor['initialized']=true; $job['backup_copy']=$cursor; CSM_Jobs::save($job);
                 }
-                $columns=$wpdb->get_results('SHOW COLUMNS FROM '.$source,ARRAY_A);
+                $columns=CSM_Database::rows('SHOW COLUMNS FROM '.$source);
                 $copy_columns=array_column(array_filter($columns,static fn($c)=>!str_contains($c['Extra'],'GENERATED')),'Field');
                 $columns=implode(',',array_map([CSM_Support::class,'ident'],$copy_columns));
-                $keys=$wpdb->get_results("SHOW INDEX FROM ".$source." WHERE Key_name='PRIMARY'",ARRAY_A);
-                usort($keys,static fn($a,$b)=>(int)$a['Seq_in_index']<=>(int)$b['Seq_in_index']); $keys=array_column($keys,'Column_name');
-                $where='';
-                if ($keys && isset($cursor['last'])) {
-                    $clauses=[];
-                    foreach ($keys as $index=>$key) { $terms=[]; for ($j=0;$j<=$index;$j++) { $terms[]=CSM_Support::ident($keys[$j]).($j===$index?' > ':' = ').$wpdb->prepare('%s',$cursor['last'][$keys[$j]]); } $clauses[]='('.implode(' AND ',$terms).')'; }
-                    $where=' WHERE '.implode(' OR ',$clauses);
-                }
-                $order=$keys?' ORDER BY '.implode(',',array_map([CSM_Support::class,'ident'],$keys)):CSM_Database::keyless_order($copy_columns);
-                $limit=$keys?' LIMIT 250':' LIMIT '.$cursor['offset'].',250';
+                $keys=CSM_Database::primary_keys($table['backup']);
+                $page=CSM_Database::page_sql($keys,$cursor['last'] ?? null,$cursor['offset'],$copy_columns);
                 CSM_Support::query('START TRANSACTION');
                 try {
-                    $count=CSM_Support::query('INSERT INTO '.$copy.' ('.$columns.') SELECT '.$columns.' FROM '.$source.$where.$order.$limit);
+                    $count=CSM_Support::query('INSERT INTO '.$copy.' ('.$columns.') SELECT '.$columns.' FROM '.$source.$page);
                     $cursor['offset']+=$count;
-                    if ($keys && $count) { $cursor['last']=$wpdb->get_row('SELECT '.implode(',',array_map([CSM_Support::class,'ident'],$keys)).' FROM '.$copy.' ORDER BY '.implode(',',array_map(static fn($key)=>CSM_Support::ident($key).' DESC',$keys)).' LIMIT 1',ARRAY_A); }
+                    if ($keys && $count) {
+                        $cursor['last']=CSM_Database::rows('SELECT '.implode(',',array_map([CSM_Support::class,'ident'],$keys)).' FROM '.$copy.' ORDER BY '.implode(',',array_map(static fn($key)=>CSM_Support::ident($key).' DESC',$keys)).' LIMIT 1')[0] ?? null;
+                        if ($cursor['last']===null) { throw new RuntimeException('Backup copy row checkpoint is missing.'); }
+                    }
                     if ($count<250) { $cursor=['table'=>$i+1,'offset'=>0,'initialized'=>false]; }
-                    $job['backup_copy']=$cursor; CSM_Support::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options');
+                    $job['backup_copy']=$cursor; CSM_Jobs::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options');
                 } catch (Throwable $error) { CSM_Support::query('ROLLBACK'); throw $error; }
                 if (CSM_Support::due()) { return CSM_Plugin::summary($job)+['continue'=>true]; }
             }
-            $job['status']='applying'; CSM_Support::save($job);
+            $job['status']='applying'; CSM_Jobs::save($job);
         }
         update_option('_csm_maintenance', ['id' => $job['id'], 'probe' => hash('sha256', random_bytes(32)), 'until' => time() + 15 * MINUTE_IN_SECONDS], false);
         $result = CSM_Plugin::rollback($job);
         if (!empty($result['continue'])) { return $result; }
-        CSM_Plugin::discard(CSM_Support::job($job['id'])); delete_option('_csm_backup_restore');
+        CSM_Plugin::discard(CSM_Jobs::get($job['id'])); delete_option('_csm_backup_restore');
         return $result + ['restored_backup' => $id, 'destination' => site_url()];
     }
 }

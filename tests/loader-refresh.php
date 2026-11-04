@@ -12,13 +12,17 @@ function wp_next_scheduled(...$args){return true;}
 function plugin_basename($file){return 'trickle/trickle.php';}
 function wp_mkdir_p($path){return is_dir($path)||mkdir($path,0700,true);}
 class CSM_Log {public static array $errors=[];public static function write($level,$event,$context){self::$errors[]=$event;}}
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/support.php';require __DIR__.'/../includes/plugin.php';
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label."\n";};
 try{
  mkdir(WPMU_PLUGIN_DIR,0700);$path=WPMU_PLUGIN_DIR.'/0-trickle-loader.php';file_put_contents($path,'<?php // TRICKLE_LOADER old');
  CSM_Plugin::boot();$check(CSM_Plugin::loader_ready(),'First boot replaces an older loader with the current authenticated loader');
+ clearstatcache(true,$path);$check((fileperms($path)&0777)===0644,'Published loader has normal PHP-file permissions');
  $check(get_option('_csm_loader_version')===CSM_VERSION,'Successful refresh records the installed version');
  touch($path,1000000000);CSM_Plugin::boot();clearstatcache(true,$path);$check(filemtime($path)===1000000000,'Subsequent boots do not rewrite the loader');
+ $previous=$path.'.previous';file_put_contents($previous,'<?php // TRICKLE_LOADER previous');unlink($path);symlink($previous,$path);
+ CSM_Plugin::install_loader();clearstatcache(true,$path);
+ $check(!is_link($path)&&CSM_Plugin::loader_ready()&&file_get_contents($previous)==='<?php // TRICKLE_LOADER previous','Atomic loader installation replaces a link without modifying its target');unlink($previous);
  unset($options['_csm_loader_version']);file_put_contents($path,'<?php // unrelated file');CSM_Plugin::boot();
  $check(file_get_contents($path)==='<?php // unrelated file'&&!get_option('_csm_loader_version')&&count(CSM_Log::$errors)===1,'Failure keeps unrelated files intact and does not mark a successful refresh');
  $allowed=false;file_put_contents($path,'<?php // TRICKLE_LOADER old');CSM_Plugin::boot();

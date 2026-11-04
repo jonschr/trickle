@@ -59,10 +59,10 @@ final class CSM_Activation {
                 if (is_wp_error($valid)) { throw new RuntimeException('Cannot activate ' . $plugin . ': ' . wp_strip_all_tags($valid->get_error_message())); }
             }
         } finally { remove_filter('pre_option_active_plugins', $proposed, PHP_INT_MAX); }
-        $job['activation_missing'] = $missing; CSM_Support::save($job);
+        $job['activation_missing'] = $missing; CSM_Jobs::save($job);
         CSM_Progress::update(['phase' => 'Updating plugin activation', 'component' => '', 'unit' => 'plugins', 'count' => 0, 'total' => count($active)], true);
         self::store($active);
-        if ($missing) { CSM_Log::write('info', 'Source plugins unavailable on destination', ['plugins' => $missing, 'transfer_id' => $job['id']]); }
+        foreach ($missing as $plugin) { CSM_Log::write('info', 'Source plugin unavailable on destination', ['component' => $plugin, 'transfer_id' => $job['id']]); }
     }
 
     public static function restore(array $job): void {

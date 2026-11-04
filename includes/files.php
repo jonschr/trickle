@@ -194,6 +194,14 @@ final class CSM_Files {
         return $path;
     }
 
+    public static function assert_writable(string $target, string $relative): void {
+        $ancestor = dirname($target);
+        while (!file_exists($ancestor)) { $ancestor = dirname($ancestor); }
+        if (!is_writable($ancestor) || (file_exists($target) && (!is_file($target) || !is_writable($target) || !is_writable(dirname($target))))) {
+            throw new RuntimeException('Destination is not writable: ' . $relative);
+        }
+    }
+
     public static function scan(string $path, string $relative = '', array $selection = [], ?float $deadline = null): Generator {
         $deadline ??= hrtime(true)/1e9+45;
         if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('File traversal exceeded its 45-second limit. Narrow the selection.'); }
@@ -416,7 +424,7 @@ final class CSM_Files {
             }
             $state['offset']=ftell($fp);
         } while (!CSM_Support::due());
-        $job['imports']['files']=$state; CSM_Support::save($job); return false;
+        $job['imports']['files']=$state; CSM_Jobs::save($job); return false;
     }
 
     public static function stage($fp, array &$job): void {

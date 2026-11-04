@@ -6,7 +6,7 @@ const src={estimates:{complete:false,items:{plugins:{example:1024},media:{2024:3
 const dst={estimates:{complete:true,items:{themes:{theme:2048}}}};
 const context={sites:{},source:()=>src,destination:()=>dst,$:id=>controls[id],document:{querySelectorAll:()=>cells}};
 vm.createContext(context);
-vm.runInContext(code.slice(code.indexOf('    const esc ='),code.indexOf('    const transferMeter'))+code.slice(code.indexOf('    function estimateSize('),code.indexOf('    function modeEstimate(')),context);
+vm.runInContext(code.slice(code.indexOf('    const esc ='),code.indexOf('    const transferMeter'))+code.slice(code.indexOf('    function estimateSize('),code.indexOf('    let estimateTimer')),context);
 context.renderSizeDetails();
 assert.equal(cells[0].textContent,'≥ 1.0 KB');assert.equal(cells[1].textContent,'~2.0 KB');
 let html=controls['media-year-sizes'].innerHTML;
@@ -17,3 +17,14 @@ src.estimates.items.media={};context.renderSizeDetails();assert.match(controls['
 src.estimates=null;context.renderSizeDetails();assert.equal(controls['media-sizes'].hidden,true);assert.equal(cells[0].textContent,'Estimating…');
 src.estimates={complete:false,items:{media:{'<img>':42}}};context.renderSizeDetails();assert.doesNotMatch(controls['media-year-sizes'].innerHTML,/<img>/);
 console.log('Estimate UI checks passed: source/destination sizes, partial/empty states, year ordering, and escaped labels.');
+
+// Source totals live on the four component controls, including incomplete estimates.
+for(const kind of ['tables','plugins','themes','media'])controls[kind+'-source-size']={};
+controls['summary-size-note']={};context.componentKinds=['tables','plugins','themes','media'];
+src.tables=[{bytes:1048576},{bytes:1048576}];
+src.estimates={complete:true,bytes:{plugins:3145728,themes:0,media:5242880},items:{media:{}}};
+vm.runInContext(code.slice(code.indexOf('    function renderComponentSizes('),code.indexOf('    function estimateSize(')),context);
+context.renderComponentSizes();assert.equal(controls['tables-source-size'].textContent,'~2.0 MB');assert.equal(controls['plugins-source-size'].textContent,'~3.0 MB');assert.equal(controls['themes-source-size'].textContent,'~0.0 MB');
+src.estimates.complete=false;context.renderComponentSizes();assert.equal(controls['plugins-source-size'].textContent,'≥ 3.0 MB');assert.equal(controls['themes-source-size'].textContent,'Estimating…');
+src.estimates=null;context.renderComponentSizes();assert.equal(controls['media-source-size'].textContent,'Estimating…');assert.equal(controls['tables-source-size'].textContent,'~2.0 MB');
+console.log('Component size checks passed: inline source totals in MB, zero values, partial estimates and missing caches.');

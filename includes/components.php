@@ -68,9 +68,7 @@ final class CSM_Components {
         foreach ($files as $relative => $file) { $parts = explode('/', $relative); $groups[$parts[0] . '/' . $parts[1]][$relative] = $file['hash']; }
         $hashes = []; foreach ($groups as $id => $items) { $hashes[$id] = hash('sha256', CSM_Support::json($items)); }
         $cache = ['files' => $files, 'token' => hash('sha256', CSM_Support::json($files))];
-        $raw = CSM_Support::json($cache); $temp = $path . '.' . bin2hex(random_bytes(8));
-        if (file_put_contents($temp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($temp); throw new RuntimeException('Could not save component checksum cache.'); }
-        chmod($temp, 0600); if (!rename($temp, $path)) { @unlink($temp); throw new RuntimeException('Could not save component checksum cache.'); }
+        CSM_Support::atomic_json($path, $cache);
         CSM_Support::atomic_json(CSM_Support::private_dir().'/component-snapshot-'.$cache['token'].'.json',$cache); @unlink($build_path);
         $result=['token' => $cache['token'], 'components' => $hashes, 'component_counts' => array_map('count', $groups), 'component_groups' => 1, 'files' => count($files), 'hashed' => $hashed];
         if ($result_path) { CSM_Support::atomic_json($result_path,$result); }

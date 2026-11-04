@@ -1,16 +1,13 @@
-/* global CSM */
+/* global CSM, CSMRequest */
 (() => {
     'use strict';
     const $ = id => document.getElementById(`csm-${id}`);
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     let inventory = null, busy = false;
     async function api(op, data = {}) {
-        const response = await fetch(CSM.ajax, {method:'POST', credentials:'same-origin', body:new URLSearchParams({action:'csm_admin', nonce:CSM.nonce, op, data:JSON.stringify(data)})});
-        let result;
-        try { result = await response.json(); } catch (_) { throw new Error(`Connection interrupted (HTTP ${response.status}). Recovery will retry automatically.`); }
-        if (!result.ok) throw new Error(result.error || 'Request failed.');
-        if (result.data.nonce) CSM.nonce = result.data.nonce;
-        return result.data;
+        const result = await CSMRequest(op, data);
+        if (result?.nonce) CSM.nonce = result.nonce;
+        return result;
     }
     async function run(fn) {
         if (busy) return;

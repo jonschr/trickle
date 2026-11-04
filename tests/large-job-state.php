@@ -16,6 +16,16 @@ try {
     $check(CSM_Support::job($id)['preview_work']['index']===20000 && get_option('_csm_job_'.$id)['_csm_blob']!==$old,'Advancing verification persists a new checkpoint instead of restarting');
     CSM_Support::query('START TRANSACTION');$job['rows']=250;CSM_Support::save_transactional($job);CSM_Support::query('COMMIT');
     $check(CSM_Support::job($id)['rows']===250,'Committed database cursors still merge with file-backed job state');
+    $reject_read=static fn($sql)=>str_starts_with($sql,'SELECT option_value FROM ')&&str_contains($sql,'_csm_cursor_'.$id)?'INVALID CURSOR READ TEST QUERY':$sql;
+    add_filter('query',$reject_read);$errors=$GLOBALS['wpdb']->suppress_errors(true);$caught=false;
+    try { CSM_Support::job($id); } catch (RuntimeException $e) { $caught=str_contains($e->getMessage(),'Could not read transfer checkpoint'); }
+    finally { remove_filter('query',$reject_read);$GLOBALS['wpdb']->suppress_errors($errors); }
+    $check($caught && CSM_Support::job($id)['rows']===250,'A failed cursor read stops instead of replaying rows from an older job record');
+    global $wpdb;
+    CSM_Support::query($wpdb->prepare('UPDATE '.CSM_Support::ident($wpdb->options).' SET option_value=%s WHERE option_name=%s','broken','_csm_cursor_'.$id));$caught=false;
+    try { CSM_Support::job($id); } catch (RuntimeException $e) { $caught=str_contains($e->getMessage(),'Invalid transactional'); }
+    $check($caught,'Corrupt cursors cannot masquerade as missing checkpoints');
+    CSM_Support::query('START TRANSACTION');CSM_Support::save_transactional($job);CSM_Support::query('COMMIT');
     $job['backup_dir']=CSM_Support::backup_dir().'/'.$id.'-backup';CSM_Support::save($job);
     $durable=get_option('_csm_job_'.$id);CSM_Support::remove_tree($dir);
     $check($durable['_csm_blob_dir']===$job['backup_dir'].'/job-records' && CSM_Support::job($id)===$job,'Recovery metadata follows the durable backup directory and survives staging-record cleanup');
