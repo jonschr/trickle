@@ -1,4 +1,4 @@
-# Trickle 0.1.21
+# Trickle 0.1.22
 
 A shared WordPress plugin for selective push/pull migrations, controlled from the local site's **Tools → Trickle** page. Install the same ZIP at both ends.
 
@@ -28,7 +28,7 @@ Self-connections are excluded from the saved-site selector and rejected by the c
 
 ## Installation and use
 
-1. Upload `trickle-0.1.21.zip` through Plugins → Add Plugin on both sites and activate it.
+1. Upload `trickle-0.1.22.zip` through Plugins → Add Plugin on both sites and activate it.
    Activation installs `wp-content/mu-plugins/0-trickle-loader.php`. That directory must be writable. The loader isolates signed streaming/recovery requests and authenticated Trickle dashboard requests from ordinary plugins and theme code, so a broken active plugin need not block rollback. Isolation is limited to the actual WordPress entry scripts; unrelated login and admin pages retain their plugins. Dashboard AJAX isolation also requires a valid Trickle nonce. Inventory requests load ordinary plugins so their vendor update filters still work. A failed inventory request does not hide an existing transfer's recovery controls. Other must-use plugins and host firewalls still run. The loader is dormant when Trickle is deactivated. The first WordPress request after a version update refreshes an outdated loader when file modifications are allowed. The dashboard also checks it; CLI-only installations can reactivate Trickle to refresh it immediately. File apply remains blocked until the expected loader is installed.
 2. Open Tools → Trickle on the remote site. Authenticated remote reads and incoming writes are both allowed by default on a fresh installation. Either can be disabled under Connection & access; saved permission choices are preserved.
 3. Use **Copy connection code** at the top of the remote Trickle page, then open **Migrate → Add source** locally and paste both lines into the connection modal. A complete code connects automatically: the visible site URL followed by its private key. Check the URL before pasting. Permission checkboxes save automatically. Treat the code like a password; do not put the key in a URL or support ticket. Older base64 connection codes are still accepted.

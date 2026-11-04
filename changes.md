@@ -1,5 +1,13 @@
 # Changes
 
+## 0.1.22 — 2026-11-04
+
+- Trim repeated setup instructions, media help, connection copy and save confirmations.
+- Keep progress sizes beside component names on desktop and left-aligned beneath them on mobile.
+- Hide the transfer heading's focus outline while preserving keyboard focus on controls.
+
+Validation: all 17 JavaScript suites and changed PHP template syntax checks passed. Offline desktop/mobile renders covered Settings, Diagnostics and media selection; dialog checks verified size alignment, heading focus and keyboard indicators on controls. UI-only changes; no migration or production-site testing was run for this release.
+
 ## 0.1.21 — 2026-11-04
 
 - Keep progress monotonic across delayed polls and reloads; use half-tone transferred fill, full-tone verification and gold replacement.

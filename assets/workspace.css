@@ -164,6 +164,7 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-dialog-heading { flex-shrink:0; display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:20px; }
 .csm-dialog-heading h2 { font-size:23px; letter-spacing:-.02em; margin:0; color:var(--csm-ink); }
 .csm-dialog-title { display:flex; align-items:baseline; flex-wrap:wrap; gap:6px 16px; min-width:0; }
+.csm-transfer-dialog #csm-action-title:focus { outline:none; box-shadow:none; }
 #csm-completion-elapsed { color:var(--csm-muted); font-size:12px; font-variant-numeric:tabular-nums; }
 .csm-dialog-heading #csm-close-transfer { min-height:40px; }
 .csm-transfer-dialog .csm-transfer-meter { margin:0; padding:0; border:0; }
@@ -201,15 +202,17 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-progress-segment[data-verified="true"] .csm-progress-received { opacity:1; }
 .csm-progress-replaced { background:#b88728; }
 .csm-progress-legend { display:grid; grid-template-columns:repeat(var(--component-count,4),minmax(0,1fr)); gap:12px; list-style:none; margin:14px 0 0; padding:0; }
-.csm-progress-legend li { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:3px 6px; margin:0; }
+.csm-progress-legend li { display:grid; grid-template-columns:8px auto minmax(0,1fr); align-items:center; gap:3px 6px; margin:0; }
 .csm-progress-legend li::before { content:""; width:8px; height:8px; border-radius:2px; background:var(--component-color); }
 .csm-progress-legend strong { font-size:12px; font-weight:600; }
-.csm-progress-legend span { grid-column:3; font-size:11px; color:#56636c; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.csm-progress-legend span { grid-column:3; justify-self:start; font-size:11px; color:#56636c; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .csm-progress-legend small { grid-column:2/4; margin:0; font-size:11px; color:#56636c; font-variant-numeric:tabular-nums; }
 
 .csm-transfer-dialog { width:min(850px,calc(100vw - 48px)); }
 @media(max-width:700px) {
     .csm-progress-legend { grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .csm-progress-legend li { grid-template-columns:8px minmax(0,1fr); }
+    .csm-progress-legend span,.csm-progress-legend small { grid-column:2; }
     .csm-transfer-dialog { width:calc(100vw - 16px); }
 }
 @media(prefers-reduced-motion:reduce) { .csm-progress-segment > span { transition:none; } }

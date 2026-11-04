@@ -384,7 +384,7 @@
         const enabled = ['tables','plugins','themes'].filter(kind => preset.selection[kind]?.length);
         restoreSelection({...currentSelection(), ...preset.selection, file_verify:$('file-verify').checked, enabled_components:enabled, expanded_components:enabled});
         $('preset').value = name;
-        $('preset-status').textContent = 'Preset loaded. Review or edit the selections.'; feedback('');
+        $('preset-status').textContent = 'Preset loaded. Selections remain editable.'; feedback('');
     }
     function renderComponentSizes() {
         const estimate=sites?source().estimates:null;
@@ -508,7 +508,7 @@
     function lockReplacements() {
         const available = !!sites?.replacements;
         document.querySelectorAll('.csm-replacement-control').forEach(control => { control.disabled = busy || !!session || !$('replace').checked || !available; });
-        $('replacement-status').textContent = !available ? 'Load both sites with the current Trickle version to preview and configure replacements.' : !$('replace').checked ? 'Find & replace is off. No replacement rules will run.' : `${replacementRules.filter(rule => rule.enabled).length} enabled rules. Replacement settings are locked once a transfer is staged.`;
+        $('replacement-status').textContent = !available ? 'Load matching Trickle builds to edit replacements.' : !$('replace').checked ? 'Find & replace is off.' : `${replacementRules.filter(rule => rule.enabled).length} rules enabled.`;
     }
     function currentSelection() {
         const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:!$('ignore-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
@@ -543,7 +543,7 @@
         renderReplacements(selection.replacements ?? sites.replacements?.[direction()] ?? []);
         renderMedia();
         $('since').value = selection.since ? new Date(selection.since * 1000).toISOString().slice(0,19) : '';
-        if (selection.media === 'changed') $('watermark-note').textContent = 'Using the exact UTC starting date saved with this transfer.';
+        if (selection.media === 'changed') $('watermark-note').textContent = 'Saved start date (UTC).';
         updateSelection();
     }
     let mediaAnchor = null;
@@ -569,7 +569,7 @@
             const name = item.name || item.file || `Attachment ${item.id}`;
             return `<div class="csm-media-tile"><button type="button" class="csm-media-choice" data-media-id="${item.id}" aria-label="${esc(name)}, uploaded ${esc(uploaded)}" aria-pressed="${selected.has(String(item.id))}" title="${esc(item.file || name)}"><span class="csm-media-image"><svg class="csm-media-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M5 3h9l5 5v13H5zM14 3v6h5M8 14h8M8 17h6"/></svg>${preview}<span class="csm-media-selected-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 12 4 4L19 6"/></svg></span></span><span class="csm-media-caption"><strong>${esc(name)}</strong><time${item.uploaded ? ` datetime="${esc(item.uploaded)}"` : ''}>${esc(uploaded)}</time></span></button><input type="checkbox" hidden data-kind="media_ids" id="csm-media-select-${item.id}" value="${item.id}" ${selected.has(String(item.id)) ? 'checked' : ''}></div>`;
         }).join('') || '<p>No attachments found on the source site.</p>';
-        $('media-preview-note').textContent = source().media_browsing ? 'Newest uploads first · upload dates shown in UTC · previews load directly from the source' : 'Update Trickle on the source site to show thumbnails and upload dates and browse the full library.';
+        $('media-preview-note').textContent = source().media_browsing ? 'Newest first · dates in UTC' : 'Update source Trickle for thumbnails, upload dates and full-library browsing.';
         $('media-page-status').textContent = `Showing ${media.length} of ${source().media_total} attachments`;
         $('media-more').hidden = !source().media_more || !source().media_browsing;
         $('media-mode').querySelector('option[value="uploaded"]').disabled = !source().media_dates;
@@ -594,11 +594,11 @@
         $('media-force-wrap').hidden = mode !== 'all';
         $('compare-wrap').hidden = mode !== 'all' || $('media-force').checked;
         $('since-wrap').hidden = mode !== 'changed'; $('media-browser').hidden = mode !== 'selected'; $('uploaded-wrap').hidden = mode !== 'uploaded';
-        if (mode === 'uploaded') $('uploaded-note').textContent = !$('media-after').value && !$('media-before').value ? 'Choose at least one upload date. Dates are UTC and inclusive; the range covers the entire source library, including original files and image sizes.' : $('media-after').value && $('media-before').value && $('media-after').value > $('media-before').value ? 'The end date must be on or after the start date.' : 'Includes originals and generated image sizes for all attachments uploaded in this date range. Dates are UTC and inclusive.';
+        if (mode === 'uploaded') $('uploaded-note').textContent = !$('media-after').value && !$('media-before').value ? 'Choose at least one date (UTC, inclusive). Includes originals and image sizes.' : $('media-after').value && $('media-before').value && $('media-after').value > $('media-before').value ? 'The end date must be on or after the start date.' : 'Dates are inclusive (UTC). Includes originals and image sizes.';
         if (mode === 'changed' && sites) {
             const stamp = sites.history?.[`${direction()}:${sites.remote.url}`];
             $('since').value = stamp ? new Date(stamp * 1000).toISOString().slice(0,19) : '';
-            $('watermark-note').textContent = stamp ? 'Uses the source server’s start time from the last applied media stream.' : 'Choose a UTC starting date.';
+            $('watermark-note').textContent = stamp ? 'Source start time of the last completed media transfer.' : 'Choose a UTC starting date.';
         }
         updateSelection();
     }
@@ -637,7 +637,7 @@
         await loadSelectedMedia(session?.selection || preserve); render();
         if (preserve) restoreSelection(preserve);
         if (session && summary?.id !== session.id) { summary = await api('status', {id:session.id}); showSummary(); }
-        $('connect-status').textContent = 'Paste a complete code to save or update the connection automatically.';
+        $('connect-status').textContent = 'Paste a code to connect.';
         feedback(refresh ? 'Versions refreshed on both sites.' : '');
 
         if (session?.automatic) await migrate();
@@ -732,8 +732,8 @@
         try {
             const result = await api('settings', settings);
             savedPermissions = settings; $('pairing').value = result.pairing;
-            $('permissions-status').textContent = 'Permissions saved automatically.';
-            feedback('Permissions saved.');
+            $('permissions-status').textContent = 'Saved.';
+            feedback('');
         } catch (error) {
             $('allow-read').checked = savedPermissions.pull; $('allow-write').checked = savedPermissions.push;
             $('permissions-status').textContent = 'Save not confirmed. Previous values shown; reload to verify before retrying.';
@@ -751,7 +751,7 @@
         const peer=update?connectionState.connections.find(site=>site.id===connectionState.selected):null;
         $('add-site-title').textContent=update?'Update connection':'Add a site';
         $('remote-name').value=peer?.name || '';$('remote-code').value='';
-        $('connect-status').textContent='Paste a complete code to connect automatically.';$('connect-status').dataset.tone='';
+        $('connect-status').textContent='Paste a code to connect.';$('connect-status').dataset.tone='';
         $('connection-dialog').showModal();$('remote-code').focus();
     }
     async function selectSite(id) {
@@ -780,7 +780,7 @@
     function connectFromCode() {
         if(!$('connection-dialog').open || session)return;
         const code=$('remote-code').value.trim();
-        if(!code){$('connect-status').textContent='Paste a complete code to connect automatically.';return;}
+        if(!code){$('connect-status').textContent='Paste a code to connect.';return;}
         let complete=/^https?:\/\/\S+\s+[a-f0-9]{64}$/.test(code);
         if(!complete){
             try{const peer=JSON.parse(atob(code));complete=typeof peer?.url==='string'&&/^https?:\/\//.test(peer.url)&&typeof peer.key==='string'&&/^[a-f0-9]{64}$/.test(peer.key);}
@@ -803,7 +803,7 @@
     }
     $('remote-code').addEventListener('input',()=>{
         clearTimeout(connectTimer);$('connect-status').dataset.tone='';
-        $('connect-status').textContent=$('remote-code').value.trim()?'Checking code…':'Paste a complete code to connect automatically.';
+        $('connect-status').textContent=$('remote-code').value.trim()?'Checking code…':'Paste a code to connect.';
         connectTimer=setTimeout(connectFromCode,600);
     });
     $('check-remote-update').addEventListener('click', () => run(async () => {
@@ -850,7 +850,7 @@
         $('transfer-settings-status').textContent = 'Saving…';
         try {
             savedTransferSettings = await api('transfer_settings', {transport:$('transport').value, file_verify:$('file-verify').checked});
-            $('transfer-settings-status').textContent = 'Preferences saved.';
+            $('transfer-settings-status').textContent = 'Saved.';
         } catch (error) {
             $('transport').value = savedTransferSettings.transport; $('file-verify').checked = savedTransferSettings.file_verify;
             $('transfer-settings-status').textContent = 'Save failed. Previous preferences restored.';
