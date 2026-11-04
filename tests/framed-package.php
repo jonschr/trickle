@@ -30,6 +30,7 @@ try {
  check($caught,'Missing acknowledged output fails rather than filling its checkpoint with zero bytes');
  $published=$dir.'/published.source';file_put_contents($published,'already-published');CSM_Support::atomic_json($published.'.build',['complete'=>true,'offset'=>17,'components'=>['plugins'=>17],'cursor'=>['done'=>true]]);
  $r=CSM_Package::build($published,'files',[]);check($r['size']===17 && $r['sha256']===hash('sha256','already-published'),'Crash between snapshot rename and metadata publication recovers the published snapshot');
+ check($r['component_ranges']===null,'Older published snapshots do not invent component boundaries');
  $id=bin2hex(random_bytes(16));$base=$dir.'/segment-'.$id.'-files.source';file_put_contents($base,'expired');CSM_Support::atomic_json($base.'.owner',['credential'=>'fixture']);touch($base.'.owner',time()-2*DAY_IN_SECONDS);
  $lock=fopen($base.'.lock','c');flock($lock,LOCK_EX);CSM_Segments::prune_sources();check(is_file($base),'Source reaper never deletes a locked active builder');flock($lock,LOCK_UN);fclose($lock);CSM_Segments::prune_sources();check(!is_file($base)&&!is_file($base.'.owner'),'Source independently removes expired packages and updater-blocking ownership files');
  class TrickleSlowChecksumStream {

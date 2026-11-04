@@ -14,8 +14,8 @@ final class CSM_Package {
 
     public static function build(string $path, string $kind, array $selection): array {
         $checkpoint = $path . '.build';
-        $state = is_file($checkpoint) ? json_decode(file_get_contents($checkpoint), true, 512, JSON_THROW_ON_ERROR) : ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0]];
-        if (!empty($state['complete']) && is_file($path) && filesize($path)===$state['offset']) { return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components']]; }
+        $state = is_file($checkpoint) ? json_decode(file_get_contents($checkpoint), true, 512, JSON_THROW_ON_ERROR) : ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0],'range_tracking'=>true,'ranges'=>[]];
+        if (!empty($state['complete']) && is_file($path) && filesize($path)===$state['offset']) { return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
         if ($state['offset']>0 && (!is_file($path.'.part') || filesize($path.'.part')<$state['offset'])) { throw new RuntimeException('Source package checkpoint is missing or truncated.'); }
         $fp = fopen($path . '.part', 'c+b');
         if (!$fp || !ftruncate($fp, $state['offset']) || fseek($fp, $state['offset']) !== 0) { throw new RuntimeException('Cannot resume source packaging.'); }
@@ -23,7 +23,7 @@ final class CSM_Package {
         try {
             if ($kind === 'database') {
                 // Keep one consistent InnoDB transaction. Its hard budget fails safely rather than mixing snapshots from different requests.
-                $state = ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0]];
+                $state = ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0],'range_tracking'=>true,'ranges'=>[]];
                 ftruncate($fp, 0); rewind($fp);
                 $buffer='';
                 foreach (CSM_Database::stream($selection,true) as $bytes) { $buffer.=$bytes; $state['components']['database']+=strlen($bytes); while (strlen($buffer)>=262144) { self::put($fp,substr($buffer,0,262144)); $buffer=substr($buffer,262144); } }
@@ -32,18 +32,24 @@ final class CSM_Package {
             } else {
                 $generator = CSM_Files::stream_step($selection, $state['cursor'], $state['components']);
                 foreach ($generator as $bytes) {
+                    $start = ftell($fp);
                     self::put($fp, $bytes);
+                    $component=$state['cursor']['component'] ?? null;
+                    if (!empty($state['range_tracking']) && in_array($component,['plugins','themes','media'],true)) {
+                        $state['ranges'][$component] ??= ['start'=>$start,'end'=>$start];
+                        $state['ranges'][$component]['end']=ftell($fp);
+                    }
                     // Generator cursor changes correspond to this exact emitted unit.
                     fflush($fp); $state['offset'] = ftell($fp);
-                    if (CSM_Support::due()) { CSM_Support::atomic_json($checkpoint, $state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components']]; }
+                    if (CSM_Support::due()) { CSM_Support::atomic_json($checkpoint, $state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
                 }
                 $done = !empty($state['cursor']['done']);
-                if (!$done) { fflush($fp); $state['offset']=ftell($fp); CSM_Support::atomic_json($checkpoint,$state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components']]; }
+                if (!$done) { fflush($fp); $state['offset']=ftell($fp); CSM_Support::atomic_json($checkpoint,$state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
             }
             fflush($fp); $state['offset'] = ftell($fp); $state['complete']=true; CSM_Support::atomic_json($checkpoint, $state);
         } finally { fclose($fp); }
         if ($done && !rename($path . '.part', $path)) { throw new RuntimeException('Cannot publish source snapshot.'); }
-        return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components']];
+        return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null];
     }
 
     public static function unpack(string $path, array $bundle): bool {

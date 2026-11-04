@@ -53,11 +53,11 @@ restored.begin({...timeline,id:'resume',elapsed:60,streams:{files:{size:100,rece
 now+=16000;restored.update({timeline:{...restored.timeline,streams:{files:{size:100,received:90}}}});assert.equal(restored.receivedBytes(),90);assert.equal(restored.metrics().stalled,false);
 delete global.sessionStorage;
 
-// Component weights use payload sizes; combined file-stream progress never implies replacement.
+// Component weights use payload sizes; unknown boundaries never invent individual progress.
 const simple=new TransferProgress(null,()=>now);
 simple.begin({...timeline,id:'simple',selected:['database','plugins','themes','media'],streams:{database:{size:100,received:100},files:{size:100,received:50}}});
 assert.deepEqual(simple.components().map(c=>c.bytes),[100,30,20,50]);
-assert.deepEqual(simple.components().map(c=>c.received),[1,.5,.5,.5]);
+assert.deepEqual(simple.components().map(c=>c.received),[1,null,null,null]);
 assert(simple.components().every(c=>c.replaced===0));
 simple.operation('commit');
 simple.update({phase:'Replacing file',component:'plugins/one/a.php',count:2,total:10,unit:'files',replacement:{plugins:{done:2,total:4},themes:{done:0,total:2},media:{done:0,total:4}}});
@@ -98,3 +98,40 @@ let activitySaved;global.sessionStorage={setItem(_,value){activitySaved=value;},
 activity.save();const activityRestored=new TransferProgress(null,()=>now);activityRestored.begin(activity.timeline);
 assert.equal(activityRestored.events.length,65);assert(activityRestored.events.some(event=>event.id==='bad-php'));delete global.sessionStorage;
 const cleared=new TransferProgress(null,()=>now);cleared.begin({...timeline,id:'cleared'});cleared.finish('applied');cleared.clear();cleared.render();assert.equal(cleared.metrics(),null,'Closed or new transfers cannot display the previous result');
+
+// Compressed offsets, not relative payload sizes, determine individual transfer progress.
+const mapped=new TransferProgress(null,()=>now);
+const ranges={plugins:{start:10,end:40},themes:{start:40,end:80},media:{start:80,end:100}};
+function mappedAt(offset){mapped.begin({...timeline,id:'mapped',selected:['plugins','themes','media'],streams:{files:{size:110,received:offset,component_ranges:ranges}}});mapped.operation('transfer','files');mapped.update({timeline:{...mapped.timeline,streams:{files:{size:110,received:offset,component_ranges:ranges}}}});return mapped.components();}
+assert.deepEqual(mappedAt(25).map(c=>c.received),[.5,0,0]);
+assert.deepEqual(mappedAt(60).map(c=>c.received),[1,.5,0]);assert.equal(mapped.components()[0].state,'Transferred');
+assert.deepEqual(mappedAt(90).map(c=>c.received),[1,1,.5]);
+mapped.update({phase:'Receiving bytes',component:'files',count:110,total:110,unit:'bytes',state:'running'});assert.equal(mapped.components()[2].received,.5,'Unacknowledged live bytes cannot inflate component receipts');
+mapped.update({pending:[],timeline:{...mapped.timeline,streams:{files:{size:110,received:110,component_ranges:ranges}}}});assert(mapped.components().every(c=>c.state==='Verified'));
+const unknown=new TransferProgress(null,()=>now);unknown.begin({...timeline,id:'unknown',selected:['plugins','themes'],streams:{files:{size:100,received:23}}});unknown.operation('transfer','files');assert.deepEqual(unknown.components().map(c=>c.received),[null,null]);assert.match(unknown.status(),/23%/);
+unknown.fail(new Error('Connection lost'));assert.equal(unknown.notice.text,'Transfer needs attention');unknown.finish('cancelled');assert(unknown.components().every(c=>c.state==='Cancelled'));
+const orderly=new TransferProgress(null,()=>now);orderly.begin({...timeline,id:'ordered'});
+orderly.addEvent({id:'new',updated:20,phase:'Transferring files stream',component:'files',state:'running'});
+orderly.addEvent({id:'old',updated:10,phase:'Preparing files',component:''});
+orderly.addEvent({id:'duplicate',updated:21,phase:'Transferring files stream',component:''});assert.equal(orderly.events.length,2);assert.equal(orderly.events.at(-1).updated,20);
+orderly.addEvent({id:'bulk',updated:22,phase:'Replacing database tables atomically',component:'wp_posts, wp_options'});assert.equal(orderly.events.at(-1).phase,'Replacing 2 tables');assert.equal(orderly.events.at(-1).component,'');
+orderly.addEvent({id:'activate-one',updated:23,phase:'Checking plugin activation',component:'first/first.php'});orderly.addEvent({id:'activate-two',updated:24,phase:'Updating plugin activation',component:''});assert.equal(orderly.events.filter(e=>e.phase==='Updating plugin activation').length,1);
+orderly.addEvent({id:'server-done',updated:25,phase:'Transfer complete',state:'complete'});orderly.finish('applied');assert.equal(orderly.events.filter(e=>e.state==='complete').length,1);
+console.log('PASS Measured component offsets, conservative acknowledgements, honest legacy fallback, chronological grouped activity, and accurate cancellation/error labels.');
+
+// Late polls cannot rewind acknowledged receipts, metadata, or replacement.
+const monotonic=new TransferProgress(null,()=>now);
+const base={...timeline,id:'monotonic',ready:true,estimated:{database:false,plugins:false,themes:false,media:false},selected:['database','plugins','themes','media'],streams:{database:{size:100,received:100},files:{size:110,received:90,component_ranges:ranges}}};
+monotonic.begin(base);monotonic.operation('transfer','files');
+const first=monotonic.components().map(c=>c.received);
+monotonic.update({timeline:{...base,streams:{database:{size:100,received:0},files:{size:110,received:30}}}});
+assert.deepEqual(monotonic.components().map(c=>c.received),first);assert.deepEqual(monotonic.timeline.streams.files.component_ranges,ranges);
+monotonic.update({timeline:{...base,ready:false,estimated:{plugins:true},components:{plugins:999},streams:{files:{size:null,received:0}}}});
+assert.equal(monotonic.timeline.components.plugins,30);assert.equal(monotonic.timeline.streams.files.size,110);
+monotonic.operation('commit');monotonic.update({phase:'Replacing file',replacement:{plugins:{done:8,total:10}}});
+monotonic.update({phase:'Checking destination',replacement:{plugins:{done:2,total:10}}});assert.equal(monotonic.phase,'apply');assert.equal(monotonic.components()[1].replaced,.8);
+monotonic.update({replacement:{plugins:{done:0,total:0}}});assert.equal(monotonic.components()[1].replaced,.8);
+let savedMonotonic;global.sessionStorage={setItem(_,v){savedMonotonic=v;},getItem(){return savedMonotonic;}};monotonic.save();
+const reopened=new TransferProgress(null,()=>now);reopened.begin({...base,streams:{files:{size:110,received:20}}});assert.equal(reopened.timeline.streams.files.received,90);assert.equal(reopened.components()[1].replaced,.8);
+reopened.begin({...base,id:'different-job',streams:{files:{size:110,received:0,component_ranges:ranges}}});assert.equal(reopened.components()[1].received,0);delete global.sessionStorage;
+console.log('PASS Monotonic acknowledged progress, pinned metadata, replacement counts, stage transitions, reloads, and reset for new transfers.');

@@ -1,5 +1,18 @@
 # Changes
 
+## 0.1.21 — 2026-11-04
+
+- Keep progress monotonic across delayed polls and reloads; use half-tone transferred fill, full-tone verification and gold replacement.
+- Consolidate View backup, Done and View site in one completion footer and remove redundant success text.
+- Show component transfer progress from measured compressed byte ranges and acknowledged offsets; keep older snapshots’ progress at the whole-stream level.
+- Sort and group activity, remove duplicate completion/stream entries, and retain exact failure details.
+- Distinguish uncertain errors from confirmed stopped/cancelled transfers; include final cleanup in elapsed time.
+- Use binary size units consistently and report independent force settings for plugins, themes and media.
+- Restore the most recent transfer direction on page load.
+- Keep bounded replacement checks available during maintenance and respect retry pauses during cancellation.
+
+Validation: 17 JavaScript suites, 9 isolated PHP suites, runtime PHP syntax checks and offline security regressions passed. A full forced Harrison local → Harrison dev push completed with 24 tables, 10,132 files, matching builds and HTTP 200 health. The final progress changes passed replay of all 117 saved reports and desktop/mobile rendering checks. No customer production sites were modified.
+
 ## 0.1.20 — 2026-11-03
 
 - Install the exact local Trickle build on connected sites with one click, including unreleased and same-version changes.

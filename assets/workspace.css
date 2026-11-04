@@ -197,7 +197,8 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-progress-media { --component-color:#52677f; --component-wash:#e3e9f0; }
 .csm-progress-segment { position:relative; flex-basis:0; min-width:0; background:var(--component-wash); }
 .csm-progress-segment > span { position:absolute; inset:0 auto 0 0; transition:width .35s ease-out; }
-.csm-progress-received { background:var(--component-color); }
+.csm-progress-received { background:var(--component-color); opacity:.5; transition:width .35s ease-out,opacity .2s ease-out; }
+.csm-progress-segment[data-verified="true"] .csm-progress-received { opacity:1; }
 .csm-progress-replaced { background:#b88728; }
 .csm-progress-legend { display:grid; grid-template-columns:repeat(var(--component-count,4),minmax(0,1fr)); gap:12px; list-style:none; margin:14px 0 0; padding:0; }
 .csm-progress-legend li { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:center; gap:3px 6px; margin:0; }
@@ -301,3 +302,6 @@ body.csm-transfer-open { overflow:hidden; }
 
 .csm-panels .csm-code-component[data-change="upgrade"] { background:#f1f8f3; }
 .csm-panels .csm-code-component[data-change="downgrade"] { background:#fff8ed; }
+
+.csm-dialog-actions .csm-completion { display:flex; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; margin:0; padding:0; border:0; background:transparent; }
+.csm-dialog-actions .csm-completion > .button { margin:0; }

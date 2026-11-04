@@ -120,6 +120,7 @@ final class CSM_Files {
         $mode = $selection['media'] ?? 'none';
         if (!in_array($mode, ['none', 'all', 'changed', 'selected', 'uploaded', 'compare'], true)) { throw new RuntimeException('Unknown media selection.'); }
         $selection['media'] = $mode;
+        foreach (['file_force','plugins_force','themes_force'] as $flag) { if (isset($selection[$flag]) && !is_bool($selection[$flag])) { throw new RuntimeException('Force file retransfer must be true or false.'); } }
         if (isset($selection['media_force']) && !is_bool($selection['media_force'])) { throw new RuntimeException('Force media retransfer must be true or false.'); }
         $selection['media_force'] = in_array($mode, ['all', 'compare'], true) && !empty($selection['media_force']);
         $selection['media_verify'] = self::compare_media($selection) && !empty($selection['media_verify']);
@@ -314,6 +315,7 @@ final class CSM_Files {
             }
             $cursor['planned']=true; $cursor['plan']=array_map(static fn($relative,$entry)=>[$relative,...$entry],array_keys($cursor['plan']),array_values($cursor['plan']));
         }
+        $cursor['component'] = null;
         if (!$cursor['header']) {
             $parents = []; foreach ($selection['themes'] as $theme) { $parents[$theme] = wp_get_theme($theme)->get('Template'); }
             $cursor['started'] = time(); $cursor['header'] = true;
@@ -323,6 +325,7 @@ final class CSM_Files {
         foreach ($cursor['plan'] as [$relative,$path,$planned_stamp,$expected_hash]) {
             CSM_Support::check_cancel();
             if ($index++ < $cursor['index']) { continue; }
+            $cursor['component'] = str_starts_with($relative,'uploads/') ? 'media' : explode('/',$relative)[0];
             clearstatcache(true,$path); $stat = stat($path);
             if ([$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']]!==$planned_stamp) { throw new RuntimeException('Source file changed after planning: '.$relative); }
             if (!$cursor['offset']) {
@@ -358,6 +361,7 @@ final class CSM_Files {
             $line = CSM_Support::json(['type'=>'file-end','sha256'=>$digest]);
             $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line); $cursor['index']++; $cursor['offset']=0; yield $line;
         }
+        $cursor['component'] = null;
         $cursor['done'] = true;
         yield CSM_Support::json(['type'=>'end','files'=>$cursor['index'],'started'=>$cursor['started'],'sha256'=>$cursor['hash']]);
     }

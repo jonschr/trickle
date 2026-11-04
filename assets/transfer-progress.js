@@ -8,7 +8,7 @@
         const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60;
         return h ? `${h}h ${m}m` : m ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
     };
-    const labels = {preflight:'Preparing streams',transfer:'Transferring',verify:'Verifying staged data',apply:'Applying changes',recover:'Recovering transfer',complete:'Complete',restored:'Destination restored',failed:'Stopped'};
+    const labels = {preflight:'Preparing streams',transfer:'Transferring',verify:'Verifying staged data',apply:'Applying changes',recover:'Recovering transfer',complete:'Complete',restored:'Destination restored',failed:'Stopped',cancelled:'Transfer cancelled'};
     class TransferProgress {
         constructor(root, clock = () => Date.now()) {
             this.root = root; this.clock = clock; this.events = []; this.phase = 'preflight'; this.frozen = null;
@@ -34,7 +34,7 @@
             this.movement = null;
             this.phase = 'preflight'; this.frozen = null; this.detail = null; this.lastMovement = this.clock(); this.retryCount = 0; this.notice = null; this.lastResolved = 0;
             this.operationName=null;this.staleRuns=new Set();this.replacement={};
-            this.componentStructure=null; this.signature = ''; this.eventSignature = null; this.operationKind = null;
+            this.barWeights=null;this.componentStructure=null; this.signature = ''; this.eventSignature = null; this.operationKind = null;
             this.resolvedRuns = new Set(); this.restore(); this.render();
         }
         restore() {
@@ -43,9 +43,25 @@
                 if (saved?.id === this.timeline.id) {
                     for (const event of saved.events.slice(-80)) this.addEvent(event);
                     this.replacement=saved.replacement || {};
+                    if(saved.timeline?.id===this.timeline.id)this.timeline=this.mergeTimeline(saved.timeline);
+                    this.barWeights=saved.barWeights || null;
                     this.verified=new Set(saved.verified || []); this.retryCount = saved.retryCount || 0; this.logs = new Set(saved.logs || []);
                 }
             } catch (_) { /* Storage is optional. */ }
+        }
+        mergeTimeline(next) {
+            const previous=this.timeline;
+            if(!previous||previous.id!==next.id)return next;
+            const merged={...previous,...next,elapsed:Math.max(previous.elapsed||0,next.elapsed||0),ready:!!(previous.ready||next.ready),streams:{...previous.streams},components:{...previous.components},estimated:{...previous.estimated}};
+            for(const [kind,stream] of Object.entries(next.streams||{})){
+                const old=previous.streams[kind]||{},size=old.size ?? stream.size;
+                merged.streams[kind]={...old,...stream,size,component_ranges:old.component_ranges ?? stream.component_ranges,received:Math.min(size ?? Infinity,Math.max(old.received||0,stream.received||0))};
+            }
+            for(const [key,amount] of Object.entries(next.components||{})){
+                if(previous.estimated?.[key]===false&&next.estimated?.[key]!==false)continue;
+                merged.components[key]=amount;merged.estimated[key]=next.estimated?.[key];
+            }
+            return merged;
         }
         operation(op, kind) {
             kind=kind || null;
@@ -55,7 +71,7 @@
             this.setPhase(op === 'commit' ? 'verify' : op === 'rollback' ? 'recover' : op === 'preflight' ? 'preflight' : 'transfer');
         }
         setPhase(phase) {
-            if (this.phase === phase || this.frozen != null) return;
+            if (this.phase === phase || this.frozen != null || (this.phase==='apply'&&['preflight','transfer','verify'].includes(phase))) return;
             this.phase = phase; this.lastMovement = this.clock();
             this.render();
         }
@@ -71,7 +87,7 @@
         update(result, phase) {
             const previousBytes = this.receivedBytes();
             const timeline = result?.timeline || result?.progress?.timeline;
-            if (timeline) { this.begin(timeline); this.timeline = timeline; }
+            if (timeline) { this.begin(timeline); this.timeline = this.mergeTimeline(timeline); }
             this.confirm(result);
             if (phase) this.setPhase(phase);
             if (!this.timeline) return;
@@ -86,7 +102,10 @@
                 if (this.phase === 'transfer' && detail.unit === 'bytes' && detail.component === kind && detail.total === stream?.size && detail.state === 'running') {
                     this.observed[kind] = Math.max(this.observed[kind] || 0, Math.min(detail.count, stream.size));
                 }
-                if(detail.replacement)this.replacement={...this.replacement,...detail.replacement};
+                for(const [key,value] of Object.entries(detail.replacement||{})){
+                    const old=this.replacement[key],ratio=v=>v.total>0?v.done/v.total:0;
+                    if(!old||ratio(value)>=ratio(old))this.replacement[key]=value;
+                }
                 if(detail.phase==='Replacing database tables atomically'&&detail.total>0&&detail.count>=detail.total)this.replacement.database={done:1,total:1};
                 if(detail.phase==='Checking frontend health')for(const key of this.timeline.selected || [])this.replacement[key]={done:1,total:1};
                 for (const event of detail.events || []) this.addEvent(event);
@@ -122,16 +141,22 @@
             if (this.seen.size > 500) this.seen = new Set(this.events.map(item => item.id));
             const routine = item => !item.error && !item.failure && !['retry','failed','resumed'].includes(item.state);
             if (routine(event)) {
-                if(event.phase==='Checking frontend health')return;
+                if(event.phase==='Checking frontend health' || event.phase==='Transfer complete' || (event.phase==='Destination restored' && event.state!=='restored'))return;
                 let component=String(event.component || '');
                 if(event.state==='complete')component='';
                 else if(/^(plugins|themes)\/[^/]+/.test(component))component=component.match(/^(plugins|themes)\/[^/]+/)[0];
                 else if(component.startsWith('uploads/'))component=/^uploads\/\d{4}(?:\/|$)/.test(component)?component.slice(0,12):'uploads';
                 else if(/media/i.test(event.phase)&&/^\d{4}(?:\/|$)/.test(component))component='uploads/'+component.slice(0,4);
-                event={...event,component,phase:event.phase.replace(/\bfile$/,'files')};
-                if(this.events.some(item=>routine(item)&&item.phase===event.phase&&item.component===component&&item.state===event.state))return;
+                let phase=event.phase.replace(/\bfile$/,'files');
+                if (['files','database'].includes(component)) component='';
+                if (phase==='Preparing table replacement') {phase='Preparing database replacement';component='';}
+                if (/Checking plugin activation|Updating plugin activation/.test(phase)) {component='';phase='Updating plugin activation';}
+                if (phase==='Replacing database tables atomically' && component.includes(',')) {phase=`Replacing ${component.split(',').length} tables`;component='';}
+                event={...event,component,phase};
+                if(this.events.some(item=>routine(item)&&item.phase===event.phase&&item.component===component&&!['complete','restored','cancelled'].includes(item.state) === !['complete','restored','cancelled'].includes(event.state)))return;
             }
             this.events.push({...event});
+            this.events.sort((a,b)=>a.updated-b.updated);
             const keep = new Set([...this.events.filter(routine).slice(-64), ...this.events.filter(item => !routine(item)).slice(-16)]);
             this.events = this.events.filter(item => keep.has(item));
         }
@@ -171,18 +196,18 @@
         }
         fail(error) {
             if (!this.timeline) return;
-            this.notice = {kind:'error',text:'Transfer stopped',error:String(error?.message || error || '')};
-            this.addEvent({id:`error:${this.clock()}`,updated:this.clock()/1000,phase:'Transfer stopped',error:this.notice.error,state:'failed'});
+            this.notice = {kind:'error',text:'Transfer needs attention',error:String(error?.message || error || '')};
+            this.addEvent({id:`error:${this.clock()}`,updated:this.clock()/1000,phase:'Transfer needs attention',error:this.notice.error,state:'failed'});
             this.render(); this.save();
         }
         save() {
             if (!this.timeline) return;
-            try { sessionStorage.setItem('trickle-progress',JSON.stringify({id:this.timeline.id,events:this.events,retryCount:this.retryCount,logs:[...this.logs].slice(-200),replacement:this.replacement,verified:[...this.verified]})); } catch (_) { /* Optional. */ }
+            try { sessionStorage.setItem('trickle-progress',JSON.stringify({id:this.timeline.id,events:this.events,retryCount:this.retryCount,logs:[...this.logs].slice(-200),replacement:this.replacement,verified:[...this.verified],timeline:this.timeline,barWeights:this.barWeights})); } catch (_) { /* Optional. */ }
         }
         finish(status, result = {}) {
             if (!this.timeline) return;
             if(status==='applied')Object.keys(this.timeline.streams).forEach(kind=>this.verified.add(kind));
-            this.phase = status === 'applied' ? 'complete' : status === 'restored' ? 'restored' : 'failed'; this.frozen = this.clock();
+            this.phase = status === 'applied' ? 'complete' : status === 'restored' ? 'restored' : status === 'cancelled' ? 'cancelled' : 'failed'; this.frozen = this.clock();
             if (this.phase !== 'failed') this.notice = null;
             this.addEvent({id:`terminal:${this.phase}`,updated:this.clock()/1000,phase:labels[this.phase],state:this.phase});
             this.render(); this.save();
@@ -198,25 +223,32 @@
             if(!this.timeline)return [];
             const t=this.timeline, keys=t.selected || Object.keys(names).filter(key=>t.components[key]>0);
             return keys.map(key=>{
-                const stream=t.streams[key==='database'?'database':'files'], amount=t.components[key];
-                const received=this.verified.has(key==='database'?'database':'files')?1:stream?.size>0?this.streamReceived(key==='database'?'database':'files')/stream.size:0;
+                const kind=key==='database'?'database':'files', stream=t.streams[kind], amount=t.components[key], range=stream?.component_ranges?.[key];
+                const verified=this.verified.has(kind), acknowledged=Math.min(stream?.size ?? Infinity,stream?.received || 0);
+                const mapped=Number.isFinite(range?.start)&&Number.isFinite(range?.end)&&range.start>=0&&range.end>range.start&&range.end<=stream.size;
+                const received=verified?1:key==='database'&&stream?.size>0?acknowledged/stream.size:mapped?Math.max(0,Math.min(1,(acknowledged-range.start)/(range.end-range.start))):null;
                 const replacement=this.replacement[key];
-                const replaced=['recover','restored'].includes(this.phase)?0:this.phase==='complete'?1:replacement?replacement.total>0?replacement.done/replacement.total:1:0;
-                const state=this.phase==='complete'?'Applied':this.phase==='restored'?'Restored':this.phase==='recover'?'Recovering':this.phase==='failed'?'Stopped':replaced>=1?'Replaced':replaced>0?'Replacing':this.verified.has(key==='database'?'database':'files')?'Verified':received>=1?'Verifying':received>0?`${Math.floor(received*100)}% transferred`:this.phase==='preflight'?'Preparing':'Waiting';
-                return {key,name:names[key],estimated:!!t.estimated?.[key],bytes:Number.isFinite(amount)?amount:null,received:Math.max(0,Math.min(1,received)),replaced:Math.max(0,Math.min(1,replaced)),state};
+                const replaced=['recover','restored','cancelled'].includes(this.phase)?0:this.phase==='complete'?1:replacement?replacement.total>0?replacement.done/replacement.total:0:0;
+                const state=this.phase==='complete'?'Applied':this.phase==='restored'?'Restored':this.phase==='cancelled'?'Cancelled':this.phase==='recover'?'Recovering':this.phase==='failed'?'Stopped':replaced>=1?'Replaced':replaced>0?'Replacing':verified?'Verified':this.phase==='preflight'?'Preparing':received>=1?(this.phase==='verify'?'Verifying':'Transferred'):received>0?`${Math.floor(received*100)}% transferred`:received===null&&this.phase==='transfer'&&this.activeKind()==='files'?'In file stream':'Waiting';
+                return {key,verified,name:names[key],estimated:!!t.estimated?.[key],bytes:Number.isFinite(amount)?amount:null,received,replaced:Math.max(0,Math.min(1,replaced)),state};
             });
         }
         status() {
-            if(this.phase==='complete')return 'Destination updated.';
+            if(this.phase==='complete')return 'Complete';
             if(this.phase==='restored')return 'Previous changes recovered.';
             if(this.phase==='failed')return 'Transfer stopped';
+            if(this.phase==='cancelled')return 'Transfer cancelled.';
             if(this.phase==='recover')return 'Recovering destination…';
             if(this.notice?.kind==='retry')return 'Waiting to retry…';
             if(this.metrics()?.stalled)return 'Waiting for an update…';
             if(this.detail?.phase==='Checking frontend health')return 'Finishing up…';
             if(this.phase==='apply')return /Backing up/.test(this.detail?.phase || '')?'Saving backup…':'Replacing…';
             if(this.phase==='verify')return 'Verifying…';
-            if(this.phase==='transfer')return 'Transferring…';
+            if(this.phase==='transfer'){
+                const kind=this.activeKind(),stream=this.timeline.streams[kind],known=kind==='database'||!!stream?.component_ranges;
+                const percent=!known&&stream?.size>0?` ${Math.floor(Math.min(1,(stream.received||0)/stream.size)*100)}%`:'';
+                return `Transferring ${kind==='database'?'database':'files'}…${percent}`;
+            }
             return this.operationKind==='database'?'Preparing database…':this.operationKind==='files'?'Preparing files…':'Preparing…';
         }
         render() {
@@ -236,7 +268,9 @@
                 const structure=components.map(component=>component.key).join(':');
                 if(structure!==this.componentStructure){el('components').replaceChildren();el('legend').replaceChildren();this.componentStructure=structure;}
                 el('legend').style.setProperty('--component-count',String(components.length||1));
-                const weighted=components.some(component=>component.bytes>0);
+                if(!this.barWeights&&this.timeline.ready&&this.phase!=='preflight')this.barWeights=Object.fromEntries(components.map(c=>[c.key,c.bytes||0]));
+                const weights=this.barWeights || Object.fromEntries(components.map(c=>[c.key,c.bytes||0]));
+                const weighted=Object.values(weights).some(value=>value>0);
                 for(const [index,component] of components.entries()){
                     let segment=el('components').children[index], item=el('legend').children[index];
                     if(!segment){
@@ -248,9 +282,9 @@
                         const label=document.createElement('strong');label.textContent=component.name;
                         item.append(label,document.createElement('span'),document.createElement('small'));el('legend').append(item);
                     }
-                    const description=`${component.name}: ${component.bytes==null?'sizing':(component.estimated?'approximately ':'')+size(component.bytes)} · ${component.state}${component.key!=='database'?' · Transfer follows the shared file stream.':''}`;
-                    segment.style.flexGrow=String(weighted?component.bytes||0:1);segment.title=description;segment.setAttribute('aria-valuenow',String(Math.round(component.received*100)));segment.setAttribute('aria-valuetext',description);
-                    segment.children[0].style.width=`${component.received*100}%`;segment.children[1].style.width=`${component.replaced*100}%`;
+                    const description=`${component.name}: ${component.bytes==null?'sizing':(component.estimated?'approximately ':'')+size(component.bytes)} · ${component.state} · Payload size before compression`;
+                    segment.dataset.verified=String(component.verified);segment.style.flexGrow=String(weighted?weights[component.key]||0:1);segment.title=description;const value=component.received;if(value==null)segment.removeAttribute('aria-valuenow');else segment.setAttribute('aria-valuenow',String(Math.round(value*100)));segment.setAttribute('aria-valuetext',description);
+                    segment.children[0].style.width=`${(component.received ?? 0)*100}%`;segment.children[1].style.width=`${component.replaced*100}%`;
                     item.children[1].textContent=component.bytes==null?'Sizing…':(component.estimated?'~':'')+size(component.bytes);item.children[2].textContent=component.state;
                 }
             }

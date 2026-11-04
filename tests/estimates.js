@@ -8,11 +8,11 @@ const context={sites:{},source:()=>src,destination:()=>dst,$:id=>controls[id],do
 vm.createContext(context);
 vm.runInContext(code.slice(code.indexOf('    const esc ='),code.indexOf('    const transferMeter'))+code.slice(code.indexOf('    function estimateSize('),code.indexOf('    let estimateTimer')),context);
 context.renderSizeDetails();
-assert.equal(cells[0].textContent,'≥ 1.0 KB');assert.equal(cells[1].textContent,'~2.0 KB');
+assert.equal(cells[0].textContent,'≥ 1.0 KiB');assert.equal(cells[1].textContent,'~2.0 KiB');
 let html=controls['media-year-sizes'].innerHTML;
 assert.ok(html.indexOf('2026')<html.indexOf('2024') && html.indexOf('2024')<html.indexOf('Other files'));
 assert.equal(controls['media-sizes'].hidden,false);
-src.estimates.complete=true;context.renderSizeDetails();assert.equal(cells[0].textContent,'~1.0 KB');
+src.estimates.complete=true;context.renderSizeDetails();assert.equal(cells[0].textContent,'~1.0 KiB');
 src.estimates.items.media={};context.renderSizeDetails();assert.match(controls['media-year-sizes'].innerHTML,/No media files/);
 src.estimates=null;context.renderSizeDetails();assert.equal(controls['media-sizes'].hidden,true);assert.equal(cells[0].textContent,'Estimating…');
 src.estimates={complete:false,items:{media:{'<img>':42}}};context.renderSizeDetails();assert.doesNotMatch(controls['media-year-sizes'].innerHTML,/<img>/);
@@ -24,7 +24,7 @@ controls['summary-size-note']={};context.componentKinds=['tables','plugins','the
 src.tables=[{bytes:1048576},{bytes:1048576}];
 src.estimates={complete:true,bytes:{plugins:3145728,themes:0,media:5242880},items:{media:{}}};
 vm.runInContext(code.slice(code.indexOf('    function renderComponentSizes('),code.indexOf('    function estimateSize(')),context);
-context.renderComponentSizes();assert.equal(controls['tables-source-size'].textContent,'~2.0 MB');assert.equal(controls['plugins-source-size'].textContent,'~3.0 MB');assert.equal(controls['themes-source-size'].textContent,'~0.0 MB');
-src.estimates.complete=false;context.renderComponentSizes();assert.equal(controls['plugins-source-size'].textContent,'≥ 3.0 MB');assert.equal(controls['themes-source-size'].textContent,'Estimating…');
-src.estimates=null;context.renderComponentSizes();assert.equal(controls['media-source-size'].textContent,'Estimating…');assert.equal(controls['tables-source-size'].textContent,'~2.0 MB');
-console.log('Component size checks passed: inline source totals in MB, zero values, partial estimates and missing caches.');
+context.renderComponentSizes();assert.equal(controls['tables-source-size'].textContent,'~2.0 MiB');assert.equal(controls['plugins-source-size'].textContent,'~3.0 MiB');assert.equal(controls['themes-source-size'].textContent,'~0.0 MiB');
+src.estimates.complete=false;context.renderComponentSizes();assert.equal(controls['plugins-source-size'].textContent,'≥ 3.0 MiB');assert.equal(controls['themes-source-size'].textContent,'Estimating…');
+src.estimates=null;context.renderComponentSizes();assert.equal(controls['media-source-size'].textContent,'Estimating…');assert.equal(controls['tables-source-size'].textContent,'~2.0 MiB');
+console.log('Component size checks passed: inline source totals in MiB, zero values, partial estimates and missing caches.');

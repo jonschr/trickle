@@ -76,6 +76,8 @@ final class CSM_Components {
     }
 
     public static function compare(array $peer, bool $pull, array $selection): array {
+        foreach (['plugins','themes'] as $kind) { if (!empty($selection['file_force']) || !empty($selection[$kind.'_force'])) { $selection[$kind]=[]; } }
+        if (empty($selection['plugins']) && empty($selection['themes'])) { return ['same'=>'','folders'=>'','matched'=>0,'fallback'=>false]; }
         $remote = static function($query) use ($peer) { $result=CSM_Transport::request($peer,'component_hashes',$query+['progress_run'=>CSM_Progress::run()],null,null,15); if (!empty($result['continue'])) { throw new CSM_Yield('Remote component checksums checkpointed.'); } return $result; };
         $local = static fn($query) => self::inventory($query);
         $source = $pull ? $remote : $local; $destination = $pull ? $local : $remote;

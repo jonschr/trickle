@@ -14,3 +14,6 @@ $control['bundles']['files']=['continue'=>true,'components'=>['database'=>0,'plu
 $r=$method->invoke(null,$control);check($r['components']['media']===200&&!$r['ready'],'Partial packaging does not erase pending sizes');
 $control['bundles']['files']=['size'=>5,'components'=>['database'=>0,'plugins'=>0,'themes'=>2,'media'=>0]];
 $r=$method->invoke(null,$control);check($r['components']===['database'=>80,'plugins'=>0,'themes'=>2,'media'=>0]&&!array_filter($r['estimated'])&&$r['ready'],'Completed file measurements include legitimate zero-byte payloads without resetting the database');
+
+$control['bundles']['files']['component_ranges']=['themes'=>['start'=>1,'end'=>4]];
+$r=$method->invoke(null,$control);check($r['streams']['files']['component_ranges']===['themes'=>['start'=>1,'end'=>4]],'Published compressed component ranges reach the monitor unchanged');

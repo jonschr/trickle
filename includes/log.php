@@ -29,7 +29,7 @@ final class CSM_Log {
 
     public static function write(string $level, string $event, array $context = []): void {
         try {
-            $allowed = ['operation', 'stream_kind', 'offset', 'length', 'snapshot_size', 'timeout_seconds', 'site', 'transfer_id', 'direction', 'phase', 'component', 'http_status', 'curl_errno', 'ssl_verify_result', 'duration_ms', 'retry_after', 'ca_source', 'error', 'tables', 'files', 'bytes', 'run', 'request_run', 'count', 'total', 'unit', 'progress_age_seconds', 'progress_matches_request'];
+            $allowed = ['plugins', 'themes', 'media_mode', 'file_force', 'plugins_force', 'themes_force', 'media_force', 'transport', 'operation', 'stream_kind', 'offset', 'length', 'snapshot_size', 'timeout_seconds', 'site', 'transfer_id', 'direction', 'phase', 'component', 'http_status', 'curl_errno', 'ssl_verify_result', 'duration_ms', 'retry_after', 'ca_source', 'error', 'tables', 'files', 'bytes', 'run', 'request_run', 'count', 'total', 'unit', 'progress_age_seconds', 'progress_matches_request'];
             $context = array_intersect_key($context, array_flip($allowed));
             foreach ($context as $key => $value) { $context[$key] = is_string($value) ? self::clean($value) : (is_scalar($value) || $value === null ? $value : '[omitted]'); }
             $entry = ['time' => gmdate('c'), 'level' => $level, 'event' => self::clean($event), 'context' => $context];

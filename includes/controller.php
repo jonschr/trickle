@@ -213,16 +213,20 @@ final class CSM_Controller {
         $locked = !in_array($action, ['state', 'recent', 'manifest', 'media', 'progress', 'backup_progress', 'backups', 'status', 'logs', 'cancel', 'retry_state','estimates'], true);
         if ($locked) { CSM_Support::lock(); }
         $record = !in_array($action, ['state', 'recent', 'media', 'progress', 'status', 'logs'], true);
-        $context = ['operation' => $action, 'transfer_id' => $data['id'] ?? null, 'direction' => $data['direction'] ?? null];
+        $started = microtime(true);
+        $context = ['operation' => $action, 'transfer_id' => $data['id'] ?? null, 'direction' => $data['direction'] ?? null, 'stream_kind'=>$data['kind'] ?? null];
         if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation started', $context); }
         try {
             $result = self::operate($action, $data);
-            if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation completed', $context); }
+            if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation completed', ['transfer_id'=>$result['id'] ?? $context['transfer_id'], 'duration_ms'=>(int)((microtime(true)-$started)*1000)] + $context); }
             return $result;
         }
-        catch (CSM_Yield $e) { return ['id'=>$data['id'] ?? null,'continue'=>true,'state'=>self::state()]; }
+        catch (CSM_Yield $e) {
+            if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation checkpointed', ['duration_ms'=>(int)((microtime(true)-$started)*1000)] + $context); }
+            return ['id'=>$data['id'] ?? null,'continue'=>true,'state'=>self::state()];
+        }
         catch (Throwable $e) {
-            if ($action !== 'logs') { CSM_Log::write('error', 'Dashboard/CLI operation failed', $context + ['error' => $e->getMessage()]); }
+            if ($action !== 'logs') { CSM_Log::write('error', 'Dashboard/CLI operation failed', $context + ['duration_ms'=>(int)((microtime(true)-$started)*1000), 'error' => $e->getMessage()]); }
             if (in_array($action, ['preflight', 'transfer', 'commit', 'rollback'], true)) {
                 CSM_Progress::fail($e->getMessage());
                 $control = get_option('_csm_control');
@@ -249,7 +253,7 @@ final class CSM_Controller {
             $bundle = $control['bundles'][$kind] ?? null;
             $received = $control['checkpoints'][$kind]['offset'] ?? 0;
             if ($control['direction'] === 'pull' && ($control['selection']['transport'] ?? '') === 'stream') { $received = max($received, CSM_Segments::received_bytes($control['id'], $kind)); }
-            $streams[$kind] = ['size' => $bundle['size'] ?? null, 'received' => $received];
+            $streams[$kind] = ['size' => $bundle['size'] ?? null, 'received' => $received, 'component_ranges'=>$bundle['component_ranges'] ?? null];
             // Each snapshot measures only its own components; other zero fields are placeholders.
             foreach ($kind === 'database' ? ['database'] : ['plugins','themes','media'] as $component) {
                 if ($bundle && empty($bundle['continue']) && isset($bundle['size'], $bundle['components'][$component])) {
@@ -297,7 +301,6 @@ final class CSM_Controller {
                     $selection['media_delta'] = $comparison['delta']; $control['media_comparison'] = $comparison['stats'];
                 }
                 if ($kind === 'files' && (!empty($selection['plugins']) || !empty($selection['themes']))) {
-                    CSM_Progress::update(['phase'=>'Comparing plugin and theme checksums', 'component'=>'Plugin/theme inventory'], true);
                     $comparison = CSM_Components::compare($peer, $pull, $selection); $selection = CSM_Components::selection($selection, $comparison);
                 }
                 $control['exports'][$kind] = $selection; update_option('_csm_control', $control, false);
@@ -386,6 +389,7 @@ final class CSM_Controller {
         $control = ['estimates'=>$estimates,'destination_home' => $remote['home'] ?? $peer['url'], 'automatic' => !empty($data['automatic']), 'plugin_version' => CSM_VERSION, 'segmented' => !empty($remote['segments']), 'direction' => $direction, 'selection' => $selection, 'id' => $summary['id'], 'peer' => $peer, 'created' => time(), 'previous_history' => get_option('_csm_history', [])];
         update_option('_csm_peer', $peer, false); update_option('_csm_control', $control, false);
         self::remember($control, $summary);
+        CSM_Log::write('info', 'Transfer selection prepared', ['transfer_id'=>$summary['id'], 'direction'=>$direction, 'site'=>$peer['url'], 'transport'=>$selection['transport'], 'tables'=>count($selection['tables']), 'plugins'=>count($selection['plugins']), 'themes'=>count($selection['themes']), 'media_mode'=>$selection['media'], 'plugins_force'=>!empty($selection['plugins_force']) || !empty($selection['file_force']), 'themes_force'=>!empty($selection['themes_force']) || !empty($selection['file_force']), 'media_force'=>!empty($selection['media_force'])]);
         return $summary + ['timeline'=>self::timeline($control),'state' => self::state()];
     }
 
@@ -606,7 +610,7 @@ final class CSM_Controller {
             return $current + ['state' => self::state()];
         }
         if (in_array($action, ['preflight', 'transfer', 'commit'], true)) { CSM_Support::work($id); CSM_Support::check_cancel(); self::assert_remote($peer); CSM_Updates::assert_job($control); }
-        if ($action === 'commit') { $version = CSM_Transport::request($peer, 'manifest'); self::assert_remote($peer, $version); CSM_Updates::assert_version($version['plugin_version'] ?? null); CSM_Updates::assert_build($version); }
+        if ($action === 'commit') { $version = CSM_Transport::request($peer, 'version', ['id'=>$id]); self::assert_remote($peer, $version); CSM_Updates::assert_version($version['plugin_version'] ?? null); CSM_Updates::assert_build($version); }
         if ($action === 'preview') { return $pull ? CSM_Plugin::preview_page(CSM_Jobs::get($id), (int)($data['offset'] ?? 0)) : CSM_Transport::request($peer, 'preview', ['id' => $id, 'offset' => (int)($data['offset'] ?? 0)]); }
         if ($action === 'progress') { return self::progress($control); }
         if ($action === 'preflight') { return self::segment_step($control, $data['kind'] ?? '', true); }

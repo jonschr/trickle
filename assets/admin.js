@@ -4,7 +4,7 @@
     const $ = id => document.getElementById(`csm-${id}`);
     let connectionState = CSM.state, sites = null, session = CSM.state.session, busy = false, summary = null, replacementRules = [], remoteUpdate = null;
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MB` : `${(n / 1073741824).toFixed(1)} GB`;
+    const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MiB` : `${(n / 1073741824).toFixed(1)} GiB`;
     const transferMeter = new CSMTransferProgress($('transfer-meter'));
     let transferView = false;
     const actionHome = $('stage').parentElement;
@@ -172,7 +172,7 @@
         finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; $('transfer-setup').setAttribute('aria-busy', 'false'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
-        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
+        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-plugins-force, #csm-themes-force, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
         lockReplacements();
     }
     const direction = () => $('direction').value;
@@ -293,7 +293,7 @@
         $('selection-summary').textContent = `${counts.tables} table${counts.tables === 1 ? '' : 's'} · ${counts.plugins} plugin${counts.plugins === 1 ? '' : 's'} · ${counts.themes} theme${counts.themes === 1 ? '' : 's'} · ${media.toLowerCase()}`;
         const selected = counts.plugins + counts.themes + counts.tables > 0 || (mode !== 'none' && (mode !== 'selected' || counts.media_ids > 0));
         const validMediaDates = mode !== 'uploaded' || (!!($('media-after').value || $('media-before').value) && (!$('media-after').value || !$('media-before').value || $('media-after').value <= $('media-before').value));
-        $('stage').disabled = busy || cancelling || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
+        $('stage').disabled = busy || cancelling || (session?.retryAt > Date.now()) || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
         $('apply').disabled = busy || cancelling || !versionsMatch() || !transferVersionMatches();
         renderVersionStatus();
         syncMediaSelection();
@@ -392,11 +392,11 @@
             const size = kind === 'tables' ? (sites ? source().tables.reduce((sum,table)=>sum+table.bytes,0) : null) : estimate?.bytes[kind];
             const complete = kind === 'tables' ? !!sites : estimate?.complete;
             const cell = $(kind + '-source-size');
-            cell.textContent = size != null && (complete || size > 0) ? `${complete ? '~' : '≥ '}${(size / 1048576).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1})} MB` : 'Estimating…';
+            cell.textContent = size != null && (complete || size > 0) ? `${complete ? '~' : '≥ '}${(size / 1048576).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1})} MiB` : 'Estimating…';
             cell.title = size != null ? `${kind === 'tables' ? 'Database' : kind} on the source · ${bytes(size)} before compression and matching-file skips` : 'Source size not yet available';
         }
         renderSizeDetails();
-        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing source sizes…':estimate?.complete?'Source sizes before compression. Matching files are skipped.':'Estimating source sizes…';
+        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing source sizes…':estimate?.complete?'Source sizes before compression. Matching files are skipped unless forced.':'Estimating source sizes…';
     }
     function estimateSize(estimate, size) {
         return estimate && (estimate.complete || size>0) ? `${estimate.complete?'~':'≥ '}${bytes(size || 0)}` : 'Estimating…';
@@ -487,7 +487,7 @@
     }
     function clearInventory() {
         sites = null; remoteUpdate = null; resetComponents(); $('ignore-active-plugins').checked = false;
-        $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
+        $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
         renderEndpoints();
@@ -512,6 +512,7 @@
     }
     function currentSelection() {
         const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:!$('ignore-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
+        for (const kind of ['plugins','themes']) selection[kind + '_force'] = $('enable-' + kind).checked && !!$(kind + '-force')?.checked;
         selection.file_verify = ($('enable-plugins').checked || $('enable-themes').checked) && !!$('file-verify')?.checked;
         selection.media_force = selection.media === 'all' && !!$('media-force')?.checked;
         selection.media_verify = selection.media === 'all' && !selection.media_force && !!$('media-verify')?.checked;
@@ -535,6 +536,7 @@
             if (Array.isArray(selection.expanded_components)) setPanelOpen(kind, $('enable-' + kind).checked && selection.expanded_components.includes(kind));
         }
         showComponent(componentKinds.find(kind => !$(kind + '-body').hidden) || 'tables');
+        for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = !!(selection[kind + '_force'] ?? selection.file_force);
         $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('ignore-active-plugins').checked = selection.sync_active_plugins === false;
         $('media-mode').value = selection.media === 'compare' ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
@@ -657,14 +659,14 @@
         renderPreview(); updateSetup();
     }
     async function finishTransfer(result, route) {
-        transferMeter.finish(result.status, result);
+        $('error').hidden = true;
         const finished = await api('finish', {id:route.id});
+        transferMeter.finish(result.status, result);
         summary = null; session = null; renderPreview();
         for (const id of ['apply','rollback','discard','retained-note','activity']) $(id).hidden = true;
         $('stage').hidden = false;
         $('completion').hidden = false;
         $('completion-title').textContent = result.status === 'applied' ? `${route.direction === 'push' ? 'Push' : 'Pull'} complete` : 'Destination restored';
-        $('completion-detail').textContent = result.status === 'applied' ? 'Destination updated.' : 'Previous changes recovered.';
         $('view-site').href = route.view_url || route.destination;
         const backupUrl = new URL($('backup-link').href);
         if (route.direction === 'push') backupUrl.searchParams.set('site', route.remote_id);
@@ -857,6 +859,7 @@
     }));
     for (const id of ['transport', 'file-verify', 'media-verify', 'ignore-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
     $('media-mode').addEventListener('change', () => { mediaAnchor = null; renderMedia(); });
+    for (const kind of ['plugins','themes']) $(kind + '-force')?.addEventListener('change', () => { $('recent').value = ''; updateSelection(); });
     $('media-force').addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
     for (const id of ['media-after', 'media-before']) $(id).addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
     $('media-list').addEventListener('click', event => {
@@ -981,14 +984,14 @@
             showSummary();
             const pending = [...summary.pending];
             for (const kind of pending) {
-                message('Preparing source streams…');
+                message('');
                 summary = await transferRequest('preflight', {id:session.id,kind});
             }
             for (const kind of pending) {
-                message(`Verifying ${kind}…`);
+                message('');
                 summary = await transferRequest('transfer', {id:session.id, kind}); showSummary();
             }
-            message(`${transferAction() === 'Push' ? 'Pushing' : 'Pulling'}…`);
+            message('');
             summary = await transferRequest('commit', {id:session.id});
             await finishTransfer(summary, route);
         } catch (error) {
@@ -1023,9 +1026,10 @@
             for (let attempt = 0; attempt < 180 && Date.now()<deadline; attempt++) {
                 try { result = await api('recover', {id:route.id, cancel:true}); if (!result.continue) break; result=null; }
                 catch (error) {
-                    if (!error.busy) throw error;
-                    message('Cancelling… Waiting for the current request.');
-                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    const wait = error.busy ? 1000 : error.retryable && error.retryAfter > 0 ? error.retryAfter * 1000 : 0;
+                    if (!wait || Date.now() + wait >= deadline) throw error;
+                    message(error.busy ? 'Cancelling… Waiting for the current request.' : `Cancelling… Waiting ${Math.ceil(wait / 1000)}s for the server.`);
+                    await new Promise(resolve => setTimeout(resolve, wait));
                 }
             }
             if (!result) throw new Error('Cancellation is waiting for the server. Automatic retries are paused; try Cancel again.');
@@ -1061,6 +1065,7 @@
         link.href = url; link.download = `trickle-diagnostics-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
+    $('direction').value = session?.direction || connectionState.recents.find(item => ['push','pull'].includes(item.direction))?.direction || 'pull';
     renderConnections(connectionState); updateSelection();
     if (CSM.state.recovery_error) { fail(new Error(`Recovery needs attention: ${CSM.state.recovery_error}. The site remains protected. Check Diagnostics, then retry recovery.`)); const retry=document.createElement('button'); retry.type='button'; retry.className='button'; retry.textContent='Retry recovery'; retry.addEventListener('click',()=>run(async()=>{ let result; do { result=await api('recover_destination'); } while (result.continue); location.reload(); })); $('error').append(retry); }
     else if (CSM.state.destination_recovery) run(async () => {
