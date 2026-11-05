@@ -107,14 +107,14 @@
                     if(!old||ratio(value)>=ratio(old))this.replacement[key]=value;
                 }
                 if(detail.phase==='Replacing database tables atomically'&&detail.total>0&&detail.count>=detail.total)this.replacement.database={done:1,total:1};
-                if(detail.phase==='Checking frontend health')for(const key of this.timeline.selected || [])this.replacement[key]={done:1,total:1};
+                if(detail.phase==='Checking destination state')for(const key of this.timeline.selected || [])this.replacement[key]={done:1,total:1};
                 for (const event of detail.events || []) this.addEvent(event);
                 if (detail.failure) this.addEvent({id:`failure:${detail.run}`,updated:detail.updated,phase:detail.failure.phase,component:detail.failure.component,error:detail.failure.error,state:'failed'});
                 // A failed attempt may still be retrying inside PHP; it is not proof of rollback.
                 if (detail.state === 'failed' && !this.resolvedRuns.has(detail.run) && this.frozen == null && !this.notice) this.notice = {kind:'warning',text:'Issue reported. Waiting for the operation result.',error:detail.failure?.error || ''};
                 if (this.frozen==null && this.phase!=='recover' && detail.state!=='complete' && this.operationName!=='preflight') {
                     if (/Receiving and verifying|Verifying (?:staged|snapshot)|Staging (?:file|table)|Checking PHP compatibility|Checking destination/.test(detail.phase)) this.setPhase('verify');
-                    else if (/Backing up destination file|Replacing file|Removing obsolete file|Preparing table replacement|Replacing database tables|Checking frontend health/.test(detail.phase)) this.setPhase('apply');
+                    else if (/Backing up destination file|Replacing file|Removing obsolete file|Preparing table replacement|Replacing database tables|Verifying installed file|Verifying installed table|Checking destination state/.test(detail.phase)) this.setPhase('apply');
                 }
             }
             if (this.receivedBytes() > previousBytes) this.lastMovement = this.clock();
@@ -129,7 +129,7 @@
         }
         acceptDetail(detail) {
             if(detail.run&&this.staleRuns.has(detail.run))return false;
-            const replacing=/Backing up destination file|Replacing file|Removing obsolete file|Preparing table replacement|Replacing database tables|Checking frontend health/;
+            const replacing=/Backing up destination file|Replacing file|Removing obsolete file|Preparing table replacement|Replacing database tables|Verifying installed file|Verifying installed table|Checking destination state/;
             const verifying=/Receiving and verifying|Verifying (?:staged|snapshot)|Staging (?:file|table)|Checking PHP compatibility|Checking destination/;
             if(this.operationName==='preflight'&&(replacing.test(detail.phase)||verifying.test(detail.phase)))return false;
             if(this.operationName==='transfer'&&replacing.test(detail.phase))return false;
@@ -141,7 +141,7 @@
             if (this.seen.size > 500) this.seen = new Set(this.events.map(item => item.id));
             const routine = item => !item.error && !item.failure && !['retry','failed','resumed'].includes(item.state);
             if (routine(event)) {
-                if(event.phase==='Checking frontend health' || event.phase==='Transfer complete' || (event.phase==='Destination restored' && event.state!=='restored'))return;
+                if(event.phase==='Checking destination state' || event.phase==='Transfer complete' || (event.phase==='Destination restored' && event.state!=='restored'))return;
                 let component=String(event.component || '');
                 if(event.state==='complete')component='';
                 else if(/^(plugins|themes)\/[^/]+/.test(component))component=component.match(/^(plugins|themes)\/[^/]+/)[0];
@@ -241,7 +241,7 @@
             if(this.phase==='recover')return 'Recovering destination…';
             if(this.notice?.kind==='retry')return 'Waiting to retry…';
             if(this.metrics()?.stalled)return 'Waiting for an update…';
-            if(this.detail?.phase==='Checking frontend health')return 'Finishing up…';
+            if(this.detail?.phase==='Checking destination state')return 'Finishing up…';
             if(this.phase==='apply')return /Backing up/.test(this.detail?.phase || '')?'Saving backup…':'Replacing…';
             if(this.phase==='verify')return 'Verifying…';
             if(this.phase==='transfer'){

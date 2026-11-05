@@ -15,4 +15,8 @@ remote.plugins[0].update=local.plugins[0].update='1.11';context.components('plug
 local.plugins[0].version_order=-1;local.plugins[1].version_order=1;pull=false;context.components('plugins');assert.match(controls.plugins.innerHTML,/data-change="downgrade"/);assert.match(controls.plugins.innerHTML,/data-change="upgrade"/);
 remote.plugins[0].name='<img src=x onerror=alert(1)>';pull=true;context.components('plugins');assert(!controls.plugins.innerHTML.includes('<img'));assert(controls.plugins.innerHTML.includes('&lt;img'));
 context.components('themes');assert.match(controls.themes.innerHTML,/Active parent/);
+const markup=controls.themes.innerHTML;
+assert.match(markup,/role="img" aria-label="Upgrade" title="Upgrade"><svg/);
+assert(!markup.includes('csm-change-label'));
+assert.match(markup,/aria-label="Active parent"/);
 console.log('PASS Installed → incoming rows: upgrades, downgrades, installs, same/unknown versions, protected Trickle, source/destination activation, active parents, available updates, direction reversal and escaped names.');

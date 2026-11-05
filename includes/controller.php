@@ -80,8 +80,8 @@ final class CSM_Controller {
         if (!$session && !isset($peers[$id])) { $id = count($peers) === 1 ? array_key_first($peers) : ''; }
         $active = get_option('_csm_active_job');
         $recovering = $active && in_array(get_option('_csm_job_' . $active, [])['status'] ?? '', ['applying', 'backup_copy', 'restoring'], true);
-        return ['recovery_error'=>$active?get_option('_csm_recovery_blocked_'.$active,''):'', 'destination_recovery' => $recovering ? $active : null, 'connections' => array_values(array_map(static fn($peer) => array_intersect_key($peer, array_flip(['id', 'url', 'name', 'icon'])), $peers)),
-            'selected' => $id, 'recents' => array_values(array_filter(get_option('_csm_recents', []), static fn($recent) => !self::is_self($recent['remote_url'] ?? ''))), 'session' => $session];
+        return ['recovery_error'=>$active?get_option('_csm_recovery_blocked_'.$active,''):'', 'destination_recovery' => $recovering ? $active : null, 'connections' => array_values(array_map(static fn($peer) => ['name' => html_entity_decode($peer['name'] ?? $peer['url'], ENT_QUOTES | ENT_HTML5, 'UTF-8')] + array_intersect_key($peer, array_flip(['id', 'url', 'name', 'icon'])), $peers)),
+            'selected' => $id, 'recents' => array_values(array_map(static fn($recent) => ['remote_name' => html_entity_decode($recent['remote_name'] ?? $recent['remote_url'] ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8')] + $recent, array_filter(get_option('_csm_recents', []), static fn($recent) => !self::is_self($recent['remote_url'] ?? '')))), 'session' => $session];
     }
 
     public static function recent(string $id): array {
@@ -97,6 +97,9 @@ final class CSM_Controller {
         $remote = CSM_Transport::request($peer, 'manifest', ['refresh' => $refresh]);
         self::assert_remote($peer, $remote);
         $local = CSM_Plugin::manifest($refresh);
+        // WordPress stores HTML-escaped titles; JSON UI fields must contain plain text.
+        $local['name'] = html_entity_decode($local['name'] ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $remote['name'] = html_entity_decode($remote['name'] ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $replacements = isset($remote['root'], $remote['content']) && ($remote['replacement_rules'] ?? 0) === 1
             ? ['pull' => CSM_Database::replacement_defaults($remote, $local), 'push' => CSM_Database::replacement_defaults($local, $remote)] : null;
         return ['remote' => self::compare_components($remote, $local), 'local' => self::compare_components($local, $remote), 'replacements' => $replacements, 'history' => get_option('_csm_history', []), 'state' => self::state()];

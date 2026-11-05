@@ -223,18 +223,23 @@
     function components(kind) {
         if (kind === 'tables') { renderTables(); return; }
         const src=source(), dst=destination(), lookup=new Map(dst[kind].map(item=>[item.id,item]));
-        let html=`<div class="csm-columns csm-code-columns">${selectAll(kind)}<span>Installed → Incoming</span></div>`;
+        const signs={upgrade:'M12 19V5m-5 5 5-5 5 5',downgrade:'M12 5v14m-5-5 5 5 5-5',same:'M5 12h14',install:'M12 5v14m-7-7h14',different:'M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 4h.01',protected:'M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5z'};
+        const glyph=(path,cls='')=>`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
+        let html=`<div class="csm-code-scroll" tabindex="0" role="region" aria-label="${kind === 'plugins' ? 'Plugin' : 'Theme'} comparison"><div class="csm-code-table"><div class="csm-columns csm-code-columns">${selectAll(kind)}<span class="csm-version-headings"><span>Installed</span><span class="screen-reader-text">Version change</span><span>Incoming</span></span></div>`;
         for(const item of src[kind]){
             const target=lookup.get(item.id), change=versionChange(item,target), state=componentState(kind,item,src[kind]);
-            const sizeCell=site=>item.protected?'':`<small class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${site}"></small>`;
+            const sizeCell=side=>item.protected?'':`<span class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${side}"></span>`;
             const cell=(plugin,inventory,side)=>{
                 const activity=componentState(kind,plugin,inventory), label=side==='source'?'Incoming from source':'Installed on destination';
-                return `<span class="csm-version-endpoint"><span class="screen-reader-text">${label}: </span><b>${esc(plugin?.version || (plugin?'Unknown':'Not installed'))}</b>${plugin?`<span class="csm-activation ${activity==='Inactive'?'is-inactive':'is-active'}" title="${esc(label)}">${esc(activity)}</span>${sizeCell(side)}`:''}</span>`;
+                const update=plugin?.update, both=update && item.update===target?.update;
+                const updateBadge=update?`<span class="csm-update" title="${esc('Update available: '+update+(both?' on both sites':' · '+label))}">${glyph('M12 17V7m-4 4 4-4 4 4','csm-update-arrow')}<span class="screen-reader-text">Update available: </span>${esc(update)}</span>`:'';
+                const mark=activity==='Active parent'?'<circle cx="6" cy="6" r="4.5"/><circle cx="6" cy="6" r="1.5" fill="currentColor"/>':`<circle cx="6" cy="6" r="4"${activity==='Inactive'?'':' fill="currentColor"'}/>`;
+                return `<span class="csm-version-endpoint"><span class="screen-reader-text">${label}: </span>${plugin?`<span class="csm-activation ${activity==='Inactive'?'is-inactive':'is-active'}" role="img" aria-label="${esc(activity)}" title="${esc(activity+' · '+label)}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" aria-hidden="true">${mark}</svg></span>`:''}<b title="${esc(plugin?.version || (plugin?'Unknown version':'Not installed'))}">${esc(plugin?.version || (plugin?'?':'—'))}</b>${plugin?sizeCell(side):''}${updateBadge}</span>`;
             };
-            const updates=item.update && item.update===target?.update?`<span class="csm-update" title="Update available on both sites">Update available: ${esc(item.update)}</span>`:[target?.update?`<span class="csm-update">Destination update available: ${esc(target.update)}</span>`:'',item.update?`<span class="csm-update">Source update available: ${esc(item.update)}</span>`:''].join('');
-            html+=`<label class="csm-component csm-code-component" data-change="${change.kind}" data-source-active="${state!=='Inactive'}"><span class="csm-component-identity ${state==='Inactive'?'csm-inactive':''}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}>${icon(item.icon,kind)}<span><strong>${esc(item.name)}</strong>${item.protected?'<small>Managed separately</small>':''}</span></span><span class="csm-version-comparison"><span class="csm-version-change">${cell(target,dst[kind],'destination')}<svg class="csm-version-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>${cell(item,src[kind],'source')}<span class="csm-version-outcome">${change.label}</span></span>${updates}</span></label>`;
+            const outcome=`<span class="csm-version-indicator" role="img" aria-label="${esc(change.label)}" title="${esc(change.label)}">${glyph(signs[change.kind])}</span>`;
+            html+=`<label class="csm-component csm-code-component" data-change="${change.kind}" data-source-active="${state!=='Inactive'}"><span class="csm-component-identity ${state==='Inactive'?'csm-inactive':''}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}>${icon(item.icon,kind)}<span><strong title="${esc(item.name+(item.protected?' · Managed separately':''))}">${esc(item.name)}</strong></span></span><span class="csm-version-comparison"><span class="csm-version-change">${cell(target,dst[kind],'destination')}${outcome}${cell(item,src[kind],'source')}</span></span></label>`;
         }
-        $(kind).innerHTML=html+(!src[kind].length?'<p>No components found on the source site.</p>':'');
+        $(kind).innerHTML=html+(!src[kind].length?'<p>No components found on the source site.</p>':'')+'</div></div>';
     }
     function renderTables() {
         const selected = new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input => input.value));
@@ -680,7 +685,6 @@
         message('');
         $('action-title').textContent = $('completion-title').textContent;
         const warnings = [finished.cleanup_warning];
-        if (result.health && !result.health.verified) warnings.push('Check the site; its health check was inconclusive.');
         if (result.activation_missing?.length) warnings.push(`Not activated — missing plugin files: ${result.activation_missing.join(', ')}.`);
         feedback(warnings.filter(Boolean).join(' '));
     }

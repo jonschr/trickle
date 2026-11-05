@@ -84,7 +84,7 @@ try:
  # Fresh complete migration, followed by independently batched saved-backup restoration.
  prepare();until('preflight',{'kind':'database'});until('preflight',{'kind':'files'});until('transfer',{'kind':'database'});until('transfer',{'kind':'files'})
  applied,applies=until('commit')
- check(applied['status']=='applied' and applied['health']['verified'] and len(applies)>1,'Fresh complete pull applies through short backup/replacement steps and passes health')
+ check(applied['status']=='applied' and applied['verification']['verified'] and len(applies)>1,'Fresh complete pull applies through short backup/replacement steps and verifies installed data')
  check((ROOT[D]/'wp-content/plugins'/NAME/'large.bin').read_bytes()==data and not (ROOT[D]/'wp-content/plugins'/NAME/'old.txt').exists(),'Successful apply installs exact bytes and removes obsolete code')
  backup=applied['id'];op('finish')
  restore=[]

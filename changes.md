@@ -1,5 +1,16 @@
 # Changes
 
+## 0.1.23 — 2026-11-05
+
+- Compact plugin/theme comparisons into single-line rows; show green/up upgrades, red/down downgrades and neutral matches while retaining versions, activation, sizes and available updates.
+- Verify installed file hashes, obsolete-file removal, table swaps and activation directly in resumable steps; rollback real replacement failures without making HTTP self-requests.
+- Improve TLS and request diagnostics for optional HTTP probes, preserving explicit CA configuration.
+- Keep table replacement from replaying while final verification resumes.
+- Display quoted site titles and saved labels as plain text in both directions without weakening HTML escaping.
+- Open Settings once after individual dashboard activation; leave bulk activation, CLI and silent updates unchanged.
+
+Validation: all 17 JavaScript suites, six isolated PHP suites plus the CLI activation check, runtime PHP syntax and offline security checks passed. Desktop/mobile rendering covered 17 compact plugin rows and active parent themes. The native disposable-peer cycle passed file/database pull, resumable verification after one table swap, backup restore, corruption rollback and cancellation recovery. No customer production sites were modified. Verification checks migration integrity; it does not replace frontend functional testing.
+
 ## 0.1.22 — 2026-11-04
 
 - Trim repeated setup instructions, media help, connection copy and save confirmations.

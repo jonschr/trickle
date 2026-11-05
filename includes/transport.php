@@ -84,7 +84,7 @@ final class CSM_Transport {
         return json_decode($body, true, 64, JSON_THROW_ON_ERROR);
     }
 
-    public static function health(string $url, string $probe = ''): array {
+    public static function health(string $url, string $probe = '', string $transfer_id = ''): array {
         $url = add_query_arg('trickle_health', bin2hex(random_bytes(8)), self::url($url));
         $ch = curl_init($url); $ca = self::ca_bundle($url);
         $options = [CURLOPT_NOBODY => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
@@ -93,7 +93,13 @@ final class CSM_Transport {
         if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
         if ($probe !== '') { $options[CURLOPT_HTTPHEADER][] = 'X-Trickle-Health: ' . $probe; }
         curl_setopt_array($ch, $options); $ok = curl_exec($ch); $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
-        return ['status' => $status, 'verified' => $ok !== false && $status >= 200 && $status < 300];
+        $error = CSM_Log::clean(curl_error($ch));
+        $context = ['operation'=>'health', 'transfer_id'=>$transfer_id ?: null, 'site'=>$url, 'http_status'=>$status, 'curl_errno'=>curl_errno($ch),
+            'ssl_verify_result'=>curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT), 'duration_ms'=>(int)round(curl_getinfo($ch, CURLINFO_TOTAL_TIME)*1000),
+            'ca_source'=>$ca === ABSPATH . WPINC . '/certificates/ca-bundle.crt' ? 'WordPress CA bundle' : ($ca ? 'Custom CA bundle (' . basename($ca) . ')' : 'System CA bundle')];
+        if ($error !== '') { $context['error'] = $error; }
+        CSM_Log::write($ok === false || $status >= 500 ? 'error' : 'info', 'Destination health check completed', $context);
+        return ['status' => $status, 'verified' => $ok !== false && $status >= 200 && $status < 300, 'error'=>$error];
     }
 
     public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0, int $download_limit = 0): array {

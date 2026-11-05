@@ -16,7 +16,7 @@ meter.operation('preflight','files');assert.equal(meter.metrics().stalled,false)
 meter.update({phase:'Packaging files',count:0,total:10,unit:'files'});
 now=30000;meter.update({phase:'Packaging files',count:5,total:10,unit:'files'});assert.equal(meter.metrics().stalled,false);
 now=46000;meter.update({phase:'Packaging files',count:5,total:10,unit:'files'});assert.equal(meter.metrics().stalled,true,'Repeated reports do not disguise a stall');
-meter.setPhase('apply');meter.update({phase:'Checking frontend health',count:0,total:null,unit:''});assert.equal(meter.metrics().stalled,false);
+meter.setPhase('apply');meter.update({phase:'Checking destination state',count:0,total:null,unit:''});assert.equal(meter.metrics().stalled,false);
 meter.update(checkpoint(100,100));assert.equal(meter.receivedBytes(),200);assert.equal(meter.phase,'apply'); // Bytes received is not completion.
 const events=Array.from({length:25},(_,i)=>({id:String(i),phase:'Exporting file',component:`plugins/x/${i}.php`,updated:i}));
 meter.update({phase:'Exporting file',events});meter.update({phase:'Exporting file',events});assert.equal(meter.events.length,1);assert.equal(meter.events[0].component,'plugins/x');assert.equal(meter.events[0].phase,'Exporting files');
@@ -62,7 +62,7 @@ assert(simple.components().every(c=>c.replaced===0));
 simple.operation('commit');
 simple.update({phase:'Replacing file',component:'plugins/one/a.php',count:2,total:10,unit:'files',replacement:{plugins:{done:2,total:4},themes:{done:0,total:2},media:{done:0,total:4}}});
 assert.equal(simple.components()[1].replaced,.5);assert.equal(simple.components()[2].replaced,0);assert.equal(simple.components()[0].replaced,0);
-simple.update({phase:'Checking frontend health',component:'WordPress frontend',count:0,total:null});
+simple.update({phase:'Checking destination state',component:'Destination state',count:0,total:null});
 assert.equal(simple.status(),'Finishing up…');assert(simple.components().every(c=>c.replaced===1));assert.notEqual(simple.phase,'complete');
 simple.finish('applied');assert(simple.components().every(c=>c.state==='Applied'));const finishedElapsed=simple.metrics().elapsed;now+=5000;assert.equal(simple.metrics().elapsed,finishedElapsed);
 simple.begin({...timeline,id:'simple-new',selected:['plugins']});assert.equal(simple.components()[0].replaced,0,'New transfer cannot inherit replacement');

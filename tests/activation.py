@@ -86,13 +86,12 @@ try:
  err=wp(D,'eval','$s=CSM_Controller::session();do{$r=CSM_Controller::execute("transfer",["id"=>$s["id"],"kind"=>"files"]);}while(!empty($r["continue"]));',fail=True)
  check('activation changed between streams' in err and active(D)==dest,'Source activation changing between streams stops staging without changing destination activation')
  op('recover',{'id':r['id'],'cancel':True});setactive(S,source)
- # Valid PHP can fail only on the destination normal frontend after activation.
- fatal='''if (!defined('WP_CLI') && !isset($_GET['trickle']) && !is_admin() && str_contains(home_url(),'trickle-qa-c.localhost')) { throw new RuntimeException('Intentional activation QA failure'); }\n'''
+ # An incompatible source activation must fail and restore the prior full list.
  for x in ROOT:
-  path=ROOT[x]/'wp-content/plugins'/(N+'fatal')/(N+'fatal.php');path.write_text(path.read_text()+fatal)
+  path=ROOT[x]/'wp-content/plugins'/(N+'fatal')/(N+'fatal.php');path.write_text(path.read_text().replace('Plugin Name:', 'Requires PHP: 99.0\nPlugin Name:',1))
  setactive(S,source+[file(N+'fatal')])
  err=wp(D,'trickle','pull','--remote=https://trickle-qa-a.localhost:8453','--plugins='+N+'target','--apply','--yes','--format=json',fail=True)
- check('health check returned HTTP 500' in err and active(D)==dest,'Failed source-plugin activation automatically rolls back the destination full active list')
+ check('Cannot activate' in err and active(D)==dest,'Incompatible source activation rolls back the destination full active list')
  session=op('state')['session'];op('finish',{'id':session['id']});setactive(S,source)
  # Hard process exit immediately after the activation write still has a durable prior list.
  r=op('prepare',{'site':'https://trickle-qa-a.localhost:8453','direction':'pull','selection':{'plugins':[N+'target'],'themes':[],'tables':[],'media':'none'}})

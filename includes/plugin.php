@@ -16,6 +16,21 @@ final class CSM_Plugin {
         if (function_exists('opcache_invalidate')) { opcache_invalidate($path, true); }
     }
 
+    public static function activate(bool $network_wide = false): void {
+        self::install_loader();
+        if ($network_wide || !is_admin() || wp_doing_ajax() || (defined('WP_CLI') && WP_CLI) || isset($_REQUEST['activate-multi']) || !current_user_can('manage_options')) { return; }
+        set_transient('_csm_activation_redirect_' . get_current_user_id(), true, 60);
+    }
+
+    public static function activation_redirect(): void {
+        if (wp_doing_ajax() || wp_doing_cron() || (defined('WP_CLI') && WP_CLI) || !current_user_can('manage_options')) { return; }
+        $key = '_csm_activation_redirect_' . get_current_user_id();
+        if (!get_transient($key)) { return; }
+        delete_transient($key);
+        wp_safe_redirect(admin_url('tools.php?page=trickle&view=settings'));
+        exit;
+    }
+
     public static function loader_ready(): bool {
         $path = WPMU_PLUGIN_DIR . '/0-trickle-loader.php';
         return is_file($path) && !is_link($path) && hash_equals(hash('sha256', self::loader_code()), hash_file('sha256',$path));
@@ -37,6 +52,7 @@ final class CSM_Plugin {
         }
         if (isset($_GET['trickle'])) { self::endpoint(); }
         add_action('admin_menu', static function () { add_management_page('Trickle Migrate', 'Trickle Migrate', 'manage_options', 'trickle', [self::class, 'page']); });
+        add_action('admin_init', [self::class, 'activation_redirect']);
         add_action('admin_enqueue_scripts', [self::class, 'assets']);
         add_action('wp_ajax_csm_admin', [self::class, 'ajax']);
         add_action('wp_ajax_nopriv_csm_admin', [self::class, 'ajax']);
@@ -309,7 +325,7 @@ final class CSM_Plugin {
 
     public static function summary(array $job): array {
         return ['id' => $job['id'], 'status' => $job['status'], 'tables' => count($job['database'] ?? []), 'rows' => $job['rows'] ?? 0, 'files' => count(array_filter($job['files'] ?? [], static fn($file) => empty($file['unchanged']))), 'unchanged_files' => count(array_filter($job['files'] ?? [], static fn($file) => !empty($file['unchanged']))),
-            'activation_missing' => $job['activation_missing'] ?? [], 'health' => $job['health'] ?? null, 'preview' => $job['preview'] ?? null, 'skipped_folders' => $job['selection']['skip_paths'] ?? [], 'created' => $job['created'], 'applied' => $job['applied'] ?? null, 'bytes' => array_sum(array_column(array_filter($job['files'] ?? [], static fn($file) => empty($file['unchanged'])), 'size')), 'ready' => !array_diff(self::kinds($job['selection']), array_keys($job['received'])),
+            'activation_missing' => $job['activation_missing'] ?? [], 'verification' => $job['verification'] ?? null, 'preview' => $job['preview'] ?? null, 'skipped_folders' => $job['selection']['skip_paths'] ?? [], 'created' => $job['created'], 'applied' => $job['applied'] ?? null, 'bytes' => array_sum(array_column(array_filter($job['files'] ?? [], static fn($file) => empty($file['unchanged'])), 'size')), 'ready' => !array_diff(self::kinds($job['selection']), array_keys($job['received'])),
             'progress' => CSM_Progress::read($job['id']), 'media_watermark' => $job['media_watermark'] ?? null, 'error' => $job['error'] ?? null, 'pending' => array_values(array_diff(self::kinds($job['selection']), array_keys($job['received'])))];
     }
 
@@ -470,6 +486,11 @@ final class CSM_Plugin {
 
     public static function commit(array $job, ?string $run = null): array {
         CSM_Updates::assert_job($job);
+        if ($job['status'] === 'restoring') {
+            $result = self::rollback($job);
+            if (empty($result['continue']) && !empty($job['error'])) { throw new RuntimeException('Apply failed; changes rolled back. ' . $job['error']); }
+            return $result;
+        }
         CSM_Progress::start($job['id'], 'Checking destination', $run);
         $actor = current_user_can('manage_options') ? wp_get_current_user() : null;
         if (!in_array($job['status'],['staging','applying'],true) || !self::summary($job)['ready']) { throw new RuntimeException('Both selected streams must be complete before applying.'); }
@@ -494,16 +515,18 @@ final class CSM_Plugin {
         if (!self::backup_files($job, $base)) { return self::summary($job) + ['continue'=>true]; }
         self::save_recovery_plan($job, $base);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]); wp_schedule_single_event(time() + 60, 'trickle_recover', [$job['id']]);
-        $probe = bin2hex(random_bytes(32));
-        if ($paths || $job['database'] || isset($job['active_plugins_before'])) { update_option('_csm_maintenance', ['probe' => hash('sha256', $probe), 'id' => $job['id'], 'until' => time() + 15 * MINUTE_IN_SECONDS], false); }
+        if ($paths || $job['database'] || isset($job['active_plugins_before'])) { update_option('_csm_maintenance', ['id' => $job['id'], 'until' => time() + 15 * MINUTE_IN_SECONDS], false); }
         try {
             if (!self::replace_files($job, $cursor_path)) { return self::summary($job) + ['continue'=>true]; }
             CSM_Support::check_cancel();
-            $token = $actor ? wp_get_session_token() : '';
-            $authenticated_session = $token !== '' ? WP_Session_Tokens::get_instance($actor->ID)->get($token) : null;
-            CSM_Database::replace_tables($job);
-            $authentication = self::retain_controller($actor, $job, $authenticated_session ?: null);
-            return self::finish_apply($job, $probe, $authentication);
+            if (empty($job['db_applied'])) {
+                $token = $actor ? wp_get_session_token() : '';
+                $authenticated_session = $token !== '' ? WP_Session_Tokens::get_instance($actor->ID)->get($token) : null;
+                CSM_Database::replace_tables($job);
+                $authentication = self::retain_controller($actor, $job, $authenticated_session ?: null);
+                $job['db_applied'] = true; CSM_Jobs::save($job);
+            } else { $authentication = self::retain_controller($actor, $job); }
+            return self::finish_apply($job, $authentication);
         } catch (Throwable $e) {
             CSM_Progress::fail($e->getMessage());
             $job['error'] = $e->getMessage(); CSM_Jobs::save($job);
@@ -585,17 +608,50 @@ final class CSM_Plugin {
         return true;
     }
 
-    private static function finish_apply(array &$job, string $probe, array $authentication): array {
-        CSM_Activation::apply($job);
-        CSM_Progress::update(['phase' => 'Checking frontend health', 'component' => 'WordPress frontend', 'unit' => '', 'count' => 0, 'total' => null, 'bytes' => 0], true);
-        $job['health'] = CSM_Transport::health(site_url(), $probe);
-        if ($job['health']['status']===0) { throw new RuntimeException('Destination health check could not reach the site.'); }
-        if ($job['health']['status'] >= 500 && $job['health']['status'] <= 599) { throw new RuntimeException('Destination health check returned HTTP ' . $job['health']['status']); }
-        $job['db_applied'] = true; $job['status'] = 'applied'; $job['applied'] = time(); CSM_Jobs::save($job);
+    private static function verify_installed_step(array &$job): bool {
+        $state = &$job['verification_work'];
+        $state ??= ['phase'=>'files','cursor'=>0];
+        $paths = $job['file_plan']['paths']; $new = $job['file_plan']['new'];
+        if ($state['phase'] === 'files') {
+            foreach (array_keys($paths) as $index=>$relative) {
+                if ($index < $state['cursor']) { continue; }
+                CSM_Support::check_cancel();
+                CSM_Progress::update(['phase'=>'Verifying installed file','component'=>$relative,'count'=>$index,'total'=>count($paths),'unit'=>'files']);
+                $target = CSM_Files::destination($relative, $job['selection']);
+                if (isset($new[$relative])) {
+                    if (!is_file($target) || !hash_equals($new[$relative]['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('Installed file checksum failed: '.$relative); }
+                } elseif (file_exists($target) || is_link($target)) { throw new RuntimeException('Obsolete file remains after replacement: '.$relative); }
+                $state['cursor'] = $index + 1;
+                if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
+            }
+            $state = ['phase'=>'tables','cursor'=>0];
+        }
+        foreach ($job['database'] as $index=>$table) {
+            if ($index < $state['cursor']) { continue; }
+            CSM_Support::check_cancel();
+            CSM_Progress::update(['phase'=>'Verifying installed table','component'=>$table['target'],'count'=>$index,'total'=>count($job['database']),'unit'=>'tables']);
+            if (!CSM_Database::table_exists($table['target']) || CSM_Database::table_exists($table['stage']) || (!empty($table['existed']) && !CSM_Database::table_exists($table['backup']))) { throw new RuntimeException('Table replacement verification failed: '.$table['target']); }
+            $state['cursor'] = $index + 1;
+            if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
+        }
+        CSM_Progress::update(['phase'=>'Checking destination state','component'=>'','count'=>0,'total'=>null,'unit'=>''], true);
+        if (isset($job['active_plugins_before'])) {
+            $expected = array_values(array_diff($job['source_active_plugins'], $job['activation_missing'] ?? []));
+            $own = plugin_basename(CSM_FILE); if (!in_array($own,$expected,true)) { $expected[] = $own; }
+            if (CSM_Activation::current() !== $expected) { throw new RuntimeException('Plugin activation changed during replacement verification.'); }
+        }
+        $job['verification'] = ['verified'=>true,'files'=>count($paths),'tables'=>count($job['database'])];
+        return true;
+    }
+
+    private static function finish_apply(array &$job, array $authentication): array {
+        if (empty($job['activation_applied'])) { CSM_Activation::apply($job); $job['activation_applied']=true; CSM_Jobs::save($job); }
+        if (!self::verify_installed_step($job)) { return self::summary($job) + ['continue'=>true] + $authentication; }
+        $job['status'] = 'applied'; $job['applied'] = time(); CSM_Jobs::save($job);
         if (function_exists('opcache_reset')) { opcache_reset(); }
         self::end_maintenance($job['id']);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
-        unset($job['apply_work'],$job['file_plan']); CSM_Jobs::save($job);
+        unset($job['apply_work'],$job['file_plan'],$job['verification_work']); CSM_Jobs::save($job);
         CSM_Progress::finish('Transfer complete');
         $result = array_merge(self::summary($job), $authentication);
         CSM_Backups::retain($job);
@@ -810,7 +866,7 @@ final class CSM_Plugin {
         wp_enqueue_script('trickle-request', plugins_url('assets/request.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/request.js'), true);
         wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-request', 'trickle-progress'] : ['trickle-request'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
         if ($script === 'admin') { wp_enqueue_script('trickle-tabs', plugins_url('assets/admin-tabs.js', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin-tabs.js'), true); }
-        wp_localize_script('trickle', 'CSM', ['ajax' => admin_url('admin-ajax.php'), 'nonce' => wp_create_nonce('csm_admin'), 'state' => CSM_Controller::state(), 'local' => ['url'=>site_url(), 'name'=>get_bloginfo('name'), 'icon'=>get_site_icon_url(64), 'wordpress'=>get_bloginfo('version'), 'plugin_version'=>CSM_VERSION, 'php'=>PHP_VERSION]]);
+        wp_localize_script('trickle', 'CSM', ['ajax' => admin_url('admin-ajax.php'), 'nonce' => wp_create_nonce('csm_admin'), 'state' => CSM_Controller::state(), 'local' => ['url'=>site_url(), 'name'=>html_entity_decode(get_bloginfo('name'), ENT_QUOTES | ENT_HTML5, 'UTF-8'), 'icon'=>get_site_icon_url(64), 'wordpress'=>get_bloginfo('version'), 'plugin_version'=>CSM_VERSION, 'php'=>PHP_VERSION]]);
     }
 
     public static function page(): void {

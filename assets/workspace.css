@@ -268,43 +268,38 @@ body.csm-transfer-open { overflow:hidden; }
 }
 
 
-.csm-panels :is(.csm-code-columns,.csm-code-component) { grid-template-columns:minmax(0,1.05fr) minmax(0,1.95fr); gap:20px; padding:13px 10px; }
-.csm-code-component[data-change="upgrade"] { --change-ink:#226432; --change-wash:#e8f4eb; }
-.csm-code-component[data-change="downgrade"] { --change-ink:#8a4b08; --change-wash:#fff0d8; background:#fff8ed; }
-.csm-code-component[data-change="install"] { --change-ink:#165c94; --change-wash:#e7effa; }
-.csm-code-component:is([data-change="same"],[data-change="different"],[data-change="protected"]) { --change-ink:#56636c; --change-wash:#edf0f2; }
-.csm-panels .csm-code-component .csm-component-identity { gap:9px; }
-.csm-panels .csm-code-component .csm-component-identity strong { font-weight:600; }
+.csm-code-scroll { max-width:100%; overflow-x:auto; scrollbar-color:#a5b4c6 #edf1f6; }
+.csm-code-scroll:focus-visible { outline:2px solid #2271b1; outline-offset:-2px; }
+.csm-code-table { min-width:680px; }
+.csm-panels :is(.csm-code-columns,.csm-code-component) { grid-template-columns:minmax(215px,1.1fr) minmax(420px,1.9fr); gap:14px; padding:5px 8px; align-items:center; min-height:32px; }
+.csm-panels .csm-code-columns { min-height:32px; font-size:11px; }
+.csm-code-component { --change-ink:#56636c; --change-background:transparent; }
+.csm-code-component[data-change="upgrade"] { --change-ink:#226432; --change-background:#edf7ef; }
+.csm-code-component[data-change="downgrade"] { --change-ink:#a12622; --change-background:#fff0ef; }
+.csm-panels .csm-code-component,.csm-panels .csm-code-component:has(input:checked) { background:var(--change-background); }
+.csm-panels .csm-code-component .csm-component-identity { grid-column:1; gap:7px; min-width:0; }
+.csm-panels .csm-code-component input { margin:0; }
+.csm-panels .csm-code-component .csm-identity-icon { width:18px; height:18px; flex:0 0 18px; }
+.csm-panels .csm-code-component .csm-identity-icon svg { width:16px; height:16px; }
+.csm-panels .csm-code-component .csm-component-identity strong { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:20px; }
 .csm-panels .csm-code-component[data-source-active="false"] .csm-component-identity strong { font-weight:400; color:#647184; }
-.csm-version-change { display:grid; grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr) auto; align-items:start; gap:10px; }
-.csm-version-endpoint { display:flex; flex-direction:column; align-items:flex-start; gap:5px; min-width:0; }
-.csm-panels .csm-version-endpoint b { font-size:14px; font-weight:600; }
-.csm-version-arrow { margin-top:2px; width:18px; height:18px; color:var(--change-ink); }
-.csm-version-outcome { display:inline-flex; align-items:center; justify-content:center; max-width:96px; padding:5px 8px; border-radius:4px; background:var(--change-wash); color:var(--change-ink); font-size:11px; font-weight:600; line-height:1.4; text-align:center; }
-.csm-panels .csm-version-change .csm-activation { display:inline-flex; width:fit-content; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:600; line-height:1.5; }
-.csm-activation.is-active { background:#e7effa; color:#165c94; }
-.csm-activation.is-inactive { background:#edf0f2; color:#56636c; }
-.csm-code-component .csm-version-endpoint:first-child b { color:#56636c; }
-.csm-code-component:is([data-change="upgrade"],[data-change="downgrade"],[data-change="install"]) .csm-version-endpoint:nth-child(3) b { color:var(--change-ink); }
-.csm-version-comparison .csm-update { display:inline-block; margin:8px 8px 0 0; background:none; padding:0; color:#674700; font-size:10px; }
-@media(max-width:1100px) {
-    .csm-panels :is(.csm-code-columns,.csm-code-component) { grid-template-columns:minmax(0,1fr) minmax(0,1.6fr); gap:15px; }
-    .csm-version-change { grid-template-columns:minmax(0,1fr) 16px minmax(0,1fr); gap:7px; }
-    .csm-version-outcome { grid-column:1/4; justify-self:start; max-width:none; }
-}
-@media(max-width:782px) {
-    .csm-panels .csm-code-columns { display:block; }
-    .csm-code-columns > span { display:none; }
-    .csm-panels .csm-code-component { grid-template-columns:minmax(0,1fr); gap:13px; padding:16px 6px; }
-    .csm-panels .csm-code-component > .csm-version-comparison { grid-column:1; padding-left:27px; }
-    .csm-version-change { grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr); }
-    .csm-version-endpoint::before { display:block; font-size:10px; font-weight:400; color:#56636c; }
-    .csm-version-endpoint:first-child::before { content:"Installed"; }
-    .csm-version-endpoint:nth-child(3)::before { content:"Incoming"; }
-}
-
-.csm-panels .csm-code-component[data-change="upgrade"] { background:#f1f8f3; }
-.csm-panels .csm-code-component[data-change="downgrade"] { background:#fff8ed; }
+.csm-version-change,.csm-version-headings { display:grid; grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr); align-items:center; gap:8px; }
+.csm-panels .csm-code-columns > .csm-version-headings { display:grid; }
+.csm-panels .csm-code-component > .csm-version-comparison { padding-left:0; }
+.csm-version-headings > :last-child { grid-column:3; }
+.csm-version-endpoint { display:flex; flex-direction:row; align-items:center; gap:6px; white-space:nowrap; min-width:0; line-height:20px; }
+.csm-panels .csm-version-endpoint b { font-size:12px; font-weight:500; flex-shrink:0; }
+.csm-version-indicator { display:flex; align-items:center; justify-content:center; color:var(--change-ink); }
+.csm-version-indicator svg { width:17px; height:17px; }
+.csm-panels .csm-version-endpoint .csm-activation { display:inline-flex; align-items:center; width:12px; height:12px; padding:0; flex:0 0 12px; background:none; }
+.csm-activation svg { width:12px; height:12px; }
+.csm-activation.is-active { color:#2271b1; }
+.csm-activation.is-inactive { color:#647184; }
+.csm-panels .csm-version-endpoint .csm-component-size { margin:0; font-size:10px; color:#647184; white-space:nowrap; }
+.csm-code-component:is([data-change="upgrade"],[data-change="downgrade"]) .csm-version-endpoint:last-child b { color:var(--change-ink); font-weight:600; }
+.csm-panels .csm-version-endpoint .csm-update { display:inline-flex; align-items:center; gap:2px; margin:0; padding:0; background:none; color:#674700; font-size:10px; white-space:nowrap; }
+.csm-update-arrow { width:12px; height:12px; }
+@media(max-width:782px) { .csm-panels .csm-code-component { min-height:36px; } }
 
 .csm-dialog-actions .csm-completion { display:flex; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; margin:0; padding:0; border:0; background:transparent; }
 .csm-dialog-actions .csm-completion > .button { margin:0; }
