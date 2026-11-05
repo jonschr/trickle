@@ -6,7 +6,7 @@
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MiB` : `${(n / 1073741824).toFixed(1)} GiB`;
     const transferMeter = new CSMTransferProgress($('transfer-meter'));
-    let transferView = false;
+    let transferView = false, diagnosticRoute = null;
     const actionHome = $('stage').parentElement;
     const tableSort = {key:'source_bytes', descending:true};
     const componentKinds = ['tables', 'plugins', 'themes', 'media'];
@@ -93,6 +93,35 @@
         } catch (error) { $('log-status').textContent = `Could not load diagnostics: ${error.message}`; }
         finally { loadingLogs = false; $('refresh-logs').disabled = false; }
     }
+    function diagnosticDetails() {
+        const route = session || diagnosticRoute || transferMeter.timeline || {};
+        const remote = sites?.remote || {};
+        return {transfer_id:route.id ?? transferMeter.timeline?.id ?? '', direction:route.direction || direction(),
+            status:summary?.status || route.status || transferMeter.phase, source:route.source || (sites ? source()?.url : '') || '',
+            destination:route.destination || (sites ? destination()?.url : '') || '', transport:session?.selection?.transport || $('transport').value,
+            phase:transferMeter.detail?.phase || transferMeter.phase,
+            elapsed_seconds:transferMeter.started ? Math.max(0, Math.round(((transferMeter.frozen || Date.now())-transferMeter.started)/1000)) : 0,
+            error:$('error').hidden ? '' : ($('error').querySelector('p')?.textContent || ''),
+            notice:$('feedback').hidden ? '' : $('feedback').textContent,
+            remote_version:remote.plugin_version || '', remote_wordpress:remote.wordpress || '', remote_php:remote.php || ''};
+    }
+    async function copyDiagnostics() {
+        const button = $('copy-diagnostics'), output = $('diagnostic-output');
+        button.disabled = true; button.textContent = 'Copying…'; output.hidden = true;
+        const details = diagnosticDetails();
+        const report = api('diagnostics', {details}).catch(() => ({schema_version:1, transfer_id:details.transfer_id,
+            direction:details.direction, status:details.status, diagnostics_unavailable:true}));
+        const text = report.then(data => JSON.stringify(data, null, 2));
+        try {
+            if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+                await navigator.clipboard.write([new ClipboardItem({'text/plain':text.then(value => new Blob([value], {type:'text/plain'}))})]);
+            } else { await navigator.clipboard.writeText(await text); }
+            button.textContent = (await report).diagnostics_unavailable ? 'Partial diagnostics copied' : 'Diagnostics copied';
+        } catch (_) {
+            output.value = await text; output.hidden = false; output.focus(); output.select();
+            button.textContent = 'Select diagnostics';
+        } finally { button.disabled = false; }
+    }
     let progressStamp = '', progressChangedAt = Date.now();
     function renderActivity(detail) {
         transferMeter.update(detail);
@@ -165,7 +194,7 @@
         busy = true; $('error').hidden = true;
         $('transfer-setup').setAttribute('aria-busy', 'true');
         feedback('');
-        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-discard','csm-close-transfer','csm-close-connection'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
+        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-discard','csm-close-transfer','csm-close-connection','csm-copy-diagnostics','csm-diagnostic-output'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
@@ -664,6 +693,7 @@
         renderPreview(); updateSetup();
     }
     async function finishTransfer(result, route) {
+        diagnosticRoute = {...route, status:result.status};
         $('error').hidden = true;
         const finished = await api('finish', {id:route.id});
         transferMeter.finish(result.status, result);
@@ -958,6 +988,10 @@
     async function migrate() {
         if(!session)transferMeter.clear?.();
         $('completion').hidden = true;
+        if (!session) {
+            diagnosticRoute = {id:'', direction:direction(), source:source()?.url || '', destination:destination()?.url || '', status:'preparing'};
+            $('copy-diagnostics').textContent = 'Copy diagnostics'; $('diagnostic-output').hidden = true;
+        }
         transferView = true; $('action-title').textContent = destinationAction();
         message('Connecting…'); updateSetup();
         try {
@@ -1053,6 +1087,7 @@
     window.addEventListener('beforeunload', event => {
         if (session || transferView && busy) { event.preventDefault(); event.returnValue = ''; }
     });
+    $('copy-diagnostics').addEventListener('click', copyDiagnostics);
     $('diagnostics').addEventListener('toggle', () => { if ($('diagnostics').open) refreshLogs(); });
     $('refresh-logs').addEventListener('click', refreshLogs);
     $('log-entries').addEventListener('click', event => {

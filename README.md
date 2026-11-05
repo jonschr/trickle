@@ -1,4 +1,4 @@
-# Trickle 0.1.23
+# Trickle 0.1.24
 
 A shared WordPress plugin for selective push/pull migrations, controlled from the local site's **Tools → Trickle** page. Install the same ZIP at both ends.
 
@@ -34,7 +34,7 @@ Self-connections are excluded from the saved-site selector and rejected by the c
 
 ## Installation and use
 
-1. Upload `trickle-0.1.23.zip` through Plugins → Add Plugin on both sites and activate it.
+1. Upload `trickle-0.1.24.zip` through Plugins → Add Plugin on both sites and activate it.
    Activation installs `wp-content/mu-plugins/0-trickle-loader.php`. That directory must be writable. The loader isolates signed streaming/recovery requests and authenticated Trickle dashboard requests from ordinary plugins and theme code, so a broken active plugin need not block rollback. Isolation is limited to the actual WordPress entry scripts; unrelated login and admin pages retain their plugins. Dashboard AJAX isolation also requires a valid Trickle nonce. Inventory requests load ordinary plugins so their vendor update filters still work. A failed inventory request does not hide an existing transfer's recovery controls. Other must-use plugins and host firewalls still run. The loader is dormant when Trickle is deactivated. The first WordPress request after a version update refreshes an outdated loader when file modifications are allowed. The dashboard also checks it; CLI-only installations can reactivate Trickle to refresh it immediately. File apply remains blocked until the expected loader is installed.
 2. Open Tools → Trickle on the remote site. Authenticated remote reads and incoming writes are both allowed by default on a fresh installation. Either can be disabled under Connection & access; saved permission choices are preserved.
 3. Use **Copy connection code** at the top of the remote Trickle page, then open **Migrate → Add source** locally and paste both lines into the connection modal. A complete code connects automatically: the visible site URL followed by its private key. Check the URL before pasting. Permission checkboxes save automatically. Treat the code like a password; do not put the key in a URL or support ticket. Older base64 connection codes are still accepted.
@@ -198,6 +198,8 @@ Plugins/themes use cached SHA-256 hashes with metadata invalidation. Matching fo
 Once all streams are staged, review counts and individual additions/replacements/deletions, with deletions first and pages of 200. Preview data and checkpoints stay private. Preflight checks destination writability, staged checksums, plugin/theme PHP and WordPress headers, PHP syntax, and free private backup storage. PHP failures show an onscreen notice with the plugin/theme name, destination PHP version, failing file and parser line; update or deselect that component before retrying. It hashes destination code in the review and rejects changes made afterward rather than silently overwriting newer development. This cannot eliminate a concurrent write racing the actual apply; pause development and live writes while applying.
 
 Normal frontend traffic receives a temporary maintenance response during apply. Completion verifies the installed result directly: changed-file SHA-256 hashes, removal of obsolete files, atomic table replacement and saved plugin activation. Verification resumes in bounded steps and can be cancelled. A failed verification triggers rollback using the destination backup. No outbound request to the destination’s own public URL is used as a completion gate, so DNS, local certificates, authentication walls and firewall loopback rules cannot turn a correct replacement into a failed migration. PHP syntax and declared plugin/theme compatibility are checked before replacement. These are migration-integrity checks, not a fresh application bootstrap or a functional test of pages, forms, integrations or checkout; logic/runtime incompatibilities still require testing and may need a manual backup restore.
+
+The transfer dialog keeps **Copy diagnostics** available during and after success, warnings, failure or recovery. It copies redacted transfer context, versions, progress and every matching entry still retained in the controller log files. Remote failures recorded by the controller are included; separate remote server logs are not fetched. If the backend is unavailable, the copy is explicitly marked partial. If clipboard access is blocked, selectable text appears in the dialog. Connection codes, credentials, custom replacement values and database content are excluded.
 
 ## Connection key
 

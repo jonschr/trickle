@@ -45,7 +45,7 @@
 .csm-component-total { grid-column:2; grid-row:1; align-self:center; font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; color:#46566b; }
 .csm-panels .csm-panel-body { grid-column:2; grid-row:1/7; min-width:0; background:#fff; border-left:1px solid var(--csm-line); padding:23px 24px 28px; }
 .csm-setup-actions { grid-column:1; grid-row:5; padding:18px 16px 0; }
-.csm-setup-actions #csm-stage { width:100%; min-height:44px; padding:8px 12px; }
+.csm-setup-actions #csm-stage { width:100%; min-height:44px; padding:8px 12px; line-height:1.4; }
 .csm-summary-size-note { font-size:11px; line-height:1.6; margin:12px 0 0; color:var(--csm-muted); }
 .csm-panels .csm-panel:not([data-current]) > .csm-panel-body { display:none; }
 .csm-panels .csm-component-title { font-size:21px; line-height:1.4; font-weight:600; letter-spacing:-.02em; margin:0 0 13px; }
@@ -303,3 +303,7 @@ body.csm-transfer-open { overflow:hidden; }
 
 .csm-dialog-actions .csm-completion { display:flex; flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px; margin:0; padding:0; border:0; background:transparent; }
 .csm-dialog-actions .csm-completion > .button { margin:0; }
+
+.csm-dialog-actions { flex-wrap:wrap; }
+#csm-copy-diagnostics { margin-right:auto; }
+#csm-diagnostic-output { box-sizing:border-box; width:100%; font-family:monospace; }

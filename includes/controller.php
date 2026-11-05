@@ -213,9 +213,9 @@ final class CSM_Controller {
         CSM_Plugin::supported(); CSM_Support::long_request();
         if (in_array($action, ['commit', 'rollback', 'recover', 'recover_destination', 'restore_backup'], true)) { ignore_user_abort(true); }
         if (in_array($action,['recover','rollback','restore_backup'],true) && !empty($data['id'])) { CSM_Support::work($data['id'],false); }
-        $locked = !in_array($action, ['state', 'recent', 'manifest', 'media', 'progress', 'backup_progress', 'backups', 'status', 'logs', 'cancel', 'retry_state','estimates'], true);
+        $locked = !in_array($action, ['state', 'recent', 'manifest', 'media', 'progress', 'backup_progress', 'backups', 'status', 'logs', 'diagnostics', 'cancel', 'retry_state','estimates'], true);
         if ($locked) { CSM_Support::lock(); }
-        $record = !in_array($action, ['state', 'recent', 'media', 'progress', 'status', 'logs'], true);
+        $record = !in_array($action, ['state', 'recent', 'media', 'progress', 'status', 'logs', 'diagnostics'], true);
         $started = microtime(true);
         $context = ['operation' => $action, 'transfer_id' => $data['id'] ?? null, 'direction' => $data['direction'] ?? null, 'stream_kind'=>$data['kind'] ?? null];
         if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation started', $context); }
@@ -533,6 +533,7 @@ final class CSM_Controller {
             CSM_Support::atomic_json($path, $state);
             return ['stopped'=>$stalled,'failures'=>$state['failures']];
         }
+        if ($action === 'diagnostics') { return CSM_Log::report($data['details'] ?? []); }
         if ($action === 'logs') { return ['entries' => CSM_Log::entries()]; }
         if ($action === 'state') { return self::state(); }
         if ($action === 'recent') { return self::recent($data['id'] ?? ''); }

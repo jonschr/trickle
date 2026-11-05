@@ -2,7 +2,7 @@
 (() => {
     'use strict';
     async function request(op, data = {}, controller = new AbortController()) {
-        const timeout = ['progress','logs','backup_progress'].includes(op) ? 8000 : ['cancel','recover'].includes(op) ? 20000 : 150000;
+        const timeout = ['progress','logs','diagnostics','backup_progress'].includes(op) ? 8000 : ['cancel','recover'].includes(op) ? 20000 : 150000;
         let timedOut = false;
         const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
         let response, text;

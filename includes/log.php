@@ -46,15 +46,38 @@ final class CSM_Log {
         } catch (Throwable $e) { /* Diagnostics must never block a transfer or its recovery. */ }
     }
 
-    public static function entries(): array {
+    public static function report(array $details): array {
+        $id = $details['transfer_id'] ?? '';
+        if (!is_string($id) || ($id !== '' && !preg_match('/^[a-f0-9]{32}$/D', $id))) { throw new RuntimeException('Invalid diagnostic transfer ID.'); }
+        $fields = ['transfer_id','direction','status','source','destination','transport','phase','elapsed_seconds','error','notice','remote_version','remote_wordpress','remote_php'];
+        $context = array_intersect_key($details, array_flip($fields));
+        foreach ($context as $key=>$value) { $context[$key] = is_string($value) ? self::clean($value) : (is_scalar($value) || $value === null ? $value : '[omitted]'); }
+        $clean = static function ($value) use (&$clean) {
+            if (is_string($value)) { return self::clean($value); }
+            if (!is_array($value)) { return $value; }
+            $result = [];
+            foreach ($value as $key=>$item) {
+                if (is_string($key) && preg_match('/key|password|secret|token|signature|nonce|cookie|authorization|pairing/i', $key)) { continue; }
+                $result[$key] = $clean($item);
+            }
+            return $result;
+        };
+        return ['schema_version'=>1,'copied_at'=>gmdate('c'),'site'=>self::clean(site_url()),
+            'environment'=>['trickle'=>CSM_VERSION,'wordpress'=>get_bloginfo('version'),'php'=>PHP_VERSION],
+            'transfer'=>$context,'progress'=>$clean($id !== '' ? CSM_Progress::read($id) : []),
+            'entries'=>$clean(self::entries($id ?: null)),
+            'log_scope'=>'Retained controller logs, including recorded remote responses. Remote server logs are not included.'];
+    }
+
+    public static function entries(?string $transfer_id = null): array {
         $dir = CSM_Support::private_dir(); $entries = [];
         foreach (['diagnostics.log.1', 'diagnostics.log'] as $name) {
             if (!is_file($dir . '/' . $name)) { continue; }
             foreach (file($dir . '/' . $name, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
                 $entry = json_decode($line, true);
-                if (is_array($entry)) { $entries[] = $entry; }
+                if (is_array($entry) && ($transfer_id === null || ($entry['context']['transfer_id'] ?? '') === $transfer_id)) { $entries[] = $entry; }
             }
         }
-        return array_slice($entries, -200);
+        return $transfer_id === null ? array_slice($entries, -200) : $entries;
     }
 }

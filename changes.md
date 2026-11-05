@@ -1,5 +1,12 @@
 # Changes
 
+## 0.1.24 — 2026-11-05
+
+- Add one-click transfer diagnostics inside the lightbox for all outcomes, with redacted retained logs and a selectable-text clipboard fallback.
+- Tighten wrapped transfer-button labels while retaining comfortable padding and the minimum button height.
+
+Validation: all 18 JavaScript suites, diagnostic-report and AJAX guard PHP checks, runtime PHP syntax and offline security checks passed. Desktop/mobile renders covered successful, failed and warning outcomes plus wrapped enabled/disabled button labels. Native controller diagnostics remained readable while the mutation lock was held. No live migrations were run for this release.
+
 ## 0.1.23 — 2026-11-05
 
 - Compact plugin/theme comparisons into single-line rows; show green/up upgrades, red/down downgrades and neutral matches while retaining versions, activation, sizes and available updates.
