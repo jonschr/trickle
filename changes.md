@@ -1,5 +1,16 @@
 # Changes
 
+## 0.1.25 — 2026-11-10
+
+- Reuse stable verification receipts across staging previews, while rehashing changed/recent files and retaining installed-byte verification.
+- Calculate source checksums while packaging where possible; preserve EOF digests and safe mid-file resume fallback.
+- Batch file records into bounded compressed frames, flushing complete acknowledged output at checkpoints.
+- Resume source planning and obsolete-file walks from stored directory cursors; retain Git and environment-file exclusions.
+- Back up only files in the replacement/removal plan; leave checksum-matched files untouched during backup and restore.
+- Show affected backup components while preserving older full-component snapshot restores.
+
+Validation: all 18 JavaScript suites, six isolated PHP suites, runtime PHP syntax and offline security checks passed. Disposable Cove peers passed a file/database pull, corruption rollback, cancellation recovery, a streaming push crossing the 16 MiB upload window, and repeat streaming/chunked pushes that skipped matching files. Destination hashes matched; unchanged themes were absent from new backups. Release testing used synthetic fixtures and disposable local sites.
+
 ## 0.1.24 — 2026-11-05
 
 - Add one-click transfer diagnostics inside the lightbox for all outcomes, with redacted retained logs and a selectable-text clipboard fallback.

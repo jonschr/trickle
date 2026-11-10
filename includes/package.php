@@ -30,19 +30,30 @@ final class CSM_Package {
                 if ($buffer!=='') { self::put($fp,$buffer); }
                 $done = true;
             } else {
+                $buffer=''; $component=null;
+                $flush = static function (bool $all) use ($fp,&$buffer,&$component,&$state): void {
+                    while (strlen($buffer)>=262144 || ($all && $buffer!=='')) {
+                        $part=substr($buffer,0,262144); $buffer=substr($buffer,strlen($part)); $start=ftell($fp);
+                        self::put($fp,$part);
+                        if (!empty($state['range_tracking']) && in_array($component,['plugins','themes','media'],true)) {
+                            $state['ranges'][$component] ??= ['start'=>$start,'end'=>$start];
+                            $state['ranges'][$component]['end']=ftell($fp);
+                        }
+                    }
+                };
                 $generator = CSM_Files::stream_step($selection, $state['cursor'], $state['components']);
                 foreach ($generator as $bytes) {
-                    $start = ftell($fp);
-                    self::put($fp, $bytes);
-                    $component=$state['cursor']['component'] ?? null;
-                    if (!empty($state['range_tracking']) && in_array($component,['plugins','themes','media'],true)) {
-                        $state['ranges'][$component] ??= ['start'=>$start,'end'=>$start];
-                        $state['ranges'][$component]['end']=ftell($fp);
+                    $next=$state['cursor']['component'] ?? null;
+                    if ($next!==$component) { $flush(true); $component=$next; }
+                    $buffer.=$bytes; $flush(false);
+                    // A checkpoint only acknowledges generator units whose entire output is durable.
+                    if (CSM_Support::due()) {
+                        $flush(true); fflush($fp); $state['offset']=ftell($fp);
+                        CSM_Support::atomic_json($checkpoint,$state);
+                        return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null];
                     }
-                    // Generator cursor changes correspond to this exact emitted unit.
-                    fflush($fp); $state['offset'] = ftell($fp);
-                    if (CSM_Support::due()) { CSM_Support::atomic_json($checkpoint, $state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
                 }
+                $flush(true);
                 $done = !empty($state['cursor']['done']);
                 if (!$done) { fflush($fp); $state['offset']=ftell($fp); CSM_Support::atomic_json($checkpoint,$state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
             }

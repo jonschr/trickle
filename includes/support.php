@@ -66,13 +66,27 @@ final class CSM_Support {
         $seconds=max(1,min(15,(int)apply_filters('csm_hash_seconds',15))); $deadline=hrtime(true)/1e9+$seconds; $hash=hash_init('sha256'); $read=0;
         try {
             while (!feof($fp)) {
-                self::check_source_budget();
+                self::check_cancel(); self::check_source_budget();
                 if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('Checksum exceeded the '.$seconds.'-second limit: '.basename($path)); }
                 $bytes=fread($fp,262144); if ($bytes===false || ($bytes==='' && !feof($fp))) { throw new RuntimeException('Checksum read failed: '.basename($path)); }
                 hash_update($hash,$bytes); $read+=strlen($bytes); if ($progress) { $progress($read); }
             }
             return hash_final($hash);
         } finally { fclose($fp); }
+    }
+
+    public static function verify_file(string $path, string $expected, ?array &$receipt): bool {
+        clearstatcache(true, $path); $stat = @stat($path);
+        if (!$stat || !is_file($path)) { return false; }
+        $stamp = array_intersect_key($stat, array_flip(['size','mtime','ctime','ino','dev','mode']));
+        if (($receipt['stamp'] ?? null) === $stamp && ($receipt['hash'] ?? null) === $expected) { return true; }
+        $stable = max($stat['mtime'], $stat['ctime']) < time() - 2;
+        $actual = self::hash_file($path);
+        clearstatcache(true, $path); $after = @stat($path);
+        if (!$after || $stamp !== array_intersect_key($after, array_flip(array_keys($stamp))) || !hash_equals($expected, $actual)) { return false; }
+        // Only reuse a check made after timestamps settled; same-second writes must be rehashed.
+        $receipt = $stable ? ['stamp'=>$stamp,'hash'=>$actual] : null;
+        return true;
     }
 
     public static function gzip(Generator $input): Generator {

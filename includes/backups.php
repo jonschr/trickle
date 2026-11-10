@@ -28,8 +28,8 @@ final class CSM_Backups {
             try { self::authorize($job); } catch (Throwable $e) { continue; }
             if ($job['status'] !== 'applied') { continue; }
             $items[] = ['id' => $id, 'created' => $job['applied'], 'source' => $job['source'] ?? '',
-                'tables' => array_column($job['database'], 'target'), 'plugins' => array_values(array_filter($job['selection']['plugins'], static fn($name) => !CSM_Files::skipped('plugins/' . $name, $job['selection']))), 'themes' => array_values(array_filter($job['selection']['themes'], static fn($name) => !CSM_Files::skipped('themes/' . $name, $job['selection']))),
-                'media' => ($job['selection']['media'] ?? 'none') !== 'none', 'temporary' => !isset($job['backup_dir']) || str_starts_with($job['backup_dir'], CSM_Support::private_dir() . '/'), 'plugin_version' => $job['plugin_version'] ?? ''];
+                'tables' => array_column($job['database'], 'target'), 'plugins' => $job['backup_components']['plugins'] ?? array_values(array_filter($job['selection']['plugins'], static fn($name) => !CSM_Files::skipped('plugins/' . $name, $job['selection']))), 'themes' => $job['backup_components']['themes'] ?? array_values(array_filter($job['selection']['themes'], static fn($name) => !CSM_Files::skipped('themes/' . $name, $job['selection']))),
+                'media' => $job['backup_components']['media'] ?? (($job['selection']['media'] ?? 'none') !== 'none'), 'temporary' => !isset($job['backup_dir']) || str_starts_with($job['backup_dir'], CSM_Support::private_dir() . '/'), 'plugin_version' => $job['plugin_version'] ?? ''];
         }
         $restore = get_option('_csm_backup_restore');
         if ($restore) { self::authorize(CSM_Jobs::get($restore['backup_id'])); }

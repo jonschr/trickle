@@ -215,6 +215,59 @@ final class CSM_Files {
         foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname(), $relative . '/' . $file->getFilename(), $selection,$deadline); }
     }
 
+    public static function walk(array &$cursor, array $roots, array $selection): Generator {
+        $cursor += ['pending'=>array_reverse($roots), 'active'=>null];
+        while ($cursor['pending'] || $cursor['active']) {
+            if (CSM_Support::due()) { return; }
+            CSM_Support::check_cancel(); CSM_Support::check_source_budget();
+            if ($cursor['active']) {
+                $active = &$cursor['active'];
+                if ($active['index'] >= count($active['names'])) { $cursor['active'] = null; continue; }
+                $name = $active['names'][$active['index']++];
+                $path = $active['path'].'/'.$name; $relative = $active['relative'].'/'.$name;
+                unset($active);
+            } else { [$path,$relative] = array_pop($cursor['pending']); }
+            if (self::skipped($relative,$selection)) { continue; }
+            if (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: '.basename($path)); }
+            if (is_file($path)) { yield [$relative,$path]; continue; }
+            if (!is_dir($path)) { continue; }
+            if (!empty($selection['protect_source_git']) && (file_exists($path.'/.git') || is_link($path.'/.git')) && !in_array($relative,$selection['git_overrides'] ?? [],true)) { continue; }
+            // Queue subdirectories without restarting the current directory after a checkpoint.
+            if ($cursor['active']) { $cursor['pending'][]=[$path,$relative]; continue; }
+            $names = scandir($path);
+            if ($names === false) { throw new RuntimeException('Cannot list directory: '.$relative); }
+            $cursor['active']=['path'=>$path,'relative'=>$relative,'names'=>array_values(array_diff($names,['.','..'])),'index'=>0];
+        }
+    }
+
+    private static function paths_step(array $selection, array &$cursor): Generator {
+        $roots=[]; $cursor['walk'] ??= [];
+        foreach (['plugins','themes'] as $kind) { foreach ($selection[$kind] as $id) {
+            if (self::skipped($kind.'/'.$id,$selection)) { continue; }
+            $path=self::root($kind,$id).'/'.self::safe_relative($id);
+            if (!file_exists($path)) { throw new RuntimeException('Selected source component is missing: '.$id); }
+            $roots[]=[$path,$kind.'/'.$id];
+        } }
+        $ordinary=in_array($selection['media'],['all','changed'],true);
+        if ($ordinary) { $roots[]=[self::root('uploads'),'uploads']; }
+        foreach (self::walk($cursor['walk'],$roots,$selection) as [$relative,$path]) {
+            if (str_starts_with($relative,'uploads/')) {
+                if ($selection['media']==='changed' && filemtime($path)<$selection['since']) { continue; }
+                if (preg_match('#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups|\.git)(/|$)#i',$relative)) { continue; }
+                try { self::destination($relative,$selection,!empty($selection['protect_source_git'])); } catch (RuntimeException $error) { continue; }
+            }
+            yield [$relative,$path];
+        }
+        if ($cursor['walk']['pending'] || $cursor['walk']['active']) { return; }
+        if (!$ordinary && $selection['media']!=='none') {
+            $media=$selection; $media['plugins']=[]; $media['themes']=[];
+            $index=0; foreach (self::paths($media) as $entry) {
+                if ($index++ < ($cursor['media_index'] ?? 0)) { continue; }
+                $cursor['media_index']=$index; yield $entry;
+            }
+        }
+    }
+
     public static function paths(array $selection): Generator {
         foreach (['plugins', 'themes'] as $kind) {
             foreach ($selection[$kind] as $id) {
@@ -307,13 +360,14 @@ final class CSM_Files {
         $cursor += ['header'=>false,'index'=>0,'offset'=>0,'hash'=>'','done'=>false];
         if ($cursor['done']) { return; }
         if (empty($cursor['planned'])) {
-            $cursor['plan'] ??= [];
-            foreach (self::paths($selection) as $entry) {
+            $cursor['plan'] ??= []; $cursor['planning'] ??= [];
+            foreach (self::paths_step($selection,$cursor['planning']) as $entry) {
                 if (isset($cursor['plan'][$entry[0]])) { continue; }
                 $stat=stat($entry[1]); $cursor['plan'][$entry[0]]=[$entry[1],[$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']],$entry[2] ?? null];
                 if (CSM_Support::due()) { return; }
             }
-            $cursor['planned']=true; $cursor['plan']=array_map(static fn($relative,$entry)=>[$relative,...$entry],array_keys($cursor['plan']),array_values($cursor['plan']));
+            if ($cursor['planning']['walk']['pending'] || $cursor['planning']['walk']['active']) { return; }
+            unset($cursor['planning']); $cursor['planned']=true; $cursor['plan']=array_map(static fn($relative,$entry)=>[$relative,...$entry],array_keys($cursor['plan']),array_values($cursor['plan']));
         }
         $cursor['component'] = null;
         if (!$cursor['header']) {
@@ -321,10 +375,12 @@ final class CSM_Files {
             $cursor['started'] = time(); $cursor['header'] = true;
             yield CSM_Support::json(['type'=>'header','version'=>2,'kind'=>'files','started'=>$cursor['started'],'theme_parents'=>$parents,'active_plugins'=>CSM_Activation::current(),'trickle_plugin'=>plugin_basename(CSM_FILE)]);
         }
-        $same = CSM_Components::unchanged($selection); $index = 0;
-        foreach ($cursor['plan'] as [$relative,$path,$planned_stamp,$expected_hash]) {
+        $same = CSM_Components::unchanged($selection);
+        for ($index=$cursor['index']; $index<count($cursor['plan']); $index++) {
+            [$relative,$path,$planned_stamp,$expected_hash] = $cursor['plan'][$index];
+
             CSM_Support::check_cancel();
-            if ($index++ < $cursor['index']) { continue; }
+
             $cursor['component'] = str_starts_with($relative,'uploads/') ? 'media' : explode('/',$relative)[0];
             clearstatcache(true,$path); $stat = stat($path);
             if ([$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']]!==$planned_stamp) { throw new RuntimeException('Source file changed after planning: '.$relative); }
@@ -342,21 +398,26 @@ final class CSM_Files {
             }
             if ($cursor['stamp'] !== [$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']]) { throw new RuntimeException('Source file changed during packaging: '.$relative); }
             $fp = fopen($path,'rb'); $offset = max(0,$cursor['offset']);
+            $filehash = $offset === 0 ? hash_init('sha256') : null;
             if (!$fp || fseek($fp,$offset)!==0) { throw new RuntimeException('Cannot resume source file: '.$relative); }
             try {
                 while ($offset < $stat['size']) {
+                    CSM_Support::check_cancel();
                     $bytes = fread($fp,min(262144,$stat['size']-$offset));
                     if ($bytes === false || $bytes === '') { throw new RuntimeException('Source file is truncated: '.$relative); }
                     $offset += strlen($bytes); $cursor['offset'] = $offset;
+                    if ($filehash !== null) { hash_update($filehash,$bytes); }
                     $component = str_starts_with($relative,'uploads/')?'media':explode('/',$relative)[0];
                     $sizes[$component] += strlen($bytes);
-                    CSM_Progress::update(['phase'=>'Packaging file','component'=>$relative,'count'=>$index-1,'bytes'=>$offset]);
+                    CSM_Progress::update(['phase'=>'Packaging file','component'=>$relative,'count'=>$index,'bytes'=>$offset]);
+                    if ($filehash !== null && $offset === $stat['size']) { $cursor['digest'] = hash_final($filehash); $filehash = null; }
                     yield $bytes;
                 }
             } finally { fclose($fp); }
             clearstatcache(true,$path); $after = stat($path);
             if ($cursor['stamp'] !== [$after['size'],$after['mtime'],$after['ctime'],$after['ino']]) { throw new RuntimeException('Source file changed during packaging: '.$relative); }
-            $digest = CSM_Support::hash_file($path);
+            $digest = $cursor['digest'] ?? ($filehash !== null ? hash_final($filehash) : ($expected_hash ?? CSM_Support::hash_file($path)));
+            unset($cursor['digest']);
             if ($expected_hash!==null && !hash_equals($expected_hash,$digest)) { throw new RuntimeException('Media changed after comparison: '.$relative); }
             $line = CSM_Support::json(['type'=>'file-end','sha256'=>$digest]);
             $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line); $cursor['index']++; $cursor['offset']=0; yield $line;
@@ -396,8 +457,9 @@ final class CSM_Files {
                 $state['seen'][$record['path']]=true; $parts=explode('/',$record['path']); $state['components'][$parts[0].'/'.$parts[1]]=true;
                 $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($record));
                 if ($type==='file-same') {
-                    if (!is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'],CSM_Support::hash_file($target))) { throw new RuntimeException('Unchanged destination file failed verification: '.$record['path']); }
-                    $job['files'][]=['path'=>$record['path'],'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true];
+                    $receipt=null;
+                    if (!is_string($record['sha256'] ?? null) || !CSM_Support::verify_file($target,$record['sha256'],$receipt)) { throw new RuntimeException('Unchanged destination file failed verification: '.$record['path']); }
+                    $job['files'][]=['path'=>$record['path'],'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true,'verification_receipt'=>$receipt];
                 } else {
                     if (!is_int($record['size'] ?? null) || $record['size']<0) { throw new RuntimeException('Invalid file size.'); }
                     $state['current']=['record'=>$record,'written'=>0,'stage'=>$dir.'/'.count($job['files'])];

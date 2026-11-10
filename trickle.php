@@ -3,7 +3,7 @@
  * Plugin Name: Trickle
  * Plugin URI: https://github.com/jonschr/trickle
  * Description: Selective, locally controlled push/pull migrations using continuous database and file streams.
- * Version: 0.1.24
+ * Version: 0.1.25
  * Update URI: https://github.com/jonschr/trickle
  * Requires at least: 6.4
  * Requires PHP: 8.1
@@ -12,7 +12,7 @@
  */
 defined('ABSPATH') || exit;
 define('CSM_FILE', __FILE__);
-define('CSM_VERSION', '0.1.24');
+define('CSM_VERSION', '0.1.25');
 
 // Match Guest Key's static JSON updater in admin, cron, AJAX, REST and WP-CLI.
 if (!defined('CSM_UPDATE_URL')) {
