@@ -4,11 +4,11 @@ defined('ABSPATH') || exit;
 /** Cached content hashes for repeat plugin and theme transfers. */
 final class CSM_Components {
     private static function cache_path(array $selection): string {
-        return CSM_Support::private_dir() . '/components-' . substr(hash('sha256', CSM_Support::json([$selection['plugins'] ?? [], $selection['themes'] ?? [], $selection['skip_paths'] ?? [], $selection['git_overrides'] ?? []])), 0, 24) . '.json';
+        return CSM_Support::private_dir() . '/components-' . substr(hash('sha256', CSM_Support::json([$selection['plugins'] ?? [], $selection['themes'] ?? [], $selection['skip_paths'] ?? [], $selection['git_overrides'] ?? [], $selection['follow_symlinks'] ?? []])), 0, 24) . '.json';
     }
 
     private static function stamp(string $path): string {
-        clearstatcache(true, $path); $s = lstat($path);
+        clearstatcache(true, $path); $s = stat($path);
         if (!$s || !is_file($path)) { throw new RuntimeException('Component file disappeared during comparison.'); }
         return implode(':', array_map(static fn($key) => $s[$key], ['size', 'mtime', 'ctime', 'ino', 'dev', 'mode']));
     }
@@ -25,11 +25,12 @@ final class CSM_Components {
     }
 
     private static function folder_path(string $kind,string $id,array $selection): string {
-        return CSM_Support::private_dir().'/component-folder-'.hash('sha256',CSM_Support::json([CSM_Files::root($kind,$id),$kind,$id,$selection['skip_paths'] ?? [],$selection['git_overrides'] ?? [],!empty($selection['protect_source_git'])])).'.json';
+        return CSM_Support::private_dir().'/component-folder-'.hash('sha256',CSM_Support::json([CSM_Files::root($kind,$id),$kind,$id,$selection['skip_paths'] ?? [],$selection['git_overrides'] ?? [], $selection['follow_symlinks'] ?? [],!empty($selection['protect_source_git'])])).'.json';
     }
 
     public static function inventory(array $query): array {
         $selection = $query['selection'] ?? []; $selection['media'] = 'none';
+        $source = !empty($query['source']); if (!$source) { unset($selection['follow_symlinks']); }
         $path = self::cache_path($selection);
         if (($query['level'] ?? '') === 'files') {
             $cache = self::read($selection,$query['token'] ?? ''); $offset = $query['offset'] ?? 0;
@@ -49,8 +50,8 @@ final class CSM_Components {
                 if (str_contains($id, '/')) { throw new RuntimeException('Invalid component ID.'); }
                 $root = CSM_Files::root($kind, $id);
                 $folder_path=self::folder_path($kind,$id,$selection); $folder=self::read_cache($folder_path); $component_files=[];
-                foreach (CSM_Files::scan($root . '/' . $id, $kind . '/' . $id, $selection) as $file) {
-                    $relative = $kind . '/' . substr($file, strlen($root) + 1); $stamp = self::stamp($file);
+                foreach (CSM_Files::scan($root . '/' . $id, $kind . '/' . $id, $selection, null, $source) as $file) {
+                    $relative = $kind . '/' . substr($file, strlen($root) + 1); $resolved = $source ? CSM_Files::source_path($file, $relative, $selection) : $file; if ($resolved === null) { continue; } $file = $resolved; $stamp = self::stamp($file);
                     CSM_Progress::update(['phase'=>'Comparing plugin and theme checksums','component'=>$relative,'count'=>count($files),'total'=>null,'unit'=>'files']);
                     $cached = $build[$relative] ?? $folder['files'][$relative] ?? $old['files'][$relative] ?? [];
                     if ((isset($build[$relative]) || (empty($query['verify']) && max(filemtime($file), filectime($file)) < time() - 2)) && ($cached['stamp'] ?? '') === $stamp) { $hash = $cached['hash']; }
@@ -81,7 +82,7 @@ final class CSM_Components {
         $remote = static function($query) use ($peer) { $result=CSM_Transport::request($peer,'component_hashes',$query+['progress_run'=>CSM_Progress::run()],null,null,15); if (!empty($result['continue'])) { throw new CSM_Yield('Remote component checksums checkpointed.'); } return $result; };
         $local = static fn($query) => self::inventory($query);
         $source = $pull ? $remote : $local; $destination = $pull ? $local : $remote;
-        $src = $source(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]); $dst = $destination(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]);
+        $src = $source(['selection' => $selection, 'source' => true, 'verify' => !empty($selection['file_verify'])]); $dst = $destination(['selection' => $selection, 'verify' => !empty($selection['file_verify'])]);
         // Matching component digests let the source reuse its pinned inventory without paging it through the controller.
         if ($src['components'] === $dst['components']) {
             $plan = base64_encode(gzencode(CSM_Support::json(['component_token' => $src['token']]), 3));

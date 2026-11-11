@@ -199,7 +199,7 @@ final class CSM_Support {
     }
 
     public static function remove_tree(string $path): void {
-        if (!file_exists($path)) { return; }
+        if (!file_exists($path) && !is_link($path)) { return; }
         if (is_dir($path) && !is_link($path)) {
             foreach (new FilesystemIterator($path) as $item) { self::remove_tree($item->getPathname()); }
             rmdir($path);

@@ -18,3 +18,6 @@ ctx.selection={file_force:true,plugins_force:false};vm.runInContext(restore,ctx)
 const markup=fs.readFileSync(__dirname+'/../includes/admin.php','utf8');assert(!markup.includes('id="csm-file-force"'));
 for(const kind of ['plugins','themes','media'])assert(markup.includes('id="csm-'+kind+'-force"'));
 console.log('PASS Independent plugin/theme/media force controls, disabled components, legacy recent settings, and removal of global UI.');
+
+ctx.sites={};ctx.source=()=>({plugins:[{id:'custom',follow_symlinks:true},{id:'unselected',follow_symlinks:true}],themes:[]});ctx.document.querySelectorAll=selector=>selector.includes('data-kind="plugins"')?[{value:'custom'}]:[];$('enable-plugins').checked=true;assert.equal(ctx.currentSelection().follow_symlinks.join(','),'plugins/custom');$('enable-plugins').checked=false;assert.equal(ctx.currentSelection().follow_symlinks.length,0);
+console.log('PASS Source approvals are included only for selected, enabled components.');

@@ -18,7 +18,7 @@ c.syncTransferDialog=()=>{};
 $('completion').hidden=true;$('selection-summary').textContent='2 tables';c.updateSetup();assert.equal($('preset').disabled,false);
 c.session={direction:'pull',destination:'https://local.test'};c.busy=true;c.updateSetup();assert.equal($('stage').hidden,true);assert.equal($('preset').disabled,true);assert.equal($('flip-direction').disabled,true,'Direction cannot change during a retained transfer');
 c.busy=false;c.updateSetup();assert.equal($('stage').hidden,false,'An interrupted transfer keeps its resume action');
-assert.equal(c.destinationAction(),'Pull into this site');c.session.direction='push';$('remote-site').value='prod';assert.equal(c.destinationAction(),'Push to Production');
+assert.equal(c.destinationAction(),'Pull site');c.session.direction='push';$('remote-site').value='prod';assert.equal(c.destinationAction(),'Push site');
 console.log('Selection UI checks passed: filters preserve selection, no-match state, locked selection and resume action, explicit destination.');
 
 // Site identities stay in place while direction and source/destination roles change.

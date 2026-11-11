@@ -4,7 +4,7 @@ defined('ABSPATH') || exit;
 final class CSM_Files {
     public static function excluded(string $relative): bool {
         foreach (explode('/', strtolower($relative)) as $part) {
-            if (in_array($part, ['.git', '.gitignore', 'node_modules'], true) || str_starts_with($part, '.env') || preg_match('/\.env($|[._~-])/', $part)) { return true; }
+            if (in_array($part, ['.git', '.gitignore', '.gitattributes', '.gitmodules', '.gitkeep', '.github', '.svn', '.hg', '.bzr', 'node_modules', '.idea', '.vscode', '.ds_store', 'thumbs.db', '.ssh', '.aws', '.gnupg', '.docker', '.kube', '.htpasswd', '.my.cnf', '.git-credentials', 'wp-config.php', '.npmrc', '.pypirc', '.netrc', 'auth.json', 'id_rsa', 'id_ed25519', 'id_dsa', 'id_ecdsa'], true) || str_starts_with($part, '.env') || preg_match('/\.env($|[._~-])/', $part)) { return true; }
         }
         return false;
     }
@@ -21,15 +21,23 @@ final class CSM_Files {
         }
     }
 
-    public static function git_folders(array $selection): array {
+    public static function git_folders(array $selection, bool $source = false): array {
         $result = []; $deadline=hrtime(true)/1e9+45;
-        $scan = static function (string $path, string $relative) use (&$scan, &$result,$deadline): void {
+        $scan = static function (string $path, string $relative, array $ancestors = []) use (&$scan, &$result,$deadline,$selection,$source): void {
             if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('Git folder scan exceeded its 45-second limit. Narrow the selection.'); }
             CSM_Support::check_source_budget();
-            if (self::excluded($relative) || is_link($path) || !is_dir($path)) { return; }
+            if (self::excluded($relative) || (!$source && is_link($path))) { return; }
+            if ($source && self::source_path($path,$relative,$selection) === null) { return; }
+            if (!is_dir($path)) { return; }
+            if ($source && self::git_ancestor(realpath($path))) { $result[] = $relative; return; }
             // A .git file is a worktree/submodule marker, just as a .git directory is a repository marker.
             if (file_exists($path . '/.git') || is_link($path . '/.git')) { $result[] = $relative; }
-            foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { if ($file->isDir() && !$file->isLink()) { $scan($file->getPathname(), $relative . '/' . $file->getFilename()); } }
+            $real=realpath($path);
+            if (in_array($real,$ancestors,true)) { throw new RuntimeException('Circular source link: '.$relative); }
+            $ancestors[]=$real;
+            foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) {
+                if ($file->isDir() || ($source && $file->isLink())) { $scan($file->getPathname(), $relative . '/' . $file->getFilename(), $ancestors); }
+            }
         };
         foreach (['plugins', 'themes'] as $kind) {
             foreach ($selection[$kind] ?? [] as $id) {
@@ -62,6 +70,43 @@ final class CSM_Files {
         }
     }
 
+    public static function link_approved(string $relative, array $selection): bool {
+        $parts = explode('/', $relative);
+        return in_array(($parts[0] ?? '') . '/' . ($parts[1] ?? ''), $selection['follow_symlinks'] ?? [], true);
+    }
+
+    public static function source_path(string $path, string $relative, array $selection): ?string {
+        if (!self::link_approved($relative, $selection)) {
+            if (is_link($path)) { throw new RuntimeException('Source symlink needs approval: ' . $relative); }
+            return $path;
+        }
+        [$kind, $id] = explode('/', $relative, 3);
+        if (!in_array($kind, ['plugins','themes'], true)) { throw new RuntimeException('Only plugin and theme source links can be followed.'); }
+        clearstatcache(true, $path); $resolved = realpath($path);
+        if ($resolved === false) { throw new RuntimeException('Broken or circular source link: ' . $relative); }
+        if (self::excluded($resolved)) { if (count(explode('/', $relative)) === 2) { throw new RuntimeException('Source component resolves into an excluded location: ' . $relative); } return null; }
+        $base = realpath(self::root($kind, $id) . '/' . $id);
+        if (!$base || ($resolved !== $base && !str_starts_with($resolved, $base . '/'))) { throw new RuntimeException('Source link leaves the approved component: ' . $relative); }
+        if (!is_file($resolved) && !is_dir($resolved)) { throw new RuntimeException('Unsupported source file: ' . $relative); }
+        return $resolved;
+    }
+
+    public static function transfer_block_reason(string $path, string $relative, float $deadline): string {
+        if (self::excluded($relative)) { return ''; }
+        $component = str_starts_with($relative, 'plugins/') ? 'plugin' : 'theme';
+        if (is_link($path)) { return "This $component contains symlinks."; }
+        if (hrtime(true)/1e9 >= $deadline) { return 'Symlink check timed out. Refresh to retry.'; }
+        if (!is_readable($path)) { return 'Cannot check unreadable files for symlinks.'; }
+        if (!is_dir($path)) { return ''; }
+        try {
+            foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $entry) {
+                $reason = self::transfer_block_reason($entry->getPathname(), $relative . '/' . $entry->getFilename(), $deadline);
+                if ($reason !== '') { return $reason; }
+            }
+        } catch (UnexpectedValueException $error) { return 'Cannot check unreadable folders for symlinks.'; }
+        return '';
+    }
+
     public static function inventory(bool $refresh = false, bool $media = true): array {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
         require_once ABSPATH . 'wp-admin/includes/update.php';
@@ -70,16 +115,20 @@ final class CSM_Files {
         $theme_updates = get_site_transient('update_themes');
         $active_plugins = defined('CSM_ORIGINAL_ACTIVE_PLUGINS') ? CSM_ORIGINAL_ACTIVE_PLUGINS : get_option('active_plugins', []);
         $active_themes = defined('CSM_ORIGINAL_TEMPLATE') ? [CSM_ORIGINAL_TEMPLATE, CSM_ORIGINAL_STYLESHEET] : [get_template(), get_stylesheet()];
-        $plugins = [];
+        $plugins = []; $deadline = hrtime(true)/1e9 + 5;
         foreach (get_plugins() as $file => $data) {
             $id = str_contains($file, '/') ? explode('/', $file)[0] : $file;
             if (isset($plugins[$id])) { continue; }
             $icons = ($plugin_updates->response[$file] ?? $plugin_updates->no_update[$file] ?? null)->icons ?? [];
             $plugins[$id] = ['id' => $id, 'name' => $data['Name'], 'version' => $data['Version'], 'update' => $plugin_updates->response[$file]->new_version ?? null, 'icon' => esc_url_raw($icons['svg'] ?? $icons['2x'] ?? $icons['1x'] ?? '', ['http', 'https']), 'active' => in_array($file, $active_plugins, true), 'protected' => $id === basename(dirname(CSM_FILE))];
+            $reason = $plugins[$id]['protected'] ? '' : self::transfer_block_reason(WP_PLUGIN_DIR . '/' . $id, 'plugins/' . $id, $deadline);
+            if ($reason !== '') { $plugins[$id]['protected'] = true; $plugins[$id]['protected_reason'] = $reason; $plugins[$id]['symlinks'] = str_contains($reason, 'contains symlinks'); }
         }
         $themes = [];
         foreach (wp_get_themes() as $id => $theme) {
             $themes[] = ['id' => $id, 'name' => $theme->get('Name'), 'version' => $theme->get('Version'), 'update' => $theme_updates->response[$id]['new_version'] ?? null, 'icon' => esc_url_raw($theme->get_screenshot() ?: '', ['http', 'https']), 'parent' => $theme->get('Template'), 'active' => in_array($id, $active_themes, true)];
+            $reason = self::transfer_block_reason($theme->get_theme_root() . '/' . $id, 'themes/' . $id, $deadline);
+            if ($reason !== '') { $themes[array_key_last($themes)] += ['protected' => true, 'protected_reason' => $reason, 'symlinks' => str_contains($reason, 'contains symlinks')]; }
         }
         return ['plugins' => array_values($plugins), 'themes' => $themes] + ($media?self::media():[]);
     }
@@ -101,12 +150,19 @@ final class CSM_Files {
     }
 
     public static function selection(array $selection): array {
+        $links = $selection['follow_symlinks'] ?? [];
+        if (!is_array($links) || !array_is_list($links) || count($links) > 500) { throw new RuntimeException('Invalid source symlink approvals.'); }
+        foreach ($links as $component) {
+            if (!is_string($component) || !preg_match('#^(plugins|themes)/[^/]+$#D', $component)) { throw new RuntimeException('Invalid source symlink approval.'); }
+            [$kind,$id] = explode('/', $component); self::safe_relative($id);
+            if (!in_array($id, $selection[$kind] ?? [], true) || ($kind === 'plugins' && $id === basename(dirname(CSM_FILE)))) { throw new RuntimeException('Symlink approval is outside the selected components.'); }
+        }
         $inventory = self::inventory(false,false);
         foreach (['plugins', 'themes'] as $kind) {
             $allowed = array_column($inventory[$kind], null, 'id');
             $selection[$kind] = array_values(array_unique($selection[$kind] ?? []));
             foreach ($selection[$kind] as $id) {
-                if (!isset($allowed[$id]) || !empty($allowed[$id]['protected'])) { throw new RuntimeException('Unknown or protected ' . $kind . ' selection.'); }
+                if (!isset($allowed[$id]) || (!empty($allowed[$id]['protected']) && !(self::link_approved($kind . '/' . $id, $selection) && !empty($allowed[$id]['symlinks'])))) { throw new RuntimeException(($allowed[$id]['protected_reason'] ?? 'Unknown or protected ' . $kind . ' selection.') . ' (' . $id . ')'); }
             }
         }
         return self::media_selection($selection);
@@ -203,19 +259,25 @@ final class CSM_Files {
         }
     }
 
-    public static function scan(string $path, string $relative = '', array $selection = [], ?float $deadline = null): Generator {
+    public static function scan(string $path, string $relative = '', array $selection = [], ?float $deadline = null, bool $source = false, array $ancestors = []): Generator {
         $deadline ??= hrtime(true)/1e9+45;
         if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('File traversal exceeded its 45-second limit. Narrow the selection.'); }
         CSM_Support::check_source_budget();
         if (self::skipped($relative, $selection)) { return; }
         if (!empty($selection['protect_source_git']) && is_dir($path) && (file_exists($path . '/.git') || is_link($path . '/.git')) && !in_array($relative, $selection['git_overrides'] ?? [], true)) { return; }
-        if (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: ' . basename($path)); }
+        if ($source) { if (self::source_path($path, $relative, $selection) === null) { return; } }
+        elseif (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: ' . basename($path)); }
+        if (is_dir($path)) {
+            $real = realpath($path);
+            if (in_array($real, $ancestors, true)) { throw new RuntimeException('Circular source link: ' . $relative); }
+            $ancestors[] = $real;
+        }
         if (is_file($path)) { yield $path; return; }
         if (!is_dir($path)) { return; }
-        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname(), $relative . '/' . $file->getFilename(), $selection,$deadline); }
+        foreach (new FilesystemIterator($path, FilesystemIterator::SKIP_DOTS) as $file) { yield from self::scan($file->getPathname(), $relative . '/' . $file->getFilename(), $selection,$deadline,$source,$ancestors); }
     }
 
-    public static function walk(array &$cursor, array $roots, array $selection): Generator {
+    public static function walk(array &$cursor, array $roots, array $selection, bool $source = false): Generator {
         $cursor += ['pending'=>array_reverse($roots), 'active'=>null];
         while ($cursor['pending'] || $cursor['active']) {
             if (CSM_Support::due()) { return; }
@@ -224,19 +286,24 @@ final class CSM_Files {
                 $active = &$cursor['active'];
                 if ($active['index'] >= count($active['names'])) { $cursor['active'] = null; continue; }
                 $name = $active['names'][$active['index']++];
-                $path = $active['path'].'/'.$name; $relative = $active['relative'].'/'.$name;
+                $path = $active['path'].'/'.$name; $relative = $active['relative'].'/'.$name; $ancestors = $active['ancestors'] ?? [];
                 unset($active);
-            } else { [$path,$relative] = array_pop($cursor['pending']); }
+            } else { $next = array_pop($cursor['pending']); [$path,$relative] = $next; $ancestors = $next[2] ?? []; }
             if (self::skipped($relative,$selection)) { continue; }
-            if (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: '.basename($path)); }
-            if (is_file($path)) { yield [$relative,$path]; continue; }
+            $resolved = $path;
+            if ($source) { $resolved = self::source_path($path, $relative, $selection); if ($resolved === null) { continue; } }
+            elseif (is_link($path)) { throw new RuntimeException('Symbolic links are not transferable: '.basename($path)); }
+            if (is_file($path)) { yield [$relative,$resolved]; continue; }
             if (!is_dir($path)) { continue; }
             if (!empty($selection['protect_source_git']) && (file_exists($path.'/.git') || is_link($path.'/.git')) && !in_array($relative,$selection['git_overrides'] ?? [],true)) { continue; }
             // Queue subdirectories without restarting the current directory after a checkpoint.
-            if ($cursor['active']) { $cursor['pending'][]=[$path,$relative]; continue; }
+            if ($cursor['active']) { $cursor['pending'][]=[$path,$relative,$ancestors]; continue; }
+            $real = realpath($path);
+            if (in_array($real, $ancestors, true)) { throw new RuntimeException('Circular source link: ' . $relative); }
+            $ancestors[] = $real;
             $names = scandir($path);
             if ($names === false) { throw new RuntimeException('Cannot list directory: '.$relative); }
-            $cursor['active']=['path'=>$path,'relative'=>$relative,'names'=>array_values(array_diff($names,['.','..'])),'index'=>0];
+            $cursor['active']=['path'=>$path,'relative'=>$relative,'names'=>array_values(array_diff($names,['.','..'])),'index'=>0,'ancestors'=>$ancestors];
         }
     }
 
@@ -250,7 +317,7 @@ final class CSM_Files {
         } }
         $ordinary=in_array($selection['media'],['all','changed'],true);
         if ($ordinary) { $roots[]=[self::root('uploads'),'uploads']; }
-        foreach (self::walk($cursor['walk'],$roots,$selection) as [$relative,$path]) {
+        foreach (self::walk($cursor['walk'],$roots,$selection,true) as [$relative,$path]) {
             if (str_starts_with($relative,'uploads/')) {
                 if ($selection['media']==='changed' && filemtime($path)<$selection['since']) { continue; }
                 if (preg_match('#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups|\.git)(/|$)#i',$relative)) { continue; }
@@ -275,10 +342,10 @@ final class CSM_Files {
                 CSM_Progress::update(['phase' => 'Reading source component', 'component' => $kind . '/' . $id]);
                 $root = self::root($kind, $id); $count = 0;
                 if (!file_exists($root . '/' . $id)) { throw new RuntimeException('Selected source component is missing: ' . $id); }
-                foreach (self::scan($root . '/' . $id, $kind . '/' . $id, $selection) as $file) {
+                foreach (self::scan($root . '/' . $id, $kind . '/' . $id, $selection, null, true) as $file) {
                     $relative = $kind . '/' . substr($file, strlen($root) + 1);
                     self::safe_relative($relative);
-                    yield [$relative, $file]; $count++;
+                    $resolved = self::source_path($file, $relative, $selection); if ($resolved !== null) { yield [$relative, $resolved]; $count++; }
                 }
                 if (!$count) { throw new RuntimeException('Selected source component has no files: ' . $id); }
             }

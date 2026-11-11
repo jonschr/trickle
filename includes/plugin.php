@@ -178,7 +178,7 @@ final class CSM_Plugin {
                 nocache_headers(); header('Content-Type: application/octet-stream'); header('Content-Length: ' . strlen($bytes)); echo $bytes; exit;
             }
             if ($action === 'component_hashes') { $result=CSM_Components::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Plugin and theme checksums ready'); self::respond($result); }
-            if ($action === 'file_policy') { self::respond(['git_folders' => CSM_Files::git_folders($data['selection'] ?? [])]); }
+            if ($action === 'file_policy') { self::respond(['git_folders' => CSM_Files::git_folders($data['selection'] ?? [], !empty($data['source']))]); }
             if ($action === 'media_hashes') { $result=CSM_Media::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Media checksums ready'); self::respond($result); }
             if ($action === 'progress') { CSM_Segments::assert_progress_owner($data['id'] ?? ''); self::respond(CSM_Progress::read($data['id'] ?? '')); }
             if ($action === 'preview') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::preview_page($job, (int)($data['offset'] ?? 0))); }

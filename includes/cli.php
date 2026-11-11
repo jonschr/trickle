@@ -90,6 +90,9 @@ final class CSM_CLI {
      * [--keep-destination-plugins]
      * : Preserve destination activation instead of copying the full source list.
      *
+     * [--follow-symlinks=<paths>]
+     * : Follow approved source components, e.g. plugins/custom,themes/child. Destination links stay protected.
+     *
      * [--include-git=<paths>]
      * : Explicit per-transfer Git overrides; --yes never grants these.
      *
@@ -344,6 +347,9 @@ final class CSM_CLI {
      * [--since=<time>]
      * : UTC ISO date/time or Unix timestamp for changed media; otherwise use the last media watermark.
      *
+     * [--follow-symlinks=<paths>]
+     * : Follow approved source components, e.g. plugins/custom,themes/child. Destination links stay protected.
+     *
      * [--include-git=<paths>]
      * : Explicitly include these comma-separated Git folders for this transfer only.
      *
@@ -417,6 +423,9 @@ final class CSM_CLI {
      * [--since=<time>]
      * : UTC ISO date/time or Unix timestamp for changed media; otherwise use the last media watermark.
      *
+     * [--follow-symlinks=<paths>]
+     * : Follow approved source components, e.g. plugins/custom,themes/child. Destination links stay protected.
+     *
      * [--include-git=<paths>]
      * : Explicitly include these comma-separated Git folders for this transfer only.
      *
@@ -467,7 +476,7 @@ final class CSM_CLI {
             $selection = ['transport' => $assoc['transport'] ?? 'stream', 'sync_active_plugins' => !isset($assoc['keep-destination-plugins']), 'media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'file_verify' => isset($assoc['rehash-files']), 'media_verify' => isset($assoc['rehash-media']), 'media_force' => isset($assoc['force-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
             if ($selection['media_force'] && !in_array($selection['media'], ['all','compare'], true)) { throw new RuntimeException('--force-media requires --media=all.'); }
             foreach (['plugins', 'themes', 'tables'] as $kind) {
-                $selection[$kind] = ($assoc[$kind] ?? '') === 'all' ? array_column(array_filter($source[$kind], static fn($item) => empty($item['protected'])), 'id') : self::csv($assoc[$kind] ?? '');
+                $selection[$kind] = ($assoc[$kind] ?? '') === 'all' ? array_column(array_filter($source[$kind], static fn($item) => empty($item['protected']) || (!empty($item['symlinks']) && in_array($kind.'/'.$item['id'], self::csv($assoc['follow-symlinks'] ?? ''),true))), 'id') : self::csv($assoc[$kind] ?? '');
             }
             if ($inventory['replacements']) {
                 $selection['replacements'] = $inventory['replacements'][$direction];
@@ -502,6 +511,7 @@ final class CSM_CLI {
             } elseif ($selection['media'] === 'changed') { $selection['since'] = $inventory['history'][$direction . ':' . $peer['url']] ?? 0; }
         }
         if (!in_array($selection['transport'] ?? 'stream', ['stream','chunks'], true)) { throw new RuntimeException('Choose --transport=stream or --transport=chunks.'); }
+        $selection['follow_symlinks'] = self::csv($assoc['follow-symlinks'] ?? '');
         if ($automated) {
             $plan = CSM_Presets::plan($assoc['preset'], $peer, $inventory, $selection, self::csv($assoc['include-git'] ?? ''));
             if (isset($assoc['dry-run']) || !isset($assoc['yes'])) {

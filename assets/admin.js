@@ -255,7 +255,8 @@
         const signs={upgrade:'M12 19V5m-5 5 5-5 5 5',downgrade:'M12 5v14m-5-5 5 5 5-5',same:'M5 12h14',install:'M12 5v14m-7-7h14',different:'M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 4h.01',protected:'M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5z'};
         const glyph=(path,cls='')=>`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
         let html=`<div class="csm-code-scroll" tabindex="0" role="region" aria-label="${kind === 'plugins' ? 'Plugin' : 'Theme'} comparison"><div class="csm-code-table"><div class="csm-columns csm-code-columns">${selectAll(kind)}<span class="csm-version-headings"><span>Installed</span><span class="screen-reader-text">Version change</span><span>Incoming</span></span></div>`;
-        for(const item of src[kind]){
+        for(const entry of src[kind]){
+            const item={...entry}; if (item.symlinks && item.follow_symlinks) { item.protected=false; delete item.protected_reason; }
             const target=lookup.get(item.id), change=versionChange(item,target), state=componentState(kind,item,src[kind]);
             const sizeCell=side=>item.protected?'':`<span class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${side}"></span>`;
             const cell=(plugin,inventory,side)=>{
@@ -266,7 +267,7 @@
                 return `<span class="csm-version-endpoint"><span class="screen-reader-text">${label}: </span>${plugin?`<span class="csm-activation ${activity==='Inactive'?'is-inactive':'is-active'}" role="img" aria-label="${esc(activity)}" title="${esc(activity+' · '+label)}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" aria-hidden="true">${mark}</svg></span>`:''}<b title="${esc(plugin?.version || (plugin?'Unknown version':'Not installed'))}">${esc(plugin?.version || (plugin?'?':'—'))}</b>${plugin?sizeCell(side):''}${updateBadge}</span>`;
             };
             const outcome=`<span class="csm-version-indicator" role="img" aria-label="${esc(change.label)}" title="${esc(change.label)}">${glyph(signs[change.kind])}</span>`;
-            html+=`<label class="csm-component csm-code-component" data-change="${change.kind}" data-source-active="${state!=='Inactive'}"><span class="csm-component-identity ${state==='Inactive'?'csm-inactive':''}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}>${icon(item.icon,kind)}<span><strong title="${esc(item.name+(item.protected?' · Managed separately':''))}">${esc(item.name)}</strong></span></span><span class="csm-version-comparison"><span class="csm-version-change">${cell(target,dst[kind],'destination')}${outcome}${cell(item,src[kind],'source')}</span></span></label>`;
+            html+=`<label class="csm-component csm-code-component" data-change="${change.kind}" data-source-active="${state!=='Inactive'}"><span class="csm-component-identity ${state==='Inactive'?'csm-inactive':''}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}>${icon(item.icon,kind)}<span><strong title="${esc(item.name+(item.protected?' · '+(item.protected_reason || 'Managed separately'):''))}">${esc(item.name)}</strong></span></span><span class="csm-version-comparison"><span class="csm-version-change">${item.protected_reason ? `<span class="csm-blocked-reason">${outcome}${esc(item.protected_reason)}${item.symlinks ? `<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}" ${busy || session ? 'disabled' : ''}>Include linked files</button>` : ''}</span>` : `${cell(target,dst[kind],'destination')}${outcome}${cell(item,src[kind],'source')}`}</span></span></label>`;
         }
         $(kind).innerHTML=html+(!src[kind].length?'<p>No components found on the source site.</p>':'')+'</div></div>';
     }
@@ -344,9 +345,7 @@
         }
     }
     function destinationAction() {
-        if ((session?.direction || direction()) === 'pull') return 'Pull into this site';
-        const peer = connectionState.connections.find(item => item.id === $('remote-site').value);
-        return `Push to ${peer?.name || 'remote site'}`;
+        return (session?.direction || direction()) === 'pull' ? 'Pull site' : 'Push site';
     }
     function updateSetup() {
         $('action-destination').textContent = session?.destination || (sites ? destination().url : '');
@@ -551,19 +550,25 @@
         selection.media_force = selection.media === 'all' && !!$('media-force')?.checked;
         selection.media_verify = selection.media === 'all' && !selection.media_force && !!$('media-verify')?.checked;
         for (const kind of ['plugins','themes','tables','media_ids']) selection[kind] = $('enable-' + (kind === 'media_ids' ? 'media' : kind)).checked ? [...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input => kind === 'media_ids' ? Number(input.value) : input.value) : [];
+        selection.follow_symlinks = !sites ? [] : ['plugins','themes'].flatMap(kind => source()[kind].filter(item => item.follow_symlinks && selection[kind].includes(item.id)).map(item => kind+'/'+item.id));
         if (sites?.replacements) selection.replacements = replacementRules.map(rule => ({...rule}));
         return selection;
     }
     function restoreSelection(selection, strict = true) {
+        if (!session && sites) for (const kind of ['plugins','themes']) {
+            let changed=false;
+            for (const item of source()[kind]) { if (item.follow_symlinks) { delete item.follow_symlinks; changed=true; } }
+            if (changed) components(kind);
+        }
         if (strict) {
             const missing = [];
             for (const kind of ['plugins', 'themes', 'tables', 'media_ids']) {
-                const available = new Set([...document.querySelectorAll(`input[data-kind="${kind}"]:not([data-protected="true"])`)].map(input => input.value));
+                const available = new Set([...document.querySelectorAll(`input[data-kind="${kind}"]`)].map(input => input.value));
                 for (const id of selection[kind] || []) if (!available.has(String(id))) missing.push(String(id));
             }
             if (missing.length) throw new Error(`Cannot reuse these settings: ${missing.slice(0, 5).join(', ')} are absent from the current source inventory. Make a new selection instead.`);
         }
-        document.querySelectorAll('input[data-kind]').forEach(input => { input.checked = (selection[input.dataset.kind] || []).map(String).includes(input.value); });
+        document.querySelectorAll('input[data-kind]').forEach(input => { input.checked = input.dataset.protected !== 'true' && (selection[input.dataset.kind] || []).map(String).includes(input.value); });
         for (const kind of componentKinds) {
             const hasItems = kind === 'media' ? selection.media !== 'none' : (selection[kind] || []).length > 0;
             setComponent(kind, hasItems || (selection.enabled_components || []).includes(kind));
@@ -647,6 +652,9 @@
         $('version-note').hidden = !$('version-note').textContent;
         renderReplacements(sites.replacements?.[direction()] ?? []);
         $('tables').replaceChildren();
+        for (const kind of ['plugins','themes']) for (const item of source()[kind]) {
+            item.follow_symlinks = !!session && (session.selection?.follow_symlinks || []).includes(kind+'/'+item.id);
+        }
         for (const kind of ['plugins','themes','tables']) components(kind);
         mediaAnchor = null; renderMediaGrid();
         renderMedia();
@@ -923,6 +931,19 @@
             const parent = [...document.querySelectorAll('input[data-kind="themes"]')].find(input => input.value === theme.parent);
             if (parent) parent.checked = true;
         }
+    });
+    $('workspace').addEventListener('click', event => {
+        const button=event.target.closest('[data-follow-links]');
+        if (!button) return;
+        event.preventDefault(); event.stopPropagation();
+        if (busy || session) return;
+        const kind=button.dataset.followKind, id=button.dataset.followLinks;
+        const item=source()[kind].find(item=>item.id===id);
+        if (!item?.symlinks || !confirm(`Include linked files from ${item.name}? Their contents will be copied as ordinary files. Exclusions still apply.`)) return;
+        const checked=new Set([...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input=>input.value));
+        checked.add(id); item.follow_symlinks=true; components(kind);
+        document.querySelectorAll(`input[data-kind="${kind}"]`).forEach(input=>{input.checked=input.dataset.protected!=='true' && checked.has(input.value);});
+        $('recent').value=''; lockSelection(); updateSelection();
     });
     $('workspace').addEventListener('change', event => {
         if (!session && !$('completion').hidden) { $('completion').hidden = true; $('transfer-meter').hidden = true; }

@@ -1,5 +1,14 @@
 # Changes
 
+## 0.1.26 — 2026-11-11
+
+- Highlight new plugin/theme installs in green; fade inactive source plugins while keeping selection controls and change indicators clear, with full detail on hover or keyboard focus.
+- Use larger Push site / Pull site buttons without destination names.
+- Detect plugin/theme symlinks before preparation; require per-component source approval and copy linked contents as regular files while keeping destination links protected.
+- Reject source link loops, broken links and component escapes; retain exclusions through resolved targets, add development/credential exclusions, and remove dangling links during cleanup.
+
+Validation: all 18 JavaScript suites, nine isolated PHP suites, runtime/vendor PHP syntax and offline security checks passed. Linked-source fixtures covered resumable packaging, staging, actual file replacement, matching destination hashes, repeat folder checksums, plugin/theme links, Git review, secret-target exclusions, cycles, escapes, broken links and destination protection. Desktop/mobile checks covered button sizing, new-install/inactive styling and the real source-link approval handler. No remote migrations were run for this release.
+
 ## 0.1.25 — 2026-11-10
 
 - Reuse stable verification receipts across staging previews, while rehashing changed/recent files and retaining installed-byte verification.

@@ -45,7 +45,7 @@
 .csm-component-total { grid-column:2; grid-row:1; align-self:center; font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; color:#46566b; }
 .csm-panels .csm-panel-body { grid-column:2; grid-row:1/7; min-width:0; background:#fff; border-left:1px solid var(--csm-line); padding:23px 24px 28px; }
 .csm-setup-actions { grid-column:1; grid-row:5; padding:18px 16px 0; }
-.csm-setup-actions #csm-stage { width:100%; min-height:44px; padding:8px 12px; line-height:1.4; }
+.csm-setup-actions #csm-stage { width:100%; min-height:44px; padding:8px 12px; font-size:16px; font-weight:600; line-height:1.4; }
 .csm-summary-size-note { font-size:11px; line-height:1.6; margin:12px 0 0; color:var(--csm-muted); }
 .csm-panels .csm-panel:not([data-current]) > .csm-panel-body { display:none; }
 .csm-panels .csm-component-title { font-size:21px; line-height:1.4; font-weight:600; letter-spacing:-.02em; margin:0 0 13px; }
@@ -274,7 +274,7 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-panels :is(.csm-code-columns,.csm-code-component) { grid-template-columns:minmax(215px,1.1fr) minmax(420px,1.9fr); gap:14px; padding:5px 8px; align-items:center; min-height:32px; }
 .csm-panels .csm-code-columns { min-height:32px; font-size:11px; }
 .csm-code-component { --change-ink:#56636c; --change-background:transparent; }
-.csm-code-component[data-change="upgrade"] { --change-ink:#226432; --change-background:#edf7ef; }
+.csm-code-component:is([data-change="upgrade"],[data-change="install"]) { --change-ink:#226432; --change-background:#edf7ef; }
 .csm-code-component[data-change="downgrade"] { --change-ink:#a12622; --change-background:#fff0ef; }
 .csm-panels .csm-code-component,.csm-panels .csm-code-component:has(input:checked) { background:var(--change-background); }
 .csm-panels .csm-code-component .csm-component-identity { grid-column:1; gap:7px; min-width:0; }
@@ -283,6 +283,7 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-panels .csm-code-component .csm-identity-icon svg { width:16px; height:16px; }
 .csm-panels .csm-code-component .csm-component-identity strong { font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:20px; }
 .csm-panels .csm-code-component[data-source-active="false"] .csm-component-identity strong { font-weight:400; color:#647184; }
+.csm-code-component[data-source-active="false"]:not([data-change="protected"]):has(input[data-kind="plugins"]):not(:hover):not(:focus-within) :is(.csm-component-identity > :not(input),.csm-version-endpoint) { opacity:.45; }
 .csm-version-change,.csm-version-headings { display:grid; grid-template-columns:minmax(0,1fr) 18px minmax(0,1fr); align-items:center; gap:8px; }
 .csm-panels .csm-code-columns > .csm-version-headings { display:grid; }
 .csm-panels .csm-code-component > .csm-version-comparison { padding-left:0; }
@@ -296,7 +297,7 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-activation.is-active { color:#2271b1; }
 .csm-activation.is-inactive { color:#647184; }
 .csm-panels .csm-version-endpoint .csm-component-size { margin:0; font-size:10px; color:#647184; white-space:nowrap; }
-.csm-code-component:is([data-change="upgrade"],[data-change="downgrade"]) .csm-version-endpoint:last-child b { color:var(--change-ink); font-weight:600; }
+.csm-code-component:is([data-change="upgrade"],[data-change="install"],[data-change="downgrade"]) .csm-version-endpoint:last-child b { color:var(--change-ink); font-weight:600; }
 .csm-panels .csm-version-endpoint .csm-update { display:inline-flex; align-items:center; gap:2px; margin:0; padding:0; background:none; color:#674700; font-size:10px; white-space:nowrap; }
 .csm-update-arrow { width:12px; height:12px; }
 @media(max-width:782px) { .csm-panels .csm-code-component { min-height:36px; } }
@@ -307,3 +308,9 @@ body.csm-transfer-open { overflow:hidden; }
 .csm-dialog-actions { flex-wrap:wrap; }
 #csm-copy-diagnostics { margin-right:auto; }
 #csm-diagnostic-output { box-sizing:border-box; width:100%; font-family:monospace; }
+
+.csm-code-component[data-change="protected"] { --change-background:#f5f6f7; }
+.csm-panels .csm-code-component[data-change="protected"] .csm-component-identity strong { color:#56636c; font-weight:400; }
+.csm-blocked-reason { grid-column:1 / -1; display:flex; align-items:center; gap:8px; color:#56636c; font-size:12px; }
+
+.csm-follow-links { flex-shrink:0; margin-left:auto; font-size:12px; }

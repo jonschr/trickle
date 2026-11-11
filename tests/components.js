@@ -26,7 +26,7 @@ const items = [
 items.forEach(item => { item.dataset = {kind:item.kind}; });
 let mediaRenders = 0;
 const context = {
-    $: id => controls[id], componentKinds:kinds, sites:null, renderReplacements(){}, updateSelection(){},
+    $: id => controls[id], componentKinds:kinds, sites:null, session:null, renderReplacements(){}, updateSelection(){},
     renderMedia: () => { mediaRenders++; },
     document:{querySelectorAll(selector) {
         const kind = selector.match(/data-kind="([^"]+)"/)?.[1];

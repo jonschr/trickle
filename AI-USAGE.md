@@ -87,3 +87,7 @@ Invoking Trickle through its dashboard, CLI or APIs must preserve the plugin’s
 ## Install the local Trickle build remotely
 
 Run `wp trickle update-remote --remote=<saved-site> --check --format=json` to check readiness, then `wp trickle update-remote --remote=<saved-site> --yes --format=json` to install this site's exact Trickle runtime. This includes same-version development changes and can replace a newer remote version. The direct installer must already be present on the remote; legacy remotes require a one-time current ZIP installation. No migration starts as part of the update.
+
+## Linked source components
+
+Source-only symlink following requires an explicit per-transfer approval: `wp trickle push --plugins=my-plugin --follow-symlinks=plugins/my-plugin --apply --yes`. Use the same option with `pull` for remote source links. Destination symlinks remain protected; only plugin/theme components are supported. A root link may point to a checkout; nested links must resolve inside that component. Git protection is separate (`--include-git` where required). Recent settings never grant symlink approval, and `--yes` does not grant it. Runtime dependencies in `vendor`, `build` and `dist` are retained; mandatory development/credential exclusions also apply to resolved source targets.

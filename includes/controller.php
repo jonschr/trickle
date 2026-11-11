@@ -125,7 +125,7 @@ final class CSM_Controller {
             'direction' => $control['direction'], 'selection' => $control['selection'], 'started_at' => $control['created'],
             'completed_at' => $summary['applied'] ?? ($recent[$control['id']]['completed_at'] ?? null),
             'status' => $summary['status'] === 'staging' && $summary['ready'] ? 'staged' : $summary['status']];
-        unset($entry['selection']['git_overrides'], $entry['selection']['skip_paths']);
+        unset($entry['selection']['git_overrides'], $entry['selection']['skip_paths'], $entry['selection']['follow_symlinks']);
         unset($recent[$control['id']]);
         $recent = [$control['id'] => $entry] + $recent;
         uasort($recent, static fn($a, $b) => $b['started_at'] <=> $a['started_at']);
@@ -133,8 +133,8 @@ final class CSM_Controller {
     }
 
     private static function review(array $peer, bool $pull, array $selection, array $confirmed = []): array {
-        $remote = CSM_Transport::request($peer, 'file_policy', ['selection' => $selection]);
-        $local = CSM_Files::git_folders($selection);
+        $remote = CSM_Transport::request($peer, 'file_policy', ['selection' => $selection, 'source' => $pull]);
+        $local = CSM_Files::git_folders($selection, !$pull);
         $folders = $pull ? array_values(array_unique(array_merge($local, $remote['git_folders']))) : $remote['git_folders'];
         foreach ($confirmed as $folder) { if (!is_string($folder) || !in_array($folder, $folders, true)) { throw new RuntimeException('Git confirmation no longer matches the selected folders. Review the transfer again.'); } }
         return ['git_folders' => array_map(static fn($folder) => ['path' => $folder, 'source' => $pull && in_array($folder, $remote['git_folders'], true), 'destination' => in_array($folder, $pull ? $local : $remote['git_folders'], true)], $folders),
