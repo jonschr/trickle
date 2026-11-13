@@ -55,8 +55,8 @@ try:
   restored=op('restore_backup',{'id':id})
   value=ev(D,'global $wpdb;echo wp_json_encode($wpdb->get_row("SELECT v,doubled FROM wp_trickle_backup_fixture WHERE id=1",ARRAY_A));')
   check(restored['status']=='restored' and (P[D]/'code.txt').read_text()==expected and value=={'v':expected,'doubled':str(int(expected)*2)},'Any retained backup restores files, database and generated columns, in any order')
-  check((P[D]/'unchanged.txt').read_text()=='edited after migration','Change-only restore leaves skipped code alone')
- check((P[D]/'later.txt').exists(),'Change-only restore preserves files introduced by later pulls')
+  check((P[D]/'unchanged.txt').read_text()=='original','Whole-component restore includes files that matched during migration')
+ check(not (P[D]/'later.txt').exists(),'Whole-component restore removes files introduced by later pulls')
  check(len(op('backups')['backups'])==3 and ev(D,'echo wp_json_encode(!get_option("_csm_active_job")&&!get_option("_csm_backup_restore"));'),'Restores keep the three original backups reusable and release recovery state')
  denied=ev(D,'$GLOBALS["_csm_credential"]=["id"=>"another-key","write"=>true,"master"=>false];$list=CSM_Backups::listing();try{CSM_Backups::restore("'+ids[1]+'");$code=0;}catch(Throwable $e){$code=$e->getCode();}echo wp_json_encode([count($list["backups"]),$code]);')
  check(denied==[0,403],'Another connection key cannot list or restore private backups')
@@ -94,8 +94,8 @@ try:
  # A real PHP process exits after saving its applying state, leaving the OS lock released.
  staged=op('prepare',sel)
  while op('transfer',{'id':staged['id'],'kind':'files'}).get('continue'):pass
- err=wp(D,'eval',"add_action('added_option',static function($name){if($name==='_csm_maintenance')exit(73);});add_action('updated_option',static function($name){if($name==='_csm_maintenance')exit(73);});$s=CSM_Controller::session();CSM_Controller::execute('commit',['id'=>$s['id']]);",fail=True)
- check(ev(D,'$j=CSM_Support::job(get_option("_csm_active_job"));echo wp_json_encode($j["status"]);')=='applying','Hard process exit retains a complete recovery plan before replacement')
+ err=wp(D,'eval',"add_action('csm_checkpoint',static function($id,$phase){if($phase==='apply')exit(73);},10,2);$s=CSM_Controller::session();CSM_Controller::execute('commit',['id'=>$s['id']]);",fail=True)
+ check(ev(D,'$j=CSM_Support::job(get_option("_csm_active_job"));echo wp_json_encode($j["status"]);')=='applying','Hard process exit retains a complete recovery plan after component replacement')
  (P[D]/'code.txt').write_text('partial replacement')
  wp(D,'eval','wp_schedule_single_event(time()-10,"trickle_fixture_ordinary");')
  ca=Path.home()/'Library/Application Support/Caddy/pki/authorities/local/root.crt'
@@ -121,7 +121,7 @@ try:
  # Incoming transfers can recover on a dashboard reconnect without a local controller.
  staged=op('prepare',sel)
  while op('transfer',{'id':staged['id'],'kind':'files'}).get('continue'):pass
- wp(D,'eval',"add_action('added_option',static function($name){if($name==='_csm_maintenance')exit(73);});add_action('updated_option',static function($name){if($name==='_csm_maintenance')exit(73);});$s=CSM_Controller::session();CSM_Controller::execute('commit',['id'=>$s['id']]);",fail=True)
+ wp(D,'eval',"add_action('csm_checkpoint',static function($id,$phase){if($phase==='apply')exit(73);},10,2);$s=CSM_Controller::session();CSM_Controller::execute('commit',['id'=>$s['id']]);",fail=True)
  wp(D,'eval','delete_option("_csm_control");')
  (P[D]/'code.txt').write_text('interrupted incoming transfer')
  check(op('state')['destination_recovery']==staged['id'],'Dashboard state detects an interrupted incoming transfer without a local session')

@@ -12,6 +12,9 @@ final class CSM_Backups {
         if (get_option('_csm_active_job') === $job['id']) { delete_option('_csm_active_job'); }
         // Cleanup failure must not turn a successful migration into a rollback.
         try {
+            foreach (CSM_Plugin::recovery_operations($job) as $op) {
+                if (!empty($op['directory']) && !empty($op['copy_backend'])) { CSM_Support::remove_tree($op['stage']); }
+            }
             CSM_Segments::cleanup($job['id']);
             CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id']);
         } catch (Throwable $e) { CSM_Log::write('error', 'Completed staging cleanup needs attention', ['transfer_id' => $job['id'], 'error' => $e->getMessage()]); }
@@ -55,6 +58,11 @@ final class CSM_Backups {
             $known = [];
             foreach ($ops as $op) {
                 CSM_Files::destination($op['path'], $selection); $known[$op['path']] = true;
+                if (!empty($op['directory'])) {
+                    if (!is_file($op['journal'])) { throw new RuntimeException('A component recovery journal is missing: '.$op['path']); }
+                    if ($op['existed'] && !file_exists($op['backup'])) { throw new RuntimeException('A component backup is missing: '.$op['path']); }
+                    continue;
+                }
                 if ($op['existed'] && (!is_file($op['backup']) || (isset($op['sha256']) && !hash_equals($op['sha256'], hash_file('sha256', $op['backup']))))) { throw new RuntimeException('A backup file is missing or changed: ' . $op['path']); }
             }
             // A saved code component is a snapshot, including files introduced by later migrations.

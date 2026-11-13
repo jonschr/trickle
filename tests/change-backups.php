@@ -1,5 +1,5 @@
 <?php
-// Real apply planning, backup copying, restore planning and file restoration; isolated files only.
+// Legacy per-file backup and restore compatibility; isolated files only.
 define('ABSPATH','/fixture/');define('CSM_FILE','/fixture/trickle.php');
 $dir=sys_get_temp_dir().'/trickle-delta-'.bin2hex(random_bytes(6));mkdir($dir,0700);define('WPMU_PLUGIN_DIR',$dir.'/mu');mkdir(WPMU_PLUGIN_DIR,0700);
 $options=[];$jobs=[];$stop='';$scans=0;$checks=0;
@@ -30,8 +30,11 @@ try{
  $new=[$unchanged=>['path'=>$unchanged,'unchanged'=>true,'sha256'=>hash('sha256','theme unchanged')],$pluginSame=>['path'=>$pluginSame,'unchanged'=>true,'sha256'=>hash('sha256','plugin unchanged')],$changed=>['path'=>$changed,'size'=>5,'sha256'=>hash('sha256','after')],$added=>['path'=>$added,'size'=>3,'sha256'=>hash('sha256','new')]];
  $state=['phase'=>'plan','index'=>0,'new'=>$new,'paths'=>$paths,'items'=>[],'counts'=>['add'=>0,'replace'=>0,'delete'=>0,'unchanged'=>2],'backup'=>0,'signature'=>[]];
  $job=['id'=>str_repeat('a',32),'status'=>'staging','created'=>time(),'selection'=>['plugins'=>['demo'],'themes'=>['matched'],'tables'=>[],'media'=>'none'],'files'=>array_values($new),'database'=>[],'received'=>['files'=>true],'preview_work'=>$state];
- $stop='backup';$job=captured(fn()=>CSM_Plugin::commit($job));$stop='';
- check(array_keys($job['apply_work']['backup_paths'])===array_keys($paths),'Actual commit backs up only replacement/addition/deletion paths');
+ $job['file_plan']=['new'=>$new,'paths'=>$paths,'signature'=>[]];
+ foreach($paths as$p=>$target)$job['file_plan']['signature'][$p]=['',is_file($target)?hash_file('sha256',$target):null];
+ $job['backup_dir']=$dir.'/legacy-backup';mkdir($job['backup_dir']);
+ $job['apply_work']=['phase'=>'backup','backup_paths'=>$paths,'ops'=>[],'cursor'=>0];
+ check(array_keys($job['apply_work']['backup_paths'])===array_keys($paths),'Legacy recovery retains its exact replacement/addition/deletion paths');
  $backup=new ReflectionMethod(CSM_Plugin::class,'backup_files');$base=$job['backup_dir'];check($backup->invokeArgs(null,[&$job,$base]),'Changed-file backup completes');
  $ops=$job['apply_work']['ops'];check(count($ops)===3&&count(array_filter($ops,fn($op)=>$op['existed']))===2,'Only two existing files are copied; new file gets removal metadata');
  check(array_sum(array_map(fn($op)=>$op['existed']?filesize($op['backup']):0,$ops))===strlen('beforeobsolete'),'Backup bytes exclude checksum-matched code');

@@ -30,10 +30,10 @@ try{
  $job=CSM_Support::job($job['id']);
  $check($result['status']==='applied'&&file_get_contents($root.'/a.txt')==='new-a'&&file_get_contents($root.'/b.txt')==='new-b','Applies replacement and new files');
  $check(!file_exists($root.'/obsolete.txt'),'Removes obsolete component files');
- $check(count($per_file)===4&&count(array_unique($per_file))===1,'Per-file replacement uses its tiny journal without rewriting the database job per file');
+ $check(count($per_file)===4&&count(array_unique($per_file))===1,'Component replacement reports file progress without rewriting the database job per file');
  $planpath=$job['backup_dir'].'/operations.json';$plan=file_get_contents($planpath);
  $ops=json_decode($plan,true);
- $check(count($ops)===4&&$job['ops']===[]&&hash_equals($job['ops_hash'],hash('sha256',$plan)),'Complete checksummed plan includes all replaced, new and obsolete files');
+ $check(count($ops)===1&&!empty($ops[0]['directory'])&&$job['ops']===[]&&hash_equals($job['ops_hash'],hash('sha256',$plan)),'Complete checksummed plan records the whole component backup');
  $check((fileperms($planpath)&0777)===0600,'Recovery plan is private');
  file_put_contents($planpath,$plan.' ');$failed=false;
  try{CSM_Plugin::rollback($job);}catch(RuntimeException $e){$failed=str_contains($e->getMessage(),'recovery plan');}
@@ -46,13 +46,12 @@ try{
  clearstatcache();$check((fileperms($root.'/a.txt')&0777)===0600&&filemtime($root.'/a.txt')===1600000000,'Rollback restores original mode and timestamp');
  CSM_Plugin::discard(CSM_Support::job($job['id']));
  $job=$make();$injected=false;
- $break=static function($sql)use(&$injected,$job,$stage){
-  if(!$injected&&str_contains($sql,'applying')&&str_starts_with($sql,'UPDATE ')&&str_contains($sql,'_csm_job_'.$job['id'])){$injected=true;unlink($stage.'/c');}
-  return $sql;
+ $break=static function($id,$phase)use(&$injected,$job,$root){
+  if(!$injected&&$id===$job['id']&&$phase==='apply'){$injected=true;unlink($root.'/c.txt');}
  };
- add_filter('query',$break);$failed=false;
+ add_action('csm_checkpoint',$break,10,2);$failed=false;
  try{CSM_Plugin::commit($job);}catch(RuntimeException $e){$failed=str_contains($e->getMessage(),'rolled back');}
- remove_filter('query',$break);
+ remove_action('csm_checkpoint',$break,10);
  $check($failed&&CSM_Support::job($job['id'])['status']==='restored','A mid-apply failure automatically rolls back');
  $check(file_get_contents($root.'/a.txt')==='original-a'&&file_get_contents($root.'/obsolete.txt')==='original-obsolete'&&!file_exists($root.'/b.txt')&&!file_exists($root.'/c.txt'),'Automatic rollback restores files already changed and leaves untouched originals intact');
  CSM_Plugin::discard(CSM_Support::job($job['id']));
@@ -66,7 +65,7 @@ try{
  echo "$checks file recovery checks passed.\n";
 }finally{
  if(isset($checkpoint))remove_action('csm_checkpoint',$checkpoint,10);
- if(isset($watch))remove_filter('query',$watch);if(isset($break))remove_filter('query',$break);if(isset($reject))remove_filter('query',$reject);
+ if(isset($watch))remove_filter('query',$watch);if(isset($break))remove_action('csm_checkpoint',$break,10);if(isset($reject))remove_filter('query',$reject);
  foreach($jobs as $id){if(!get_option('_csm_job_'.$id))continue;$j=CSM_Support::job($id);if(in_array($j['status'],['applying','applied'],true))CSM_Plugin::rollback($j);CSM_Plugin::discard(CSM_Support::job($id));}
  CSM_Support::remove_tree($root);CSM_Support::remove_tree($stage);
  update_option('_csm_backups', $original_backups, false);

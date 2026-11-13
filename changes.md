@@ -1,5 +1,14 @@
 # Changes
 
+## 0.1.27 — 2026-11-13
+
+- Stage changed plugins and themes as complete private components, then rename the original into backup and install the staged component; retain per-file media transfers and skip fully matching components.
+- Preserve destination exclusions and protected nested Git folders; block destination symlinks before replacement and verify copied matching files after the swap.
+- Journal both renames for interrupted-apply recovery; restore complete component backups repeatedly while retaining compatibility with existing per-file backups.
+- Measure complete component backup sizes in previews; probe actual directory rename support. On separate or bind-mounted filesystems, back up the complete component, remove the old directory and copy the complete staged snapshot into a fresh directory with resumable recovery.
+
+Validation: 18 JavaScript and 10 isolated PHP suites passed, including 29 component-replacement checks covering rename and cross-mount copies, exclusions, interrupted removal/copy and rollback. Disposable QA-A/C sites passed 36 backup/workflow checks, 20 exact-build updater checks, and recovery-plan, large-checkpoint and compatibility suites. Harrison staging passed two real plugin/theme pushes, obsolete-file removal, exact component hashes, unchanged activation, both snapshot restores and complete fixture cleanup. PHP/Python syntax and diff checks passed. Both Harrison sites run the matching 0.1.27 runtime.
+
 ## 0.1.26 — 2026-11-11
 
 - Highlight new plugin/theme installs in green; fade inactive source plugins while keeping selection controls and change indicators clear, with full detail on hover or keyboard focus.
