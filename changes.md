@@ -1,5 +1,12 @@
 # Changes
 
+## 0.1.29 — 2026-11-17
+
+- Show skipped plugins and themes by their readable names, with folder paths retained as tooltips and as a fallback when inventory is unavailable.
+- Separate skipped items from transfer activity with a clear heading, consistent spacing and a compact list that wraps on smaller screens.
+
+Validation: skipped-name, component-presentation and workflow JavaScript checks passed; JavaScript/PHP syntax and diff checks passed. Rendered modal fixtures at desktop and phone widths confirmed a 20px gap below activity and no horizontal overflow. No live transfer was run.
+
 ## 0.1.28 — 2026-11-17
 
 - Support InnoDB, MEMORY and MyISAM tables with consistent snapshots, transactional staging, original-engine restoration and durable destination backups.

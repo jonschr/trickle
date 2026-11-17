@@ -660,7 +660,7 @@
         mediaAnchor = null; renderMediaGrid();
         renderMedia();
         if (session?.selection) restoreSelection(session.selection, false);
-        lockSelection(); updateSelection();
+        lockSelection(); updateSelection(); renderSkippedFolders();
         clearTimeout(estimateTimer); if (!session && sites.local.bounded_work===2 && sites.remote.bounded_work===2 && (!sites.local.estimates?.complete || sites.local.estimates?.refreshing || !sites.remote.estimates?.complete || sites.remote.estimates?.refreshing)) loadEstimates();
     }
     async function load(refresh = false, inventory = null, selection = null) {
@@ -685,6 +685,21 @@
 
         if (session?.automatic) await migrate();
     }
+    function renderSkippedFolders() {
+        const folders = summary?.skipped_folders || [];
+        const container = $('skipped-folders');
+        container.hidden = !folders.length;
+        const groups = {plugins:[], themes:[], folders:[]};
+        for (const path of folders) {
+            const [kind, ...parts] = path.split('/');
+            const group = kind === 'plugins' || kind === 'themes' ? kind : 'folders';
+            const item = sites && group !== 'folders' ? source()[kind]?.find(item => item.id === parts.join('/')) : null;
+            groups[group].push(`<li title="${esc(path)}">${esc(item?.name || path)}</li>`);
+        }
+        container.innerHTML = Object.entries(groups).filter(([, items]) => items.length).map(([kind, items]) =>
+            `<div class="csm-skipped-group"><h3>Skipped ${kind}</h3><ul>${items.join('')}</ul></div>`
+        ).join('');
+    }
     function showSummary() {
         if (!summary || !session) return;
         const action = transferAction();
@@ -696,8 +711,7 @@
         $('action-title').textContent = summary.status === 'applied' ? `${action} complete` : summary.status === 'restored' ? 'Destination restored' : summary.status === 'applying' ? 'Recovering…' : `${action === 'Push' ? 'Pushing' : 'Pulling'}…`;
         message(`${summary.tables} tables · ${summary.files.toLocaleString()} files · ${bytes(summary.bytes)}`);
         $('media-comparison').hidden = true;
-        $('skipped-folders').hidden = !summary.skipped_folders?.length;
-        $('skipped-folders').textContent = summary.skipped_folders?.length ? 'Skipped: ' + summary.skipped_folders.join(', ') : '';
+        renderSkippedFolders();
         renderActivity(summary.progress);
         renderPreview(); updateSetup();
     }

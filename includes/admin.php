@@ -89,7 +89,7 @@
                     <details class="csm-card csm-meter-history" open><summary><span>Transfer activity</span></summary><div class="csm-panel-body"><ol data-meter="events" aria-label="Transfer activity"></ol><p data-meter="events-empty" hidden>No activity yet.</p></div></details>
                 </section>
 
-        <p class="csm-note" id="csm-skipped-folders" hidden></p>
+        <section id="csm-skipped-folders" class="csm-skipped-folders" aria-label="Skipped items" hidden></section>
         <details class="csm-card" id="csm-preview" hidden><summary><span>Destination changes</span><span class="csm-summary" id="csm-preview-summary"></span></summary><div class="csm-panel-body"><div id="csm-preview-warnings"></div><p id="csm-preview-count"></p><div class="csm-table-scroll"><table class="csm-data-table"><thead><tr><th scope="col">Action</th><th scope="col">File</th><th scope="col">Before</th><th scope="col">After</th></tr></thead><tbody id="csm-preview-files"></tbody></table></div><button type="button" class="button" id="csm-preview-more" hidden>Show more changes</button></div></details>
         </div>
         <textarea id="csm-diagnostic-output" rows="6" readonly aria-label="Transfer diagnostics" hidden></textarea>
