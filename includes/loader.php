@@ -30,9 +30,16 @@ if (in_array($csm_plugin, $csm_active, true) && !$csm_request) {
         return $page || (is_string($_POST['nonce'] ?? null) && wp_verify_nonce($_POST['nonce'], 'csm_admin') !== false);
     })();
 }
+$csm_runtime_busy = false;
+if (in_array($csm_plugin, $csm_active, true) && !$csm_request && !(defined('WP_CLI') && WP_CLI)) {
+    require_once ABSPATH . WPINC . '/pluggable.php';
+    if (!class_exists('CSM_Support', false)) { require_once WP_PLUGIN_DIR . '/' . dirname($csm_plugin) . '/includes/support.php'; }
+    $csm_runtime_busy = !CSM_Support::runtime_lock(false);
+}
+// Read maintenance after taking the shared lock, so apply cannot race ordinary plugin startup.
 $csm_maintenance = get_option('_csm_maintenance', []);
 $csm_protected = !empty($csm_maintenance['id']) && in_array(get_option('_csm_job_' . $csm_maintenance['id'], [])['status'] ?? '', ['applying', 'backup_copy', 'restoring'], true);
-if (in_array($csm_plugin, $csm_active, true) && !$csm_request && !(defined('WP_CLI') && WP_CLI) && !is_admin() && ($csm_protected || (!empty($csm_maintenance['until']) && $csm_maintenance['until'] > time()))) {
+if (in_array($csm_plugin, $csm_active, true) && !$csm_request && !(defined('WP_CLI') && WP_CLI) && ($csm_runtime_busy || $csm_protected || (!empty($csm_maintenance['until']) && $csm_maintenance['until'] > time()))) {
     if ($csm_protected && !get_option('_csm_recovery_blocked_'.$csm_maintenance['id']) && !wp_next_scheduled('trickle_recover', [$csm_maintenance['id']])) { wp_schedule_single_event(time()+5, 'trickle_recover', [$csm_maintenance['id']]); }
     if ($csm_protected && !get_option('_csm_recovery_blocked_'.$csm_maintenance['id']) && function_exists('spawn_cron')) {
         if (!defined('WP_CRON_LOCK_TIMEOUT')) { define('WP_CRON_LOCK_TIMEOUT',60); }
@@ -51,4 +58,4 @@ if ($csm_request && in_array($csm_plugin, $csm_active, true)) {
     add_filter('option_template', static fn() => '__csm_transfer_no_theme__', PHP_INT_MAX);
     add_filter('option_stylesheet', static fn() => '__csm_transfer_no_theme__', PHP_INT_MAX);
 }
-unset($csm_request, $csm_plugin, $csm_active, $csm_maintenance, $csm_protected, $csm_recovery_job, $csm_recovery_cron);
+unset($csm_request, $csm_plugin, $csm_active, $csm_maintenance, $csm_protected, $csm_recovery_job, $csm_recovery_cron, $csm_runtime_busy);

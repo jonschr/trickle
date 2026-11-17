@@ -135,3 +135,39 @@ let savedMonotonic;global.sessionStorage={setItem(_,v){savedMonotonic=v;},getIte
 const reopened=new TransferProgress(null,()=>now);reopened.begin({...base,streams:{files:{size:110,received:20}}});assert.equal(reopened.timeline.streams.files.received,90);assert.equal(reopened.components()[1].replaced,.8);
 reopened.begin({...base,id:'different-job',streams:{files:{size:110,received:0,component_ranges:ranges}}});assert.equal(reopened.components()[1].received,0);delete global.sessionStorage;
 console.log('PASS Monotonic acknowledged progress, pinned metadata, replacement counts, stage transitions, reloads, and reset for new transfers.');
+
+// One issue may arrive through progress, diagnostics and the controller with different IDs.
+const issues = new TransferProgress(null, () => now);
+issues.begin({...timeline,id:'deduplicated-errors'});
+issues.update({phase:'Exporting table',state:'failed',run:'first',updated:1,failure:{phase:'Exporting table',error:'Snapshot unavailable'}});
+issues.update({phase:'Exporting table',state:'failed',run:'second',updated:2,failure:{phase:'Exporting table',error:'Snapshot unavailable'}});
+issues.fail(new Error('Snapshot unavailable'));
+issues.fail(new Error('Snapshot unavailable'));
+assert.equal(issues.events.filter(e=>e.error==='Snapshot unavailable').length,1);
+assert.equal(issues.events.find(e=>e.error==='Snapshot unavailable').occurrences,3);
+assert.equal(issues.notice.kind,'error');
+issues.fail(new Error('A different problem'));
+assert.equal(issues.events.filter(e=>e.error).length,2,'Distinct errors remain visible');
+issues.retry('HTTP 502',2,'network-1');issues.retry('HTTP 502',2,'network-2');
+assert.equal(issues.retryCount,2);assert.equal(issues.events.filter(e=>e.error==='HTTP 502').length,1);
+issues.resolved();assert.equal(issues.notice,null);
+let issueSaved;global.sessionStorage={setItem:(_,value)=>issueSaved=value,getItem:()=>issueSaved};issues.save();
+const issueReload=new TransferProgress(null,()=>now);issueReload.begin(issues.timeline);
+assert.equal(issueReload.events.find(e=>e.error==='Snapshot unavailable').occurrences,3);
+delete global.sessionStorage;
+console.log('PASS Repeated errors collapse across polls, controller failures, retries and reloads; distinct problems remain visible.');
+
+issues.addEvent({id:'path-a',phase:'Checking PHP',component:'plugins/a/bad.php',error:'Parse error',state:'failed',updated:now/1000});
+issues.addEvent({id:'path-b',phase:'Checking PHP',component:'plugins/b/bad.php',error:'Parse error',state:'failed',updated:now/1000});
+assert.equal(issues.events.filter(e=>e.error==='Parse error').length,2,'Different failing paths retain their own details');
+
+const wrapped = new TransferProgress(null,()=>now);
+wrapped.begin({...timeline,id:'wrapped-failure'});
+const cause='Installed file checksum failed: plugins/example/changed.php';
+wrapped.addEvent({id:'original',phase:'Verifying installed file',component:'plugins/example/changed.php',error:cause,state:'failed',updated:1});
+wrapped.addEvent({id:'rollback',phase:'Destination restored',component:'plugins/other',error:'Apply failed; changes rolled back. '+cause,state:'failed',updated:2});
+wrapped.fail(new Error('Apply failed; changes rolled back. '+cause+' Last activity: Verifying installed file: plugins/example/changed.php.'));
+assert.equal(wrapped.events.length,1,'Rollback and last-activity wrappers cannot duplicate the root problem');
+assert.equal(wrapped.events[0].component,'plugins/example/changed.php');
+assert.equal(wrapped.events[0].phase,'Verifying installed file');
+assert.match(wrapped.notice.text,/rolled back/);

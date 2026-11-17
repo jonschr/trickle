@@ -19,7 +19,9 @@ try{
  CSM_Plugin::boot();$check(CSM_Plugin::loader_ready(),'First boot replaces an older loader with the current authenticated loader');
  clearstatcache(true,$path);$check((fileperms($path)&0777)===0644,'Published loader has normal PHP-file permissions');
  $check(get_option('_csm_loader_version')===CSM_VERSION,'Successful refresh records the installed version');
+ $check(get_option('_csm_loader_hash')===hash('sha256',CSM_Plugin::loader_code()),'Loader content hash is recorded for same-version development updates');
  touch($path,1000000000);CSM_Plugin::boot();clearstatcache(true,$path);$check(filemtime($path)===1000000000,'Subsequent boots do not rewrite the loader');
+ $options['_csm_loader_hash']='older-build';file_put_contents($path,'<?php // TRICKLE_LOADER old build');CSM_Plugin::boot();$check(CSM_Plugin::loader_ready(),'Changed loader code refreshes even when the version number stays the same');
  $previous=$path.'.previous';file_put_contents($previous,'<?php // TRICKLE_LOADER previous');unlink($path);symlink($previous,$path);
  CSM_Plugin::install_loader();clearstatcache(true,$path);
  $check(!is_link($path)&&CSM_Plugin::loader_ready()&&file_get_contents($previous)==='<?php // TRICKLE_LOADER previous','Atomic loader installation replaces a link without modifying its target');unlink($previous);

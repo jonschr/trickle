@@ -39,11 +39,12 @@ final class CSM_Plugin {
 
     public static function boot(): void {
         if (!get_option('_csm_key')) { add_option('_csm_key', bin2hex(random_bytes(32)), '', false); }
-        // Upgrades do not run activation hooks; refresh the security-sensitive MU loader once per version.
-        if (get_option('_csm_loader_version') !== CSM_VERSION && wp_is_file_mod_allowed('trickle')) {
+        // Upgrades do not run activation hooks; refresh the security-sensitive MU loader when its version or contents change.
+        if ((get_option('_csm_loader_version') !== CSM_VERSION || get_option('_csm_loader_hash') !== hash('sha256', self::loader_code())) && wp_is_file_mod_allowed('trickle')) {
             try {
                 if (!self::loader_ready()) { self::install_loader(); }
                 update_option('_csm_loader_version', CSM_VERSION, false);
+                update_option('_csm_loader_hash', hash('sha256', self::loader_code()), false);
             } catch (Throwable $error) { CSM_Log::write('error', 'Recovery loader refresh failed', ['error' => $error->getMessage()]); }
         }
         if (defined('CSM_RECOVERY_CRON')) {
@@ -520,6 +521,10 @@ final class CSM_Plugin {
         self::save_recovery_plan($job, $base);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]); wp_schedule_single_event(time() + 60, 'trickle_recover', [$job['id']]);
         if ($paths || $job['database'] || isset($job['active_plugins_before'])) { update_option('_csm_maintenance', ['id' => $job['id'], 'until' => time() + 15 * MINUTE_IN_SECONDS], false); }
+        if (!CSM_Support::runtime_lock(true)) {
+            CSM_Progress::update(['phase'=>'Waiting for active site requests','component'=>''], true);
+            return self::summary($job) + ['continue'=>true];
+        }
         try {
             if (!self::replace_files($job, $cursor_path)) { return self::summary($job) + ['continue'=>true]; }
             CSM_Support::check_cancel();
@@ -784,6 +789,7 @@ final class CSM_Plugin {
         CSM_Support::work($job['id'],false);
         CSM_Progress::update(['phase' => 'Restoring destination backup', 'component' => '', 'count' => 0, 'total' => null, 'unit' => '']);
         $actor = current_user_can('manage_options') ? wp_get_current_user() : null;
+        $authenticated_session = $actor ? WP_Session_Tokens::get_instance($actor->ID)->get(wp_get_session_token()) : null;
         if (!in_array($job['status'], ['applied', 'applying','restoring'], true)) { throw new RuntimeException('Only applied or interrupted transfers can be restored.'); }
         $active = get_option('_csm_active_job');
         if ($active && $active !== $job['id']) { throw new RuntimeException('Finish the active transfer before restoring another backup.'); }
@@ -794,15 +800,20 @@ final class CSM_Plugin {
         $apply_cursor=CSM_Support::private_dir().'/'.$job['id'].'-apply.json';
         if (is_file($apply_cursor)) { $cursor=json_decode(file_get_contents($apply_cursor),true); if (isset($job['apply_work'])) { $job['apply_work']=array_replace($job['apply_work'],$cursor); } }
         if (!empty($job['apply_work']['install']['temp'])) { @unlink($job['apply_work']['install']['temp']); unset($job['apply_work']['install']); }
+        if (!CSM_Support::runtime_lock(true)) {
+            CSM_Progress::update(['phase'=>'Waiting for active site requests','component'=>''], true);
+            return self::summary($job) + ['continue'=>true];
+        }
         $ops = self::recovery_operations($job);
         CSM_Database::restore_tables($job);
-        if (!self::restore_files($job, $ops)) { return self::summary($job) + ['continue'=>true]; }
+        $authentication = self::retain_controller($actor, $job, $authenticated_session ?: null);
+        if (!self::restore_files($job, $ops)) { return self::summary($job) + ['continue'=>true] + $authentication; }
         CSM_Activation::restore($job);
         self::end_maintenance($job['id']);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
         $job['status'] = 'restored'; CSM_Jobs::save($job); CSM_Backups::forget($job['id']);
         if (get_option('_csm_active_job') === $job['id']) { delete_option('_csm_active_job'); }
-        CSM_Progress::finish('Destination restored'); return array_merge(self::summary($job), self::retain_controller($actor, $job));
+        CSM_Progress::finish('Destination restored'); return array_merge(self::summary($job), $authentication);
     }
 
     private static function retain_controller(?WP_User $actor, array $job, ?array $authenticated_session = null): array {
@@ -820,11 +831,18 @@ final class CSM_Plugin {
         clean_user_cache($user->ID); $user = new WP_User($user->ID); $user->set_role('administrator');
         $manager = WP_Session_Tokens::get_instance($user->ID);
         $token = wp_get_session_token();
-        // Keep in-flight polling requests valid when their authenticated user ID stays the same.
-        if ($token !== '') { $session = $authenticated_session ?? ($manager->get($token) ?: []); $session['expiration'] = time() + 2 * DAY_IN_SECONDS; $manager->update($token, $session); }
-        else { $token = $manager->create(time() + 2 * DAY_IN_SECONDS); }
-        wp_set_current_user($user->ID); wp_set_auth_cookie($user->ID, false, '', $token);
-        $_COOKIE[LOGGED_IN_COOKIE] = wp_generate_auth_cookie($user->ID, time() + 2 * DAY_IN_SECONDS, 'logged_in', $token);
+        if ($token !== '') {
+            $session = $authenticated_session ?? ($manager->get($token) ?: []);
+            $session['expiration'] ??= (int)(wp_parse_auth_cookie('', 'logged_in')['expiration'] ?? time() + 2 * DAY_IN_SECONDS);
+            $manager->update($token, $session);
+            // Cookies identify the username and token, so they remain valid even if its numeric ID changed.
+            // Keeping the browser's cookies also preserves Remember Me and its original expiration.
+        } else {
+            $token = $manager->create(time() + 2 * DAY_IN_SECONDS);
+            wp_set_auth_cookie($user->ID, false, '', $token);
+            $_COOKIE[LOGGED_IN_COOKIE] = wp_generate_auth_cookie($user->ID, time() + 2 * DAY_IN_SECONDS, 'logged_in', $token);
+        }
+        wp_set_current_user($user->ID);
         return ['nonce' => wp_create_nonce('csm_admin')];
     }
 
@@ -832,9 +850,7 @@ final class CSM_Plugin {
         if ((get_option('_csm_backup_restore', [])['backup_id'] ?? '') === $job['id']) { throw new RuntimeException('Recovery is using this backup. It cannot be discarded yet.'); }
         if (in_array($job['status'], ['applying', 'backup_copy', 'restoring'], true)) { throw new RuntimeException('Recovery is in progress. Its backup cannot be discarded.'); }
         CSM_Segments::cleanup($job['id']);
-        foreach ($job['database'] as $table) {
-            foreach (['stage', 'backup'] as $kind) { CSM_Support::query('DROP TABLE IF EXISTS ' . CSM_Support::ident($table[$kind])); }
-        }
+        CSM_Database::drop_private_tables(array_merge(array_column($job['database'], 'stage'), array_column($job['database'], 'backup')));
         CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id']);
         CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id'] . '-backup');
         if (isset($job['backup_dir'])) { CSM_Support::remove_tree($job['backup_dir']); }

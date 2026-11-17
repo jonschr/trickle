@@ -70,6 +70,7 @@
     function message(text) { $('status').textContent = text; }
     function fail(error) {
         transferMeter.fail?.(error);
+        if (transferMeter.timeline) { $('error').hidden = true; feedback(''); return; }
         $('error').innerHTML = `<p>${esc(error.message)}</p>`;
         const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'button-link'; copy.textContent = 'Copy error details';
         copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(error.message); copy.textContent = 'Copied'; } catch (_) { copy.textContent = 'Select the error text to copy'; } });
@@ -194,7 +195,7 @@
         busy = true; $('error').hidden = true;
         $('transfer-setup').setAttribute('aria-busy', 'true');
         feedback('');
-        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-discard','csm-close-transfer','csm-close-connection','csm-copy-diagnostics','csm-diagnostic-output'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
+        const controls = [...document.querySelectorAll('.csm button, .csm select, .csm input, .csm textarea')].filter(control => !['csm-copy','csm-copy-settings','csm-discard','csm-close-transfer','csm-close-connection','csm-copy-diagnostics','csm-diagnostic-output'].includes(control.id) && !control.matches('.csm-panel-disclosure') && !control.closest('#csm-transfer-meter') && !control.closest('#csm-diagnostics') && !control.closest('#csm-git-review'));
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
@@ -743,25 +744,27 @@
         const page = await api('preview', {id:session.id, offset:previewItems.length});
         previewItems = [...previewItems, ...page.items]; renderPreview();
     }));
-    let copyResetTimer;
-    $('copy').addEventListener('click', async () => {
-        try {
-            await navigator.clipboard.writeText($('pairing').value);
-            const button = $('copy'), label = button.querySelector('span');
-            button.style.minWidth = `${button.offsetWidth}px`;
-            label.textContent = 'Code copied';
-            clearTimeout(copyResetTimer);
-            copyResetTimer = setTimeout(() => { label.textContent = 'Copy connection code'; }, 2000);
-        } catch (_) {
-            document.querySelector('[data-csm-tab="settings"]').click();
-            $('connection').open = true;
-            $('pairing').hidden = false;
-            $('reveal').setAttribute('aria-expanded', 'true');
-            $('reveal').textContent = 'Hide connection code';
-            $('pairing').focus(); $('pairing').select();
-            feedback('Your browser could not copy automatically. The connection code is selected; copy it with your keyboard.');
-        }
-    });
+    for (const button of [$('copy'), $('copy-settings')]) {
+        let copyResetTimer;
+        button.addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText($('pairing').value);
+                const label = button.querySelector('span');
+                button.style.minWidth = `${button.offsetWidth}px`;
+                label.textContent = 'Code copied';
+                clearTimeout(copyResetTimer);
+                copyResetTimer = setTimeout(() => { label.textContent = 'Copy connection code'; }, 2000);
+            } catch (_) {
+                document.querySelector('[data-csm-tab="settings"]').click();
+                $('connection').open = true;
+                $('pairing').hidden = false;
+                $('reveal').setAttribute('aria-expanded', 'true');
+                $('reveal').textContent = 'Hide connection code';
+                $('pairing').focus(); $('pairing').select();
+                feedback('Your browser could not copy automatically. The connection code is selected; copy it with your keyboard.');
+            }
+        });
+    }
     $('reveal').addEventListener('click', () => {
         const show = $('pairing').hidden; $('pairing').hidden = !show;
         $('reveal').setAttribute('aria-expanded', String(show));

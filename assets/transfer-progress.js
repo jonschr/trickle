@@ -155,6 +155,19 @@
                 event={...event,component,phase};
                 if(this.events.some(item=>routine(item)&&item.phase===event.phase&&item.component===component&&!['complete','restored','cancelled'].includes(item.state) === !['complete','restored','cancelled'].includes(event.state)))return;
             }
+            const error = event.error || event.failure?.error;
+            if (error) {
+                const cause = value => String(value).replace(/^Apply failed; changes rolled back\.\s*/, '').replace(/ Last activity: [\s\S]*$/, '');
+                const existing = this.events.find(item => {
+                    const previous = item.error || item.failure?.error;
+                    return cause(previous) === cause(error) && (!item.component || !event.component || item.component === event.component || previous !== cause(previous) || error !== cause(error));
+                });
+                if (existing) {
+                    existing.occurrences = (existing.occurrences || 1) + (event.occurrences || 1);
+                    if (event.state === 'failed') Object.assign(existing, {state:event.state});
+                    return;
+                }
+            }
             this.events.push({...event});
             this.events.sort((a,b)=>a.updated-b.updated);
             const keep = new Set([...this.events.filter(routine).slice(-64), ...this.events.filter(item => !routine(item)).slice(-16)]);
@@ -164,7 +177,7 @@
         retry(error, wait = 0, id = `client-retry:${this.clock()}`, updated = this.clock()/1000) {
             if (!this.timeline) return;
             if (this.seen.has(id)) return;
-            this.retryCount++; this.notice = {kind:'retry',text:'Retrying connection',error:String(error || ''),until:this.clock()+wait*1000};
+            this.retryCount++; this.notice = {kind:'retry',text:'Connection interrupted. Retrying automatically.',error:String(error || ''),until:this.clock()+wait*1000};
             this.addEvent({id,updated,phase:'Retrying connection',error:String(error || ''),state:'retry'});
             this.render(); this.save();
         }
@@ -196,8 +209,9 @@
         }
         fail(error) {
             if (!this.timeline) return;
-            this.notice = {kind:'error',text:'Transfer needs attention',error:String(error?.message || error || '')};
-            this.addEvent({id:`error:${this.clock()}`,updated:this.clock()/1000,phase:'Transfer needs attention',error:this.notice.error,state:'failed'});
+            const message = String(error?.message || error || '');
+            this.notice = {kind:'error',text:message.startsWith('Apply failed; changes rolled back.') ? 'Transfer failed. Changes were rolled back.' : 'Transfer needs attention',error:message};
+            this.addEvent({id:`error:${this.notice.error}`,updated:this.clock()/1000,phase:'Transfer needs attention',error:this.notice.error,state:'failed'});
             this.render(); this.save();
         }
         save() {
@@ -260,7 +274,7 @@
             const status=this.status();if(el('phase').textContent!==status)el('phase').textContent=status;el('phase').hidden=['complete','restored'].includes(this.phase);
             el('retries').textContent=`${this.retryCount} ${this.retryCount===1?'retry':'retries'}`;el('retries').hidden=!this.retryCount;
             const notice=this.notice;
-            el('notice').textContent=notice?`${notice.text}${notice.kind==='retry'&&notice.until>this.clock()?` in ${Math.ceil((notice.until-this.clock())/1000)}s`:''}${notice.error?` · ${notice.error}`:''}`:'';
+            el('notice').textContent=notice?`${notice.text}${notice.kind==='retry'&&notice.until>this.clock()?` in ${Math.ceil((notice.until-this.clock())/1000)}s`:''}`:'';
             el('notice').dataset.tone=notice?.kind||'normal';el('notice').hidden=!notice;
             const components=this.components(), signature=JSON.stringify(components);
             if(signature!==this.signature){
@@ -288,7 +302,7 @@
                     item.children[1].textContent=component.bytes==null?'Sizing…':(component.estimated?'~':'')+size(component.bytes);item.children[2].textContent=component.state;
                 }
             }
-            const latest=[...this.events].reverse(), eventSignature=latest.map(e=>e.id).join(':');
+            const latest=[...this.events].reverse(), eventSignature=JSON.stringify(latest);
             if(eventSignature!==this.eventSignature){
                 this.eventSignature=eventSignature;el('events').replaceChildren();
                 for(const event of latest){
@@ -300,6 +314,7 @@
                     const name=type==='Plugin'?path.slice(8):type==='Theme'?path.slice(7):type==='Media'?(path==='uploads'?'Other files':path.slice(8)):path;
                     subject.textContent=problem?path||event.phase:name||event.phase;
                     detail.textContent=problem?[event.phase,event.error||event.failure?.error].filter(Boolean).join(' · '):name?[type,event.phase].filter(Boolean).join(' · '):'';
+                    if(event.occurrences>1)detail.textContent+=` · Reported ${event.occurrences} times`;
                     item.dataset.state=event.state||'normal';item.append(time,subject,detail);
                     if(event.error||event.failure?.error){const copy=document.createElement('button');copy.type='button';copy.className='button-link';copy.dataset.copyEvent=event.id;copy.textContent='Copy error details';item.append(copy);}
                     el('events').append(item);

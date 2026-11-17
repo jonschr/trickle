@@ -79,7 +79,7 @@ final class CSM_Progress {
     }
 
     public static function fail(string $error): void {
-        if (!self::$current) { return; }
+        if (!self::$current || isset(self::$current['failure'])) { return; }
         CSM_Log::write('error', 'Transfer component failed', ['transfer_id' => self::$current['id'], 'phase' => self::$current['phase'], 'component' => self::$current['component'], 'run'=>self::$current['run'], 'count'=>self::$current['count'], 'total'=>self::$current['total'], 'unit'=>self::$current['unit'], 'error' => $error]);
         self::update(['state' => 'failed', 'failure' => self::$current['failure'] ?? ['phase' => self::$current['phase'], 'component' => self::$current['component'], 'error' => $error]], true);
     }

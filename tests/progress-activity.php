@@ -29,6 +29,10 @@ try{
     CSM_Progress::update(['phase'=>'Checking PHP compatibility','component'=>'plugins/first/includes/bad.php']);
     CSM_Progress::fail('Parse error');
     check(end(CSM_Log::$entries)['component']==='plugins/first/includes/bad.php','Failure diagnostics retain the exact filename');
+    $logged=count(CSM_Log::$entries);
+    CSM_Progress::update(['phase'=>'Destination restored','component'=>'plugins/unrelated']);
+    CSM_Progress::fail('Apply failed; changes rolled back. Parse error');
+    check(count(CSM_Log::$entries)===$logged,'Rollback wrappers do not relog the same failure against an unrelated component');
     CSM_Progress::start($id,'Continuing checks');
     for($i=0;$i<100;$i++)CSM_Progress::update(['phase'=>'Staging table','component'=>'wp_table_'.$i]);
     CSM_Progress::update([],true);$events=CSM_Progress::read($id)['events'];

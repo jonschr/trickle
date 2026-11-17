@@ -89,6 +89,13 @@ final class CSM_Backups {
                 $copy = '_csm_' . substr($job['id'], 0, 10) . '_' . $i;
                 $job['database'][] = array_merge($table, ['stage' => $copy, 'backup' => $copy . '_old']);
             }
+            $mapping = array_combine(array_column($original['database'],'backup'), array_column($job['database'],'backup'));
+            foreach ($original['database'] as $i=>$table) {
+                if (empty($table['existed'])) { continue; }
+                $schema = CSM_Database::rows('SHOW CREATE TABLE '.CSM_Support::ident($table['backup']), ARRAY_N)[0][1];
+                [, $keys] = CSM_Database::foreign_schema($schema,$mapping,$job['id'].$table['target']);
+                $job['database'][$i]['restore_foreign_keys'] = $keys;
+            }
             $job['status'] = 'backup_copy'; CSM_Jobs::save($job);
             update_option('_csm_backup_restore', ['backup_id' => $id, 'job_id' => $job['id']], false);
             update_option('_csm_active_job', $job['id'], false);
@@ -105,6 +112,7 @@ final class CSM_Backups {
                 CSM_Progress::update(['phase'=>'Copying backup table','component'=>$table['target'],'count'=>$cursor['offset'],'total'=>null,'unit'=>'rows']);
                 if (!$cursor['initialized']) {
                     CSM_Support::query('DROP TABLE IF EXISTS '.$copy); CSM_Support::query('CREATE TABLE '.$copy.' LIKE '.$source);
+                    if (CSM_Database::schema_engine(CSM_Database::rows('SHOW CREATE TABLE '.$source, ARRAY_N)[0][1]) !== 'INNODB') { CSM_Support::query('ALTER TABLE '.$copy.' ENGINE=InnoDB'); }
                     $cursor['initialized']=true; $job['backup_copy']=$cursor; CSM_Jobs::save($job);
                 }
                 $columns=CSM_Database::rows('SHOW COLUMNS FROM '.$source);

@@ -11,6 +11,7 @@ foreach(['AUTH','SECURE_AUTH','LOGGED_IN','NONCE'] as $scheme){define($scheme.'_
 $GLOBALS['blog_id']=1;
 $GLOBALS['wpdb']=new class {public $prefix='wp_';public function get_blog_prefix($site=null){return 'wp_';}};
 
+class CSM_Support { static function runtime_lock($exclusive){return true;} }
 function __($text){return $text;}
 function get_site_option($key){return 'https://example.test';}
 function get_option($key,$default=false){if($key==='active_plugins')return ['trickle/trickle.php','security/security.php'];if($key==='template'||$key==='stylesheet')return 'theme';if($key==='wp_user_roles')return ['administrator'=>['name'=>'Administrator','capabilities'=>['manage_options'=>true]]];return in_array($key,['siteurl','home'])?'https://example.test':$default;}

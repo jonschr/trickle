@@ -22,7 +22,7 @@ final class CSM_Package {
         CSM_Support::step();
         try {
             if ($kind === 'database') {
-                // Keep one consistent InnoDB transaction. Its hard budget fails safely rather than mixing snapshots from different requests.
+                // Keep one consistent snapshot, with read locks for nontransactional tables. Its hard budget fails safely rather than mixing snapshots from different requests.
                 $state = ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0],'range_tracking'=>true,'ranges'=>[]];
                 ftruncate($fp, 0); rewind($fp);
                 $buffer='';

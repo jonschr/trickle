@@ -2,10 +2,11 @@
 defined('ABSPATH') || exit;
 
 final class CSM_Database {
-    public static function rows(string $sql, string $format = ARRAY_A): array {
+    public static function rows(string $sql, string $format = ARRAY_A, ?wpdb $reader = null): array {
         global $wpdb;
-        $rows = $wpdb->get_results($sql, $format);
-        if ($wpdb->last_error !== '' || !is_array($rows)) { throw new RuntimeException('Database read failed: ' . $wpdb->last_error); }
+        $reader ??= $wpdb;
+        $rows = $reader->get_results($sql, $format);
+        if ($reader->last_error !== '' || !is_array($rows)) { throw new RuntimeException('Database read failed: ' . $reader->last_error); }
         return $rows;
     }
 
@@ -15,8 +16,8 @@ final class CSM_Database {
         return ($rows[0][0] ?? null) === $table;
     }
 
-    public static function primary_keys(string $table): array {
-        $keys = self::rows('SHOW INDEX FROM ' . CSM_Support::ident($table) . " WHERE Key_name = 'PRIMARY'");
+    public static function primary_keys(string $table, ?wpdb $reader = null): array {
+        $keys = self::rows('SHOW INDEX FROM ' . CSM_Support::ident($table) . " WHERE Key_name = 'PRIMARY'", ARRAY_A, $reader);
         usort($keys, static fn($a, $b) => (int)$a['Seq_in_index'] <=> (int)$b['Seq_in_index']);
         return array_column($keys, 'Column_name');
     }
@@ -56,8 +57,8 @@ final class CSM_Database {
         $output = [];
         foreach (array_unique($tables) as $table) {
             if (!isset($allowed[$table])) { throw new RuntimeException('Unknown database table.'); }
-            if (strtoupper($allowed[$table]['engine']) !== 'INNODB') {
-                throw new RuntimeException($table . ' is not InnoDB; a consistent live snapshot cannot be guaranteed.');
+            if (!in_array(strtoupper($allowed[$table]['engine']), ['INNODB', 'MYISAM', 'MEMORY'], true)) {
+                throw new RuntimeException($table . ' uses an unsupported database engine: ' . $allowed[$table]['engine']);
             }
             $output[] = $table;
         }
@@ -146,30 +147,45 @@ final class CSM_Database {
         global $wpdb;
         $tables = self::validate($selection['tables'] ?? []);
         yield CSM_Support::json(array_merge(['type' => 'header', 'version' => $chain ? 2 : 1, 'kind' => 'database', 'prefix' => $wpdb->prefix, 'tables' => $tables, 'active_plugins' => CSM_Activation::current(), 'trickle_plugin' => plugin_basename(CSM_FILE)], self::identity()));
-        CSM_Support::query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-        CSM_Support::query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+        $engines = array_column(self::inventory(), 'engine', 'id');
+        $locked = array_values(array_filter($tables, static fn($table) => strtoupper($engines[$table]) !== 'INNODB'));
+        $reader = $locked ? new wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST) : $wpdb;
         $hash = $chain ? '' : hash_init('sha256');
         $rows = 0;
         try {
+            if ($locked) {
+                // Lock only nontransactional tables; InnoDB writes continue during its snapshot.
+                $reader->suppress_errors(true);
+                $reader->query('SET SESSION lock_wait_timeout=5');
+                if ($reader->query('LOCK TABLES ' . implode(', ', array_map(static fn($table) => CSM_Support::ident($table) . ' READ', $locked))) === false) {
+                    throw new RuntimeException('Cannot safely snapshot non-InnoDB tables. Check source LOCK TABLES permission and whether a table is busy.');
+                }
+            }
+            CSM_Support::query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            CSM_Support::query('START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY');
+            $transaction_connection = mysqli_thread_id($wpdb->dbh);
+            $locked_connection = mysqli_thread_id($reader->dbh);
             foreach ($tables as $table) {
+                $table_reader = in_array($table, $locked, true) ? $reader : $wpdb;
+                CSM_Support::check_source_budget();
                 CSM_Progress::update(['phase' => 'Exporting table', 'component' => $table, 'count' => $rows, 'total' => null, 'unit' => 'rows', 'bytes' => 0]);
                 $quoted = CSM_Support::ident($table);
-                $ddl = self::rows('SHOW CREATE TABLE ' . $quoted, ARRAY_N)[0] ?? null;
+                $ddl = self::rows('SHOW CREATE TABLE ' . $quoted, ARRAY_N, $table_reader)[0] ?? null;
                 if (!$ddl) { throw new RuntimeException('Cannot read table schema.'); }
-                if (preg_match('/\bFOREIGN KEY\b/i', $ddl[1])) {
-                    throw new RuntimeException('Foreign-key tables are not supported in this release: ' . $table);
-                }
-                $columns = self::rows('SHOW COLUMNS FROM ' . $quoted);
+                if (self::schema_engine($ddl[1]) !== strtoupper($engines[$table])) { throw new RuntimeException('Source table engine changed during preparation. Prepare again.'); }
+                $columns = self::rows('SHOW COLUMNS FROM ' . $quoted, ARRAY_A, $table_reader);
                 $columns = array_values(array_filter($columns, fn($column) => !str_contains($column['Extra'], 'GENERATED')));
                 $names = array_column($columns, 'Field');
                 $text_columns = array_column(array_filter($columns, fn($column) => (bool)preg_match('/^(char|varchar|tinytext|text|mediumtext|longtext|enum|set|json)\b/i', $column['Type'])), 'Field');
                 $line = CSM_Support::json(['type' => 'table', 'name' => $table, 'schema' => $ddl[1], 'columns' => $names, 'text_columns' => $text_columns]);
                 if ($chain) { $hash = CSM_Package::chain($hash,$line); } else { hash_update($hash,$line); } yield $line;
-                $keys = self::primary_keys($table);
+                $keys = self::primary_keys($table, $table_reader);
                 $last = null; $offset = 0;
                 do {
-                    $batch = self::rows('SELECT ' . implode(',', array_map([CSM_Support::class, 'ident'], $names)) . ' FROM ' . $quoted . self::page_sql($keys, $last, $offset, $names));
+                    $batch = self::rows('SELECT ' . implode(',', array_map([CSM_Support::class, 'ident'], $names)) . ' FROM ' . $quoted . self::page_sql($keys, $last, $offset, $names), ARRAY_A, $table_reader);
+                    if (mysqli_thread_id($table_reader->dbh) !== ($table_reader === $wpdb ? $transaction_connection : $locked_connection)) { throw new RuntimeException('Source database reconnected during snapshot. Prepare again.'); }
                     foreach ($batch as $row) {
+                        CSM_Support::check_source_budget();
                         $last = $row;
                         if ($table === $wpdb->options && isset($row['option_name']) && str_starts_with($row['option_name'], '_csm_')) { continue; }
                         $encoded = [];
@@ -186,8 +202,55 @@ final class CSM_Database {
             }
             yield CSM_Support::json(['type' => 'end', 'rows' => $rows, 'sha256' => ($chain ? $hash : hash_final($hash))]);
         } finally {
-            CSM_Support::query('ROLLBACK');
+            try { CSM_Support::query('ROLLBACK'); }
+            finally { if ($locked) { $reader->query('UNLOCK TABLES'); $reader->close(); } }
         }
+    }
+
+    public static function schema_engine(string $ddl): string {
+        if (!preg_match('/\bENGINE=(InnoDB|MyISAM|MEMORY)\b/i', $ddl, $match)) { throw new RuntimeException('Unsupported database engine.'); }
+        return strtoupper($match[1]);
+    }
+
+    /** Rebind only SHOW CREATE TABLE's ordinary, same-database foreign keys. */
+    public static function foreign_schema(string $ddl, array $mapping, string $salt): array {
+        $keys = []; $lines = [];
+        foreach (explode("\n", $ddl) as $line) {
+            if (!preg_match('/^\s*CONSTRAINT\s+`([^`]+)`\s+FOREIGN KEY\b/', $line)) { $lines[] = $line; continue; }
+            $columns = '`[a-zA-Z0-9_$-]{1,64}`(?:,\s*`[a-zA-Z0-9_$-]{1,64}`)*';
+            $action = '(?:RESTRICT|CASCADE|SET NULL|NO ACTION)';
+            if (!preg_match('/^\s*CONSTRAINT `([^`]+)` FOREIGN KEY \(('.$columns.')\) REFERENCES `([a-zA-Z0-9_$-]{1,64})` \(('.$columns.')\)((?: ON (?:DELETE|UPDATE) '.$action.')*)[,]?$/D', $line, $match)) {
+                throw new RuntimeException('Unsupported foreign-key definition.');
+            }
+            if (!isset($mapping[$match[3]])) { throw new RuntimeException('Include the related table in this transfer: '.$match[3]); }
+            $name = '_csm_fk_'.substr(hash('sha256', $salt.$match[1]), 0, 40);
+            $keys[] = 'CONSTRAINT '.CSM_Support::ident($name).' FOREIGN KEY ('.$match[2].') REFERENCES '.CSM_Support::ident($mapping[$match[3]]).' ('.$match[4].')'.$match[5];
+        }
+        $ddl = preg_replace('/,(\s*\) ENGINE=)/', '$1', implode("\n", $lines));
+        return [$ddl, $keys];
+    }
+
+    private static function stage_mapping(array $tables, string $id): array {
+        $mapping = [];
+        foreach ($tables as $index=>$name) { $mapping[$name] = '_csm_'.substr($id,0,10).'_'.$index; }
+        return $mapping;
+    }
+
+    public static function attach_keys(string $table, array $keys): void {
+        foreach ($keys as $key) {
+            $schema = self::rows('SHOW CREATE TABLE '.CSM_Support::ident($table), ARRAY_N)[0][1];
+            $name = substr($key, 0, strpos($key, ' FOREIGN KEY'));
+            if (!str_contains($schema, $name)) { CSM_Support::query('ALTER TABLE '.CSM_Support::ident($table).' ADD '.$key); }
+        }
+    }
+
+    public static function drop_private_tables(array $tables): void {
+        global $wpdb;
+        foreach ($tables as $table) { if (!preg_match('/^_csm_[a-zA-Z0-9_$-]+$/D', $table)) { throw new RuntimeException('Invalid private database table.'); } }
+        $checks = (int)$wpdb->get_var('SELECT @@SESSION.foreign_key_checks');
+        CSM_Support::query('SET SESSION FOREIGN_KEY_CHECKS=0');
+        try { foreach ($tables as $table) { CSM_Support::query('DROP TABLE IF EXISTS '.CSM_Support::ident($table)); } }
+        finally { CSM_Support::query('SET SESSION FOREIGN_KEY_CHECKS='.$checks); }
     }
 
     public static function stage($fp, array &$job): void {
@@ -218,17 +281,17 @@ final class CSM_Database {
                 $current = '_csm_' . substr($job['id'], 0, 10) . '_' . count($job['database']);
                 $backup = $current . '_old';
                 CSM_Support::ident($target);
-                $ddl = $record['schema'];
+                [$ddl, $foreign_keys] = self::foreign_schema($record['schema'], self::stage_mapping($header['tables'], $job['id']), $job['id'].$record['name']);
                 // A signed peer can send data, not arbitrary executable SQL.
-                if (preg_match('/;|\b(FOREIGN KEY|DATA DIRECTORY|INDEX DIRECTORY|TABLESPACE|CONNECTION|SELECT|INSERT|DROP)\b/i', $ddl) || !preg_match('/\bENGINE=InnoDB\b/i', $ddl) || !str_starts_with($ddl, 'CREATE TABLE ' . CSM_Support::ident($record['name']) . ' (')) {
+                if (preg_match('/;|\b(FOREIGN KEY|DATA DIRECTORY|INDEX DIRECTORY|TABLESPACE|CONNECTION|SELECT|INSERT|DROP)\b/i', $ddl) || !preg_match('/\bENGINE=(?:InnoDB|MyISAM|MEMORY)\b/i', $ddl) || !str_starts_with($ddl, 'CREATE TABLE ' . CSM_Support::ident($record['name']) . ' (')) {
                     throw new RuntimeException('Unsupported or unsafe table schema.');
                 }
                 $columns = $record['columns']; $text_columns = $record['text_columns'] ?? [];
                 foreach ($columns as $column) { CSM_Support::ident($column); }
-                $job['database'][] = ['target' => $target, 'stage' => $current, 'backup' => $backup];
+                $job['database'][] = ['target' => $target, 'stage' => $current, 'backup' => $backup, 'engine' => self::schema_engine($ddl), 'foreign_keys' => $foreign_keys];
                 CSM_Jobs::save($job);
                 $ddl = preg_replace('/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . CSM_Support::ident($current), $ddl, 1);
-                CSM_Support::query($ddl);
+                CSM_Support::query(preg_replace('/\bENGINE=(?:InnoDB|MyISAM|MEMORY)\b/i', 'ENGINE=InnoDB', $ddl, 1));
             } elseif ($record['type'] === 'row' && $current) {
                 if (count($record['values']) !== count($columns)) { throw new RuntimeException('Invalid database row.'); }
                 $values = [];
@@ -280,13 +343,13 @@ final class CSM_Database {
                     if ($transaction) { throw new RuntimeException('Unexpected table transaction.'); }
                     $target=$wpdb->prefix.substr($record['name'],strlen($prefix)); CSM_Support::ident($target);
                     $index=count($state['seen']); $current='_csm_'.substr($job['id'],0,10).'_'.$index; $backup=$current.'_old';
-                    $ddl=$record['schema'];
-                    if (preg_match('/;|\b(FOREIGN KEY|DATA DIRECTORY|INDEX DIRECTORY|TABLESPACE|CONNECTION|SELECT|INSERT|DROP)\b/i',$ddl) || !preg_match('/\bENGINE=InnoDB\b/i',$ddl) || !str_starts_with($ddl,'CREATE TABLE '.CSM_Support::ident($record['name']).' (')) { throw new RuntimeException('Unsupported or unsafe table schema.'); }
+                    [$ddl,$foreign_keys]=self::foreign_schema($record['schema'],self::stage_mapping($state['header']['tables'],$job['id']),$job['id'].$record['name']);
+                    if (preg_match('/;|\b(FOREIGN KEY|DATA DIRECTORY|INDEX DIRECTORY|TABLESPACE|CONNECTION|SELECT|INSERT|DROP)\b/i',$ddl) || !preg_match('/\bENGINE=(?:InnoDB|MyISAM|MEMORY)\b/i',$ddl) || !str_starts_with($ddl,'CREATE TABLE '.CSM_Support::ident($record['name']).' (')) { throw new RuntimeException('Unsupported or unsafe table schema.'); }
                     foreach ($record['columns'] as $column) { CSM_Support::ident($column); }
                     // Register orphan cleanup before DDL; replaying this record safely recreates only the private stage table.
-                    $job['database'][$index]=['target'=>$target,'stage'=>$current,'backup'=>$backup]; CSM_Jobs::save($job);
+                    $job['database'][$index]=['target'=>$target,'stage'=>$current,'backup'=>$backup,'engine'=>self::schema_engine($ddl),'foreign_keys'=>$foreign_keys]; CSM_Jobs::save($job);
                     CSM_Support::query('DROP TABLE IF EXISTS '.CSM_Support::ident($current));
-                    CSM_Support::query(preg_replace('/^CREATE TABLE `[^`]+`/','CREATE TABLE '.CSM_Support::ident($current),$ddl,1));
+                    CSM_Support::query(preg_replace('/^CREATE TABLE `[^`]+`/','CREATE TABLE '.CSM_Support::ident($current),preg_replace('/\bENGINE=(?:InnoDB|MyISAM|MEMORY)\b/i','ENGINE=InnoDB',$ddl,1),1));
                     $state['seen'][]=$record['name']; $state['current']=$current; $state['columns']=$record['columns']; $state['text_columns']=$record['text_columns'] ?? [];
                     $checkpoint();
                 } elseif ($type==='row' && $state['current']) {
@@ -312,11 +375,25 @@ final class CSM_Database {
     }
 
     public static function replace_tables(array &$job): void {
+        global $wpdb;
+        $targets = array_column($job['database'], 'target');
+        $relations = self::rows($wpdb->prepare('SELECT TABLE_NAME, REFERENCED_TABLE_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=%s AND REFERENCED_TABLE_SCHEMA=%s AND REFERENCED_TABLE_NAME IS NOT NULL', DB_NAME, DB_NAME));
+        foreach ($relations as $relation) {
+            if (in_array($relation['TABLE_NAME'],$targets,true) !== in_array($relation['REFERENCED_TABLE_NAME'],$targets,true)) {
+                throw new RuntimeException('Include both related destination tables: '.$relation['TABLE_NAME'].' and '.$relation['REFERENCED_TABLE_NAME']);
+            }
+        }
+        foreach ($job['database'] as $table) { self::attach_keys($table['stage'], $table['foreign_keys'] ?? []); }
         $renames = [];
         foreach ($job['database'] as &$table) {
             CSM_Progress::update(['phase' => 'Preparing table replacement', 'component' => $table['target'], 'count' => 0, 'total' => count($job['database']), 'unit' => 'tables']);
+            if (isset($table['engine']) && $table['engine'] !== 'INNODB') {
+                if (!in_array($table['engine'], ['MYISAM', 'MEMORY'], true)) { throw new RuntimeException('Invalid destination table engine.'); }
+                CSM_Support::query('ALTER TABLE ' . CSM_Support::ident($table['stage']) . ' ENGINE=' . $table['engine']);
+            }
             $exists = self::table_exists($table['target']);
             $table['existed'] = $exists;
+            if ($exists) { $table['backup_engine'] = self::schema_engine(self::rows('SHOW CREATE TABLE ' . CSM_Support::ident($table['target']), ARRAY_N)[0][1]); }
             if ($exists) { $renames[] = CSM_Support::ident($table['target']) . ' TO ' . CSM_Support::ident($table['backup']); }
             $renames[] = CSM_Support::ident($table['stage']) . ' TO ' . CSM_Support::ident($table['target']);
         }
@@ -326,18 +403,28 @@ final class CSM_Database {
         if ($renames) { CSM_Progress::update(['phase' => 'Replacing database tables atomically', 'component' => implode(', ', array_column($job['database'], 'target'))], true); }
         if ($renames) {
             CSM_Support::query('RENAME TABLE ' . implode(', ', $renames));
+            foreach ($job['database'] as $table) {
+                if (!empty($table['existed']) && ($table['backup_engine'] ?? 'INNODB') !== 'INNODB') {
+                    CSM_Support::query('ALTER TABLE ' . CSM_Support::ident($table['backup']) . ' ENGINE=InnoDB');
+                }
+            }
             CSM_Progress::update(['count' => count($job['database'])], true);
         }
         wp_cache_flush();
     }
 
     public static function restore_tables(array $job): void {
+        foreach ($job['database'] as $table) { if (!empty($table['restore_foreign_keys']) && self::table_exists($table['backup'])) { self::attach_keys($table['backup'], $table['restore_foreign_keys']); } }
         $renames = [];
         foreach ($job['database'] as $table) {
             CSM_Progress::update(['phase' => 'Restoring table', 'component' => $table['target']]);
             $backup_exists = self::table_exists($table['backup']);
             $stage_exists = self::table_exists($table['stage']);
             if ($backup_exists) {
+                if (isset($table['backup_engine']) && $table['backup_engine'] !== 'INNODB') {
+                    if (!in_array($table['backup_engine'], ['MYISAM', 'MEMORY'], true)) { throw new RuntimeException('Invalid backup table engine.'); }
+                    CSM_Support::query('ALTER TABLE ' . CSM_Support::ident($table['backup']) . ' ENGINE=' . $table['backup_engine']);
+                }
                 self::preserve_options(['database' => [['target' => $table['target'], 'stage' => $table['backup']]]], true);
                 if (self::table_exists($table['target'])) { $renames[] = CSM_Support::ident($table['target']) . ' TO ' . CSM_Support::ident($table['stage']); }
                 $renames[] = CSM_Support::ident($table['backup']) . ' TO ' . CSM_Support::ident($table['target']);

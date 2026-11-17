@@ -13,7 +13,7 @@ class CSM_Support {
  static function private_dir(){return $GLOBALS['fixture'].'/cache';}
  static function json($value){return json_encode($value,JSON_UNESCAPED_SLASHES)."\n";}
  static function atomic_json($path,$value){file_put_contents($path,self::json($value));}
- static function step(){}static function due(){return !empty($GLOBALS["yield_package"]);}static function check_source_budget(){}static function check_cancel(){}static function write($fp,$bytes){fwrite($fp,$bytes);}
+ static function step(){$GLOBALS["package_ticks"]=0;}static function due(){return !empty($GLOBALS["yield_package"])&&++$GLOBALS["package_ticks"]>2;}static function check_source_budget(){}static function check_cancel(){}static function write($fp,$bytes){fwrite($fp,$bytes);}
  static function hash_file($path){return hash_file('sha256',$path);}
 }
 class CSM_Activation {static function current(){return [];}}

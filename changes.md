@@ -1,5 +1,17 @@
 # Changes
 
+## 0.1.28 — 2026-11-17
+
+- Support InnoDB, MEMORY and MyISAM tables with consistent snapshots, transactional staging, original-engine restoration and durable destination backups.
+- Import related foreign-key tables together, validate their staged relationships before replacement, and preserve constraints through rollback and saved-backup restoration.
+- Drain existing ordinary site requests and pause new plugin execution during replacement and verification; keep authenticated migration and recovery available, including when polling authentication changes during a database swap.
+- Preserve the local controlling user’s browser cookies, session token and original session lifetime across database pulls and rollback, including changed numeric user IDs; no live-site browser login is required.
+- Group repeated transfer errors, including rollback and last-activity wrappers, into one copyable issue with a report count; keep distinct failing paths separate and clear retry notices after recovery.
+- Add a primary Copy connection code button beside the secondary Show and Regenerate actions, and remove the confusing local-address connection message.
+- Refresh the recovery loader when its contents change within the same plugin version.
+
+Validation: all 18 JavaScript suites and 36 isolated PHP runs passed, including cookie/session preservation, loader authentication, request draining, recovery and packaged component ranges. Main Dev passed 38 mixed-engine checks and 14 foreign-key checks covering staging, replacement, rollback and retained-backup restoration. Runtime/vendor PHP syntax and diff checks passed. Live Oak browser pulls verified 52 tables, 19,896 rows and 18,426 files without transfer errors; a fresh admin-page request retained the same local user. Desktop/mobile checks covered grouped error activity and connection-code copy/fallback behavior. No site content was pushed to a remote destination.
+
 ## 0.1.27 — 2026-11-13
 
 - Stage changed plugins and themes as complete private components, then rename the original into backup and install the staged component; retain per-file media transfers and skip fully matching components.

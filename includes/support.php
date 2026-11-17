@@ -9,6 +9,23 @@ final class CSM_Support {
     private static bool $cancellable = true;
     private static ?float $step_deadline = null;
 
+    private static $runtime_handle = null;
+    private static bool $runtime_exclusive = false;
+
+    /** Drain ordinary requests before replacing code; keep them out until verification ends. */
+    public static function runtime_lock(bool $exclusive): bool {
+        if (is_resource(self::$runtime_handle) && (self::$runtime_exclusive || !$exclusive)) { return true; }
+        $handle = self::$runtime_handle ?? fopen(self::private_dir().'/runtime.lock', 'c');
+        if (!$handle) { throw new RuntimeException('Cannot open site runtime lock.'); }
+        if (!flock($handle, ($exclusive ? LOCK_EX : LOCK_SH) | LOCK_NB)) {
+            if (!is_resource(self::$runtime_handle)) { fclose($handle); }
+            return false;
+        }
+        if (!is_resource(self::$runtime_handle)) { register_shutdown_function(static function () { if (is_resource(self::$runtime_handle)) { fclose(self::$runtime_handle); } }); }
+        self::$runtime_handle = $handle; self::$runtime_exclusive = $exclusive;
+        return true;
+    }
+
     public static function work(string $id, ?bool $cancellable = true): void {
         self::cancel_path($id); if (self::$work_id!==$id || $cancellable!==null) { self::$cancellable=$cancellable ?? true; } self::$work_id=$id;
     }
