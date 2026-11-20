@@ -5,15 +5,17 @@ const source = fs.readFileSync(path.join(__dirname, '../assets/admin.js'), 'utf8
 const controls = {};
 for (const id of ['trickle-versions','trickle-version-status','trickle-update-status','check-remote-update','update-remote','source','destination','site-menu-toggle','site-menu','update-connection','install-local-build','clear-update-comparisons','open-remote-trickle']) controls[id] = {classList:{toggle(name,on){this[name]=on;}}};
 let menuParent;const siteMenu=controls['site-menu'];
+const document={activeElement:null};siteMenu.contains=node=>node!==null && node===document.activeElement;
 for(const id of ['source','destination']){
  let html='';Object.defineProperty(controls[id],'innerHTML',{get:()=>html,set(value){html=value;if(menuParent===id)delete controls['site-menu'];}});
  controls[id].closest=()=>({classList:{toggle(){}}});controls[id].append=menu=>{assert.equal(menu,siteMenu,'Rerender retains the menu and its handlers');controls['site-menu']=menu;menuParent=id;};
 }
-const c = {labelRoute(){},connectionState:{connections:[]},direction:()=>c.pull?'pull':'push',$:id=>controls[id],sites:null,session:null,busy:false,remoteUpdate:null,esc:value=>String(value??'').replace(/</g,'&lt;'),icon:()=>'',pull:true,source:()=>c.pull?c.sites.remote:c.sites.local,destination:()=>c.pull?c.sites.local:c.sites.remote};vm.createContext(c);
+const c = {document,labelRoute(){},connectionState:{connections:[]},direction:()=>c.pull?'pull':'push',$:id=>controls[id],sites:null,session:null,busy:false,remoteUpdate:null,esc:value=>String(value??'').replace(/</g,'&lt;'),icon:()=>'',pull:true,source:()=>c.pull?c.sites.remote:c.sites.local,destination:()=>c.pull?c.sites.local:c.sites.remote};vm.createContext(c);
 vm.runInContext(source.slice(source.indexOf('    function transferVersionMatches('),source.indexOf('    const transferDate')),c);
 c.renderVersionStatus();assert.equal(controls['trickle-versions'].hidden,true);
 c.sites={local:{plugin_version:'0.1.9',wordpress:'6.8',php:'8.4'},remote:{plugin_version:'0.1.8',wordpress:'6.7',php:'8.1',remote_update:1,can_update_trickle:false}};
-c.renderVersionStatus();assert.equal(c.versionsMatch(),false);assert.match(controls['trickle-update-status'].textContent,/administrator or read\/write key/);assert.equal(controls['update-remote'].hidden,true);
+let restoredFocus=false;document.activeElement={isConnected:true,focus(options){restoredFocus=options.preventScroll;}};
+c.renderVersionStatus();assert.equal(restoredFocus,true,'Endpoint rerender restores focus inside the saved-site editor');document.activeElement=null;assert.equal(c.versionsMatch(),false);assert.match(controls['trickle-update-status'].textContent,/administrator or read\/write key/);assert.equal(controls['update-remote'].hidden,true);
 c.sites.remote.can_update_trickle=true;c.remoteUpdate={can_update_to_target:true,reason:'Matching release available'};c.renderVersionStatus();
 assert.equal(controls['update-remote'].hidden,false);assert.equal(controls['update-remote'].textContent,'Update remote Trickle to 0.1.9');
 c.busy=true;c.renderVersionStatus();assert.equal(controls['update-remote'].disabled,true);assert.equal(controls['check-remote-update'].disabled,true);

@@ -96,6 +96,14 @@ body.tools_page_trickle .wrap.csm {
     border: 0;
     border-left: 4px solid var(--csm-danger-text);
 }
+.csm #csm-app-notices > .csm-feedback {
+    padding-inline: max(var(--csm-space-6), calc((100% - var(--csm-content-width)) / 2 + var(--csm-space-6)));
+    border: 0;
+    background: var(--csm-accent);
+    color: var(--csm-surface);
+    font-size: var(--csm-text-body);
+    line-height: var(--csm-leading-body);
+}
 .csm #csm-transfer-notices .csm-error {
     width: 100%;
     text-align: left;
@@ -173,23 +181,27 @@ body.tools_page_trickle .wrap.csm {
     margin: 0 0 var(--csm-space-6);
     padding: var(--csm-space-4);
     border: 1px solid var(--csm-line);
-    border-left: 4px solid var(--csm-warning-text);
     border-radius: var(--csm-radius);
     background: var(--csm-surface);
     color: var(--csm-ink);
+    font-family: var(--csm-font-sans);
     box-shadow: none;
 }
 .csm #csm-trickle-version-status {
     grid-column: 1;
     margin: 0;
-    font-size: var(--csm-text-heading);
+    font-family: inherit;
+    font-size: var(--csm-text-subheading);
     font-weight: var(--csm-weight-semibold);
     line-height: var(--csm-leading-heading);
 }
 .csm #csm-trickle-update-status {
     grid-column: 1;
     margin: 0;
+    color: var(--csm-muted);
+    font-family: inherit;
     font-size: var(--csm-text-body);
+    font-weight: var(--csm-weight-regular);
     line-height: var(--csm-leading-body);
 }
 .csm #csm-trickle-versions .csm-version-actions {
@@ -221,3 +233,34 @@ body.tools_page_trickle .wrap.csm {
 .csm .csm-home-link { display:inline-flex; flex:none; }
 
 .csm .csm-route .csm-site-menu > summary:hover { background:transparent; color:var(--csm-accent); border-color:var(--csm-accent); }
+
+/* Motion belongs to the direction arrow, not to a button-shaped hover surface. */
+.csm .csm-route .csm-flip-direction:is(:hover, :focus, :active) {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+}
+.csm .csm-route .csm-flip-direction:focus-visible {
+    outline: 2px solid var(--csm-accent);
+    outline-offset: 2px;
+}
+.csm .csm-route .csm-flip-direction .csm-route-arrow {
+    transform: none;
+    transition: transform 180ms cubic-bezier(.16, 1, .3, 1);
+}
+.csm .csm-flip-direction .csm-route-arrow path {
+    transform-box: view-box;
+    transform-origin: center;
+    transform: rotate(0deg);
+    transition: transform 260ms cubic-bezier(.16, 1, .3, 1);
+}
+.csm .csm-flip-direction[data-direction="pull"] .csm-route-arrow path { transform: rotate(180deg); }
+@media (hover: hover) {
+    .csm .csm-route .csm-flip-direction:hover:not(:disabled) .csm-route-arrow { transform: translateX(2px) scaleX(1.15); }
+    .csm .csm-route .csm-flip-direction[data-direction="pull"]:hover:not(:disabled) .csm-route-arrow { transform: translateX(-2px) scaleX(1.15); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .csm .csm-route .csm-flip-direction .csm-route-arrow,
+    .csm .csm-flip-direction .csm-route-arrow path { transition: none; }
+    .csm .csm-route .csm-flip-direction[data-direction]:hover:not(:disabled) .csm-route-arrow { transform: none; }
+}

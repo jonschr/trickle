@@ -635,6 +635,27 @@ final class CSM_Controller {
             }
             return ['saved' => $id, 'state' => self::state()];
         }
+        if (in_array($action, ['rename_connection', 'remove_connection'], true)) {
+            if (get_option('_csm_control') || get_option('_csm_active_job')) { throw new RuntimeException('Finish and discard the retained transfer before managing saved connections.'); }
+            $peers = self::peers(); $id = $data['site'] ?? '';
+            if (!is_string($id) || !isset($peers[$id])) { throw new RuntimeException('Saved connection not found. Refresh the site list.'); }
+            $selected = get_option('_csm_peer');
+            if ($action === 'rename_connection') {
+                $name = $data['name'] ?? '';
+                if (!is_string($name) || strlen($name) > 480 || ($name = trim(sanitize_text_field($name))) === '') { throw new RuntimeException('Enter a connection label.'); }
+                $peers[$id]['name'] = $name;
+                if ($selected && self::site_id($selected['url']) === $id) { update_option('_csm_peer', $peers[$id], false); }
+            } else {
+                unset($peers[$id]);
+                // Remove the legacy selected record too, or peers() would recreate the connection.
+                if ($selected && self::site_id($selected['url']) === $id) {
+                    delete_option('_csm_peer');
+                    if ($peers) { update_option('_csm_peer', reset($peers), false); }
+                }
+            }
+            update_option('_csm_peers', $peers, false);
+            return ['state' => self::state()];
+        }
         if ($action === 'select') {
             if (get_option('_csm_control')) { throw new RuntimeException('Finish and discard the retained transfer before changing remote sites. Its recovery controls stay attached to its original site.'); }
             $peer = self::peer($data['site'] ?? '');

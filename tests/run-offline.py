@@ -13,7 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PHP_FIXTURES = """
 activation-missing activation-redirect ajax-diagnostics change-backups
-commit-maintenance comparison-cleanup component-comparison component-versions controller-session
+commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
 deferred-cleanup diagnostic-report directory-replacement force-retransfer
 framed-package installed-verification loader-maintenance loader-refresh
 performance progress-activity recent-records replacement-copy replacement-progress runtime-lock
@@ -29,6 +29,8 @@ def main():
     args = parser.parse_args()
     commands = [["node", str(p.relative_to(ROOT))] for p in sorted((ROOT / "tests").glob("*.js"))]
     commands += [["php", "tests/" + name + ".php"] for name in PHP_FIXTURES]
+    commands.append(["php", "-d", "opcache.enable_cli=1", "-d", "opcache.enable_file_override=1",
+                     "-d", "opcache.file_update_protection=0", "tests/directory-replacement.php", "opcache"])
     if args.wordpress_core:
         core = args.wordpress_core.resolve()
         if not (core / "wp-includes/pluggable.php").is_file():

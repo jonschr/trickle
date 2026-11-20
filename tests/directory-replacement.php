@@ -35,6 +35,21 @@ function force_copy(&$job){
 function replace_bounded($op,$selection){$GLOBALS['budget']=4;for($i=0;$i<100;$i++){$GLOBALS['ticks']=0;if(CSM_Directories::replace($op,$selection)){$GLOBALS['budget']=PHP_INT_MAX;return;}}throw new RuntimeException('Copy replacement did not finish');}
 function force_copy_restore(&$job,$op){$target=CSM_Files::destination($op['path'],$job['selection']);$dir=dirname($op['backup']).'/restore-'.$job['id'].'-1';mkdir($dir,0700);$job['directory_restore']=['op'=>['path'=>$op['path'],'directory'=>true,'backup'=>$dir.'/original','stage'=>$dir.'/incoming','journal'=>$dir.'/swap.json','existed'=>file_exists($target),'copy_backend'=>true,'manifest'=>[],'incoming'=>[]],'build'=>null];}
 try{
+ if (in_array('opcache', $argv ?? [], true) && function_exists('opcache_compile_file')) {
+  check((bool)ini_get('opcache.enable_file_override'), 'OPcache file override is enabled for the regression');
+  $cached=make_job('cached-obsolete');$obsolete='plugins/cached-obsolete/lib/licensing.php';
+  mkdir(WP_PLUGIN_DIR.'/cached-obsolete/lib');rename(WP_PLUGIN_DIR.'/cached-obsolete/obsolete.php',WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php');
+  unset($cached['file_plan']['paths']['plugins/cached-obsolete/obsolete.php']);$cached['file_plan']['paths'][$obsolete]=WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php';
+  check(opcache_compile_file(WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php'), 'Old licensing file enters OPcache before replacement');
+  prepare($cached);$cachedOp=$cached['apply_work']['directories']['ops'][0];CSM_Directories::replace($cachedOp,$cached['selection']);
+  check(!in_array('licensing.php',is_dir(WP_PLUGIN_DIR.'/cached-obsolete/lib')?scandir(WP_PLUGIN_DIR.'/cached-obsolete/lib'):[],true),'Whole-directory swap physically removes the obsolete PHP file');
+  $cached['apply_work']['whole_components']=true;$cached['database']=[];
+  $verify=new ReflectionMethod(CSM_Plugin::class,'verify_installed_step');
+  check($verify->invokeArgs(null,[&$cached]), 'Installed verification rejects stale OPcache existence results');
+  put(WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php','actual leftover');unset($cached['verification_work']);
+  $rejected=false;try{$verify->invokeArgs(null,[&$cached]);}catch(RuntimeException $error){$rejected=str_contains($error->getMessage(),'Obsolete file remains');}
+  check($rejected,'A genuinely remaining obsolete PHP file still fails verification');
+ }
  $job=make_job();$inode=fileinode(WP_PLUGIN_DIR.'/demo');$calls=prepare($job,4);$op=$job['apply_work']['directories']['ops'][0];
  check($calls>1&&file_exists(WP_PLUGIN_DIR.'/demo/obsolete.php'),'Resumable staging does not mutate the live component');
  check(file_get_contents($op['stage'].'/same.txt')==='same','Unchanged source files enter the complete staged component');

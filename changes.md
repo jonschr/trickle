@@ -1,5 +1,16 @@
 # Changes
 
+## 0.1.31 — 2026-11-20
+
+- Prevent false obsolete-PHP-file failures after whole-directory replacement by invalidating the path's OPcache entry before verifying removal. Keep failures for actual leftover files.
+- Edit saved connection labels inline and remove saved connections with confirmation. Preserve URLs, credentials, migration history and backups; block management during retained transfers or recovery.
+- Preserve inline editing and focus across inventory refreshes, and reject stale connection metadata after a label change.
+- Animate the direction arrow on hover and push/pull changes, with reduced-motion support and no gray hover surface.
+- Align version-conflict notice typography with the shared scale and replace its brown accent with a neutral border.
+- Use the shared blue with white text for ordinary full-width feedback banners, aligning messages with the content column.
+
+Validation: 71 isolated checks passed, including the OPcache regression, connection-management checks and WordPress core authorization/session fixtures. The OPcache regression also passed on PHP 8.4; it reproduced the original obsolete-file error before the fix. Packaged PHP/JavaScript syntax, ZIP integrity and exact runtime file/hash checks passed. The historical hosted OPcache setting remains unconfirmed; no hosted migration was retried.
+
 ## 0.1.30 — 2026-11-19
 
 - Introduce the Clarity transfer workspace with locally served fonts, a white shared header and a compact design-token scale in `assets/admin.css`. Use `#3858e9` for every blue accent.

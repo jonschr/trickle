@@ -666,7 +666,12 @@ final class CSM_Plugin {
                 $target = CSM_Files::destination($relative, $job['selection']);
                 if (isset($new[$relative])) {
                     if (!is_file($target) || !hash_equals($new[$relative]['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('Installed file checksum failed: '.$relative); }
-                } elseif (file_exists($target) || is_link($target)) { throw new RuntimeException('Obsolete file remains after replacement: '.$relative); }
+                } else {
+                    // OPcache file overrides can report removed PHP files as present after a directory swap.
+                    if (function_exists('opcache_invalidate')) { opcache_invalidate($target, true); }
+                    clearstatcache(true, $target);
+                    if (file_exists($target) || is_link($target)) { throw new RuntimeException('Obsolete file remains after replacement: '.$relative); }
+                }
                 $state['cursor'] = $index + 1;
                 if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
             }

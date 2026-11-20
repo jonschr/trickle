@@ -3,6 +3,7 @@
     'use strict';
     const $ = id => document.getElementById(`csm-${id}`);
     let connectionState = CSM.state, sites = null, session = CSM.state.session, busy = false, summary = null, replacementRules = [], remoteUpdate = null;
+    let connectionRevision=0;
     let inventoryGeneration=0, inventoryLoading=false, inventoryError='', presetRequest=0, presetLoading=false;
     let comparisonGeneration=0, comparisonState=null, comparisonPromise=Promise.resolve();
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -66,6 +67,7 @@
         finally { activeRequests.delete(controller); }
         if (generation !== null && generation !== cancellation) throw cancelled();
         if (result?.nonce) CSM.nonce = result.nonce;
+        if (['rename_connection','remove_connection'].includes(op)) connectionRevision++;
         if (!['manifest','compare_component','warm_media','estimates'].includes(op) && Array.isArray(result?.state?.connections)) renderConnections(result.state);
         return result;
     }
@@ -227,7 +229,7 @@
         const flow = document.querySelector('.csm-route-flow');
         flow.prepend($(pull ? 'destination' : 'source').closest('.csm-endpoint'));
         flow.append($(pull ? 'source' : 'destination').closest('.csm-endpoint'));
-        flow.querySelector('.csm-route-arrow path').setAttribute('d', pull ? 'M19 12H5m6-6-6 6 6 6' : 'M5 12h14m-6-6 6 6-6 6');
+        $('flip-direction').setAttribute('data-direction',pull?'pull':'push');
         $('direction-label').textContent=pull?'Pull':'Push';
         $('flip-direction').title=pull?'Pull from remote. Click to switch to push.':'Push to remote. Click to switch to pull.';
         $('flip-direction').setAttribute('aria-label',$('flip-direction').title);
@@ -389,7 +391,7 @@
         $('flip-direction').disabled=busy || !!session || !connectionState.selected;
         const menu=$('site-menu');if(busy || session)menu.open=false;
         $('site-menu-toggle').setAttribute('aria-disabled',String(busy || !!session));
-        for(const button of document.querySelectorAll('[data-select-site], [data-add-site], #csm-update-connection'))button.disabled=busy || !!session || button.hasAttribute('data-select-site') && button.dataset.selectSite===connectionState.selected;
+        for(const button of document.querySelectorAll('[data-select-site], [data-add-site], [data-connection-control], #csm-update-connection'))button.disabled=busy || !!session || button.hasAttribute('data-select-site') && button.dataset.selectSite===connectionState.selected;
         $('refresh').disabled=busy || !!session || !connectionState.selected;
         $('stage').hidden = busy && (!!session || transferView) || !session && !$('completion').hidden;
         document.querySelectorAll('[data-reuse-recent]').forEach(button=>button.disabled=busy || !!session);
@@ -534,6 +536,7 @@
     function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version && (!sites.remote.remote_build_update || sites.local.trickle_build === sites.remote.trickle_build); }
     function renderEndpoints() {
         const menu=$('site-menu'), peer=connectionState.connections.find(site=>site.id===connectionState.selected), pull=(session?.direction || direction())==='pull';
+        const focused=menu.contains(document.activeElement)?document.activeElement:null;
         const local=sites?.local || CSM.local, remote=sites?.remote || peer;
         labelRoute();
         for(const [id,site] of [['source',pull?remote:local],['destination',pull?local:remote]]){
@@ -545,6 +548,7 @@
             $(id).innerHTML=`${icon(site.icon,'site')}<span class="csm-site-identity" title="${esc([site.url,...versions.map(([label,version])=>label+' '+version)].join(' · '))}"><strong>${esc(name)}</strong><small>${esc(site.url)}</small>${versions.length?`<span class="csm-site-versions">${versions.map(([label,version])=>`<span>${label} <b>${esc(version)}</b></span>`).join('')}</span>`:''}</span>`;
         }
         $(pull?'source':'destination').append(menu);
+        if(focused?.isConnected)focused.focus({preventScroll:true});
         menu.hidden=!connectionState.connections.length;
         $('site-menu-toggle').innerHTML=`<span>${esc(peer?.name || remote?.name || 'Choose site')}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
         $('update-connection').hidden=!peer;
@@ -707,12 +711,17 @@
         }).finally(()=>{state.running=false;});
     }
     function renderConnections(state) {
+        const changed=JSON.stringify(state.connections)!==JSON.stringify(connectionState.connections) || state.selected!==connectionState.selected || !$('saved-sites').children.length;
         connectionState = state; session = state.session;
         if(state.selected!==$('remote-site').value && !session)sites=null;
         $('remote-site').value = state.selected;
         renderRecentMigrations();
         $('retained-note').hidden = !session;
-        $('saved-sites').innerHTML=state.connections.map(site=>`<button type="button" data-select-site="${esc(site.id)}" aria-pressed="${site.id===state.selected}"><strong>${esc(site.name)}</strong><small>${esc(site.url)}</small></button>`).join('');
+        if(changed)$('saved-sites').innerHTML=state.connections.map(site=>`<div class="csm-saved-site" data-saved-site="${esc(site.id)}">
+            <input type="radio" name="csm-saved-site" data-select-site="${esc(site.id)}" aria-label="Select ${esc(site.name)}" ${site.id===state.selected?'checked':''}>
+            <div class="csm-saved-site-details"><button type="button" class="csm-connection-name" data-rename-site="${esc(site.id)}" data-connection-control title="Rename connection" aria-label="Rename ${esc(site.name)}">${esc(site.name)}</button>
+            <form data-connection-editor="${esc(site.id)}" hidden><label><span class="screen-reader-text">Connection label</span><input type="text" name="name" value="${esc(site.name)}" maxlength="120" required data-connection-control></label><div class="csm-connection-actions"><button type="submit" data-connection-control>Save</button><button type="button" data-cancel-rename data-connection-control>Cancel</button></div></form>
+            <small>${esc(site.url)}</small></div><button type="button" class="csm-remove-connection" data-remove-site="${esc(site.id)}" data-connection-control aria-label="Remove ${esc(site.name)}">Remove</button></div>`).join('');
         $('workspace').hidden=false;renderEndpoints();
     }
     function clearInventory() {
@@ -873,13 +882,13 @@
             if (['applying','restoring'].includes(summary.status)) { summary = await transferRequest('recover', {id:session.id}); const route = {...session}; await finishTransfer(summary, route); return; }
             showSummary();
         }
-        const generation=++inventoryGeneration, site=$('remote-site').value;
+        const generation=++inventoryGeneration, site=$('remote-site').value, revision=connectionRevision;
         inventoryLoading=true;inventoryError='';invalidateComparisons();presetRequest++;presetLoading=false;
         $('inventory-retry').hidden=true;renderSectionLoading();updateSetup();
         try {
             const next=inventory || await api('manifest',{refresh,site});
             if(generation!==inventoryGeneration || site!==$('remote-site').value)return;
-            if(next.state)renderConnections(next.state);
+            if(next.state && revision===connectionRevision)renderConnections(next.state);
             sites=next;remoteUpdate=null;
             if(versionsMatch() && transferVersionMatches())await loadSelectedMedia(session?.selection || preserve);
             if(generation!==inventoryGeneration || site!==$('remote-site').value)return;
@@ -1014,6 +1023,51 @@
             clearInventory();startInventoryLoad();$('site-menu-toggle').focus();
         });
     }
+    function closeConnectionEditor(form) {
+        form.hidden=true;
+        const button=form.closest('[data-saved-site]').querySelector('[data-rename-site]');
+        button.hidden=false;button.focus();
+    }
+    $('saved-sites').addEventListener('click',event=>{
+        if(busy || session)return;
+        const rename=event.target.closest('[data-rename-site]');
+        if(rename){
+            for(const form of $('saved-sites').querySelectorAll('[data-connection-editor]')){
+                form.hidden=true;form.closest('[data-saved-site]').querySelector('[data-rename-site]').hidden=false;
+            }
+            const form=rename.closest('[data-saved-site]').querySelector('form');
+            form.elements.name.value=connectionState.connections.find(site=>site.id===rename.dataset.renameSite).name;
+            rename.hidden=true;form.hidden=false;form.elements.name.focus();form.elements.name.select();
+        }
+        if(event.target.closest('[data-cancel-rename]'))closeConnectionEditor(event.target.closest('form'));
+        const remove=event.target.closest('[data-remove-site]');
+        if(remove){
+            const peer=connectionState.connections.find(site=>site.id===remove.dataset.removeSite);
+            if(!confirm(`Remove “${peer.name}” from saved connections? This only forgets this connection. The remote site and backups are unchanged. You will need its connection code to add it again.`))return;
+            const selected=connectionState.selected===peer.id;
+            run(async()=>{
+                await api('remove_connection',{site:peer.id});
+                if(selected){clearInventory();if(connectionState.selected)startInventoryLoad();}
+                feedback('Saved connection removed.');
+                const target=$('site-menu').hidden?document.querySelector('[data-add-site]'):$('site-menu-toggle');target?.focus();
+            });
+        }
+    });
+    $('saved-sites').addEventListener('submit',event=>{
+        const form=event.target.closest('[data-connection-editor]');if(!form)return;
+        event.preventDefault();if(busy || session)return;
+        const name=form.elements.name.value.trim();
+        if(!name){form.elements.name.focus();return;}
+        const id=form.dataset.connectionEditor;
+        run(async()=>{
+            await api('rename_connection',{site:id,name});feedback('Connection label saved.');
+            $('saved-sites').querySelector(`[data-rename-site="${id}"]`)?.focus();
+        });
+    });
+    $('saved-sites').addEventListener('keydown',event=>{
+        const form=event.target.closest('[data-connection-editor]');
+        if(event.key==='Escape' && form && !busy){event.preventDefault();event.stopPropagation();closeConnectionEditor(form);}
+    });
     $('site-menu-toggle').addEventListener('click',event=>{if(busy || session)event.preventDefault();});
     document.querySelector('.csm-route').addEventListener('click',event=>{
         if(event.target.closest('[data-add-site]'))openConnection();
