@@ -314,7 +314,7 @@ final class CSM_Database {
         }
     }
 
-    public static function stage_step($fp, array &$job): bool {
+    public static function stage_step($fp, array &$job, bool $continuing = false): bool {
         global $wpdb;
         $state=$job['imports']['database'] ?? null;
         if (!$state) {
@@ -326,7 +326,7 @@ final class CSM_Database {
         }
         $prefix=$state['header']['prefix']; $pairs=self::replacement_pairs($state['header'],self::identity(),$job['selection']);
         if (fseek($fp,$state['offset'])!==0) { throw new RuntimeException('Cannot resume table import.'); }
-        CSM_Support::step(); $transaction=false;
+        CSM_Support::step(8, $continuing); $transaction=false;
         $checkpoint=static function() use (&$job,&$state,&$transaction,$fp):void {
             $state['offset']=ftell($fp); $job['imports']['database']=$state; $job['rows']=$state['rows']; if ($transaction) { CSM_Jobs::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options'); $transaction=false; } else { CSM_Jobs::save($job); }
         };

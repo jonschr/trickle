@@ -124,7 +124,9 @@ final class CSM_Controller {
         $entry = ['id' => $control['id'], 'remote_id' => self::site_id($peer['url']), 'remote_url' => $peer['url'], 'remote_name' => $peer['name'] ?? $peer['url'],
             'direction' => $control['direction'], 'selection' => $control['selection'], 'started_at' => $control['created'],
             'completed_at' => $summary['applied'] ?? ($recent[$control['id']]['completed_at'] ?? null),
-            'status' => $summary['status'] === 'staging' && $summary['ready'] ? 'staged' : $summary['status']];
+            'status' => $summary['status'] === 'staging' && $summary['ready'] ? 'staged' : $summary['status'],
+            'result'=>array_intersect_key($summary,array_flip(['tables','files','unchanged_files','bytes','rows'])),
+            'scope'=>$control['scope'] ?? ($recent[$control['id']]['scope'] ?? [])];
         unset($entry['selection']['git_overrides'], $entry['selection']['skip_paths'], $entry['selection']['follow_symlinks']);
         unset($recent[$control['id']]);
         $recent = [$control['id'] => $entry] + $recent;
@@ -213,7 +215,7 @@ final class CSM_Controller {
         CSM_Plugin::supported(); CSM_Support::long_request();
         if (in_array($action, ['commit', 'rollback', 'recover', 'recover_destination', 'restore_backup'], true)) { ignore_user_abort(true); }
         if (in_array($action,['recover','rollback','restore_backup'],true) && !empty($data['id'])) { CSM_Support::work($data['id'],false); }
-        $locked = !in_array($action, ['state', 'recent', 'manifest', 'media', 'progress', 'backup_progress', 'backups', 'status', 'logs', 'diagnostics', 'cancel', 'retry_state','estimates'], true);
+        $locked = !in_array($action, ['state', 'recent', 'manifest', 'media', 'progress', 'backup_progress', 'backups', 'status', 'logs', 'diagnostics', 'cancel', 'retry_state','estimates','compare_component','warm_media'], true);
         if ($locked) { CSM_Support::lock(); }
         $record = !in_array($action, ['state', 'recent', 'media', 'progress', 'status', 'logs', 'diagnostics'], true);
         $started = microtime(true);
@@ -281,7 +283,7 @@ final class CSM_Controller {
         // Once all source snapshots exist, a pull's receiving/apply work runs entirely on this site.
         if ($control['direction'] === 'pull' && !array_diff(CSM_Plugin::kinds($control['selection']), array_keys($control['bundles'] ?? []))) { return $local; }
         try { $remote = CSM_Transport::request($control['peer'], 'progress', ['id' => $control['id']], null, null, 5); }
-        catch (Throwable $e) { return $local + ['poll_error' => 'Remote progress is unavailable; the transfer may still be running.']; }
+        catch (Throwable $e) { return $local + ['poll_error' => 'Remote progress is unavailable; the transfer may still be running.', 'poll_retry_after'=>$e instanceof CSM_Network_Error?$e->retry_after:0]; }
         // Match operations, rather than comparing timestamps from two different server clocks.
         if (($remote['run'] ?? '') !== ($local['run'] ?? '')) { return $local; }
         if (!empty($remote['failure'])) { return $remote; }
@@ -327,7 +329,15 @@ final class CSM_Controller {
             return $summary + ['timeline' => self::timeline($control)];
         }
         $bundle = $control['bundles'][$kind];
-        $state = $pull ? CSM_Segments::state(CSM_Jobs::get($id), $kind, $bundle) : CSM_Transport::request($peer, 'segment_state', ['id' => $id, 'kind' => $kind, 'bundle' => $bundle]);
+        $checkpoint = $control['checkpoints'][$kind] ?? [];
+        $acknowledged = empty($control['checkpoint_pending'][$kind]) && ($checkpoint['sha256'] ?? '') === $bundle['sha256'] && ($checkpoint['size'] ?? null) === $bundle['size']
+            && is_int($checkpoint['offset'] ?? null) && $checkpoint['offset'] >= 0 && $checkpoint['offset'] <= $bundle['size'];
+        $state = $pull ? CSM_Segments::state(CSM_Jobs::get($id), $kind, $bundle)
+            : ($acknowledged ? $checkpoint : CSM_Transport::request($peer, 'segment_state', ['id' => $id, 'kind' => $kind, 'bundle' => $bundle]));
+        if (!$pull) {
+            // A lost reply must force offset discovery, rather than replaying an uncertain upload window.
+            $control['checkpoint_pending'][$kind]=true; update_option('_csm_control', $control, false);
+        }
         CSM_Progress::update(['phase' => 'Transferring ' . $kind . ' stream', 'component' => $kind, 'count' => $state['offset'], 'total' => $bundle['size'], 'unit' => 'bytes', 'bytes' => $state['offset']], true);
         if (($control['selection']['transport'] ?? 'stream') === 'stream') {
             $length = min(CSM_Segments::UPLOAD_SIZE, $bundle['size'] - $state['offset']);
@@ -346,7 +356,8 @@ final class CSM_Controller {
             $summary = $pull ? CSM_Segments::receive(CSM_Jobs::get($id), $kind, $bundle, $state['offset'], $bytes, hash('sha256', $bytes))
                 : CSM_Transport::request($peer, 'segment_data', ['id' => $id, 'kind' => $kind, 'bundle' => $bundle, 'offset' => $state['offset'], 'sha256' => hash('sha256', $bytes)], (static function () use ($bytes) { yield $bytes; })());
         }
-        $control['checkpoints'][$kind] = $summary['checkpoint']; update_option('_csm_control', $control, false);
+        $control['checkpoints'][$kind] = $summary['checkpoint'] + ['sha256'=>$bundle['sha256']];
+        unset($control['checkpoint_pending'][$kind]); update_option('_csm_control', $control, false);
         // Keep checkpoint replies small; recent settings and full UI state change only when staging finishes.
         $state = [];
         if (empty($summary['continue'])) { self::remember($control, $summary); $state = ['state' => self::state()]; }
@@ -363,6 +374,7 @@ final class CSM_Controller {
         self::assert_remote($peer, $remote); CSM_Updates::assert_version($remote['plugin_version'] ?? null); CSM_Updates::assert_build($remote);
         if (($remote['bounded_work'] ?? 0)!==2) { throw new RuntimeException('Install this Trickle build on both sites before transferring.'); }
         $selection = CSM_Activation::selection(CSM_Files::media_selection(CSM_Database::replacement_selection($data['selection'] ?? [])));
+        unset($selection['comparison_only']);
         $selection += ['tables'=>[], 'plugins'=>[], 'themes'=>[]];
         // Saved comparison selections now use the all-media scope; the wire format stays compatible.
         if ($selection['media'] === 'compare') { $selection['media'] = 'all'; }
@@ -389,11 +401,40 @@ final class CSM_Controller {
         $sizes=($direction==='pull'?$remote:['estimates'=>CSM_Estimates::read()])['estimates'] ?? []; $estimates=['database'=>array_sum(array_column(array_filter(($direction==='pull'?$remote['tables']:CSM_Database::inventory()),static fn($table)=>in_array($table['id'],$selection['tables'],true)),'bytes')),'plugins'=>0,'themes'=>0,'media'=>($selection['media'] ?? 'none')==='none'?0:($sizes['bytes']['media'] ?? 0)];
         foreach (['plugins','themes'] as $kind) { foreach ($selection[$kind] as $component) { $estimates[$kind]+=$sizes['items'][$kind][$component] ?? 0; } }
         $summary = $direction === 'pull' ? CSM_Plugin::prepare($selection, $context) : CSM_Transport::request($peer, 'prepare', ['selection' => $destination_selection, 'context' => $context]);
-        $control = ['estimates'=>$estimates,'destination_home' => $remote['home'] ?? $peer['url'], 'automatic' => !empty($data['automatic']), 'plugin_version' => CSM_VERSION, 'segmented' => !empty($remote['segments']), 'direction' => $direction, 'selection' => $selection, 'id' => $summary['id'], 'peer' => $peer, 'created' => time(), 'previous_history' => get_option('_csm_history', [])];
+        $source_inventory=$direction==='pull'?$remote:CSM_Files::inventory(false,false); $scope=[];
+        foreach (['plugins','themes'] as $kind) { $lookup=array_column($source_inventory[$kind] ?? [],null,'id'); foreach ($selection[$kind] as $component) { $scope[$kind][]=['id'=>$component,'name'=>$lookup[$component]['name'] ?? $component,'version'=>$lookup[$component]['version'] ?? '']; } }
+        $control = ['scope'=>$scope,'estimates'=>$estimates,'destination_home' => $remote['home'] ?? $peer['url'], 'automatic' => !empty($data['automatic']), 'plugin_version' => CSM_VERSION, 'segmented' => !empty($remote['segments']), 'direction' => $direction, 'selection' => $selection, 'id' => $summary['id'], 'peer' => $peer, 'created' => time(), 'previous_history' => get_option('_csm_history', [])];
         update_option('_csm_peer', $peer, false); update_option('_csm_control', $control, false);
         self::remember($control, $summary);
         CSM_Log::write('info', 'Transfer selection prepared', ['transfer_id'=>$summary['id'], 'direction'=>$direction, 'site'=>$peer['url'], 'transport'=>$selection['transport'], 'tables'=>count($selection['tables']), 'plugins'=>count($selection['plugins']), 'themes'=>count($selection['themes']), 'media_mode'=>$selection['media'], 'plugins_force'=>!empty($selection['plugins_force']) || !empty($selection['file_force']), 'themes_force'=>!empty($selection['themes_force']) || !empty($selection['file_force']), 'media_force'=>!empty($selection['media_force'])]);
         return $summary + ['timeline'=>self::timeline($control),'state' => self::state()];
+    }
+
+    private static function clear_update_comparisons(array $data): array {
+        if (get_option('_csm_control') || get_option('_csm_active_job')) { throw new RuntimeException('Finish or cancel the current transfer before clearing comparisons.'); }
+        $peer=self::peer($data['site'] ?? ''); self::assert_remote($peer);
+        $version=CSM_Transport::request($peer,'version');
+        if (empty($version['can_update_trickle'])) { throw new RuntimeException('Use an administrator or read/write connection key to resolve remote update blockers.'); }
+        $ids=[];
+        foreach (array_merge(glob(CSM_Support::private_dir().'/*.comparison-*.json') ?: [],glob(CSM_Support::private_dir().'/media-compare-*.json') ?: []) as $path) {
+            if (filemtime($path)<time()-DAY_IN_SECONDS || !preg_match('/(?:comparison-|media-compare-)([a-f0-9]{32})\.json$/D',$path,$match)) { continue; }
+            $id=$match[1];
+            if (isset(get_option('_csm_recents',[])[$id]) || get_option('_csm_job_'.$id) || get_option('_csm_cleanup_'.$id)) { continue; }
+            $ids[$id]=true;
+        }
+        $ids=array_keys($ids); sort($ids,SORT_STRING);
+        $offset=max(0,(int)($data['offset'] ?? 0)); $batch=array_slice($ids,$offset,2); $cleared=0;
+        foreach ($batch as $id) {
+            $progress=CSM_Transport::request($peer,'progress',['id'=>$id],null,null,8);
+            if (($progress['id'] ?? '')!==$id || ($progress['state'] ?? '')!=='complete' || !in_array($progress['phase'] ?? '',['Plugin and theme checksums ready','Media checksums ready'],true)) { continue; }
+            // A checksum result is not permission to discard a migration's source snapshot.
+            $phases=array_column($progress['events'] ?? [],'phase');
+            if (preg_grep('/snapshot|source stream|export|packaging|staging|replacing|restor|backup|apply/i',$phases)) { continue; }
+            CSM_Transport::request($peer,'cancel',['id'=>$id],null,null,8);
+            $released=CSM_Transport::request($peer,'bundle_discard',['id'=>$id,'comparison_only'=>true],null,null,8);
+            if (($released['comparison_cleared'] ?? true)!==false) { $cleared++; }
+        }
+        return ['cleared'=>$cleared,'checked'=>$offset+count($batch),'total'=>count($ids),'continue'=>$offset+count($batch)<count($ids)];
     }
 
     private static function update_remote(string $action, array $data): array {
@@ -499,6 +540,32 @@ final class CSM_Controller {
             CSM_Progress::start($data['id'] ?? '', 'Restoring saved backup');
             return $site === '' ? CSM_Backups::restore($data['id'] ?? '') : CSM_Transport::request(self::peer($site), 'restore_backup', ['id' => $data['id'] ?? '', 'progress_run' => CSM_Progress::run()]);
         }
+        if ($action === 'compare_component') {
+            if (self::session() || get_option('_csm_active_job')) { throw new RuntimeException('Finish the retained transfer before comparing files.'); }
+            $kind=$data['kind'] ?? ''; $id=$data['component'] ?? ''; $comparison=$data['comparison'] ?? '';
+            if (!in_array($data['direction'] ?? '',['push','pull'],true) || !in_array($kind,['plugins','themes'],true) || !is_string($id) || !is_string($comparison) || !preg_match('/^[a-f0-9]{32}$/D',$comparison)) { throw new RuntimeException('Invalid component comparison.'); }
+            $inventory=CSM_Files::inventory(false,false);
+            if (!in_array($id,array_column(array_filter($inventory[$kind],static fn($item)=>empty($item['protected'])),'id'),true)) {
+                // A new component being pulled may not exist locally yet. Validate it against the authenticated source.
+                if (($data['direction'] ?? '')!=='pull' || in_array($id,array_column($inventory[$kind],'id'),true)) { throw new RuntimeException('Component cannot be compared on this site.'); }
+                $remote_inventory=CSM_Transport::request(self::peer($data['site'] ?? ''),'manifest',[],null,null,15);
+                if (!in_array($id,array_column(array_filter($remote_inventory[$kind] ?? [],static fn($item)=>empty($item['protected'])),'id'),true)) { throw new RuntimeException('Component cannot be compared on the source site.'); }
+            }
+            $selection=[$kind=>[$id],'media'=>'none','comparison_id'=>$comparison,'comparison_only'=>true];
+            $peer=self::peer($data['site'] ?? '');
+            $local=CSM_Components::inventory(['selection'=>$selection,'source'=>($data['direction'] ?? '')==='push']);
+            $remote=CSM_Transport::request($peer,'component_hashes',['selection'=>$selection,'source'=>($data['direction'] ?? '')==='pull'],null,null,15);
+            if (!empty($remote['continue'])) { return ['continue'=>true]; }
+            $key=$kind.'/'.$id; $pull=($data['direction'] ?? '')==='pull';
+            return ['source'=>($pull?$remote:$local)['components'][$key] ?? null,'destination'=>($pull?$local:$remote)['components'][$key] ?? null];
+        }
+        if ($action === 'warm_media') {
+            if (self::session() || get_option('_csm_active_job')) { throw new RuntimeException('Finish the retained transfer before comparing media.'); }
+            $id=$data['comparison'] ?? ''; $direction=$data['direction'] ?? '';
+            if (!is_string($id) || !preg_match('/^[a-f0-9]{32}$/D',$id) || !in_array($direction,['push','pull'],true)) { throw new RuntimeException('Invalid media comparison.'); }
+            $result=CSM_Media::compare(self::peer($data['site'] ?? ''),$direction==='pull',false,['media'=>'all','comparison_id'=>$id,'comparison_only'=>true]);
+            return ['stats'=>$result['stats']];
+        }
         if ($action === 'preset') {
             $name = $data['preset'] ?? '';
             $catalog = CSM_Presets::catalog();
@@ -583,6 +650,15 @@ final class CSM_Controller {
             $peer = self::peer($session['remote_id'] ?? ($data['site'] ?? ''));
             return self::inventory($peer, !empty($data['refresh']));
         }
+        if (in_array($action,['retained_sources','discard_source_preparation'],true)) {
+            $previous=$GLOBALS['_csm_credential'] ?? null;
+            if ($previous===null) { $GLOBALS['_csm_credential']=['id'=>'local','master'=>true]; }
+            try {
+                if ($action==='discard_source_preparation') { CSM_Segments::discard_preparation($data['id'] ?? ''); }
+                return ['sources'=>CSM_Segments::retained_sources()];
+            } finally { if ($previous===null) { unset($GLOBALS['_csm_credential']); } else { $GLOBALS['_csm_credential']=$previous; } }
+        }
+        if ($action==='clear_update_comparisons') { return self::clear_update_comparisons($data); }
         if (in_array($action, ['remote_update_info', 'update_remote'], true)) { return self::update_remote($action, $data); }
         if ($action === 'media') {
             $session = self::session(); $direction = $session['direction'] ?? ($data['direction'] ?? '');

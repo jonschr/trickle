@@ -63,19 +63,20 @@ final class CSM_Package {
         return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null];
     }
 
-    public static function unpack(string $path, array $bundle): bool {
+    public static function unpack(string $path, array $bundle, bool $continuing = false): bool {
+        CSM_Support::step(8, $continuing);
         $checkpoint = $path . '.unpack';
         $state = is_file($checkpoint) ? json_decode(file_get_contents($checkpoint), true, 32, JSON_THROW_ON_ERROR) : ['in'=>0,'out'=>0];
         if ($state['out']>0 && (!is_file($path.'.raw') || filesize($path.'.raw')<$state['out'])) { throw new RuntimeException('Verified frame checkpoint is missing or truncated.'); }
         if ($state['in']===$bundle['size']) {
             if (!empty($state['verified'])) { return true; }
+            if (CSM_Support::due()) { return false; }
             CSM_Progress::update(['phase'=>'Verifying snapshot checksum','component'=>'','count'=>0,'total'=>$bundle['size'],'unit'=>'bytes','bytes'=>0],true);
             if (!hash_equals($bundle['sha256'],CSM_Support::hash_file($path,static fn($bytes)=>CSM_Progress::update(['count'=>$bytes,'bytes'=>$bytes])))) { throw new RuntimeException('Completed snapshot checksum mismatch.'); }
-            $state['verified']=true; CSM_Support::atomic_json($checkpoint,$state); return false;
+            $state['verified']=true; CSM_Support::atomic_json($checkpoint,$state); return true;
         }
         $in = fopen($path, 'rb'); $out = fopen($path . '.raw', 'c+b');
         if (!$in || !$out || fseek($in, $state['in']) !== 0 || !ftruncate($out, $state['out']) || fseek($out, $state['out']) !== 0) { throw new RuntimeException('Cannot resume frame verification.'); }
-        CSM_Support::step();
         try {
             while ($state['in'] < $bundle['size']) {
                 CSM_Support::check_cancel();
@@ -92,7 +93,7 @@ final class CSM_Package {
                 if (CSM_Support::due()) { break; }
             }
             fflush($out); CSM_Support::atomic_json($checkpoint,$state);
-            return false;
         } finally { fclose($in); fclose($out); }
+        return $state['in']===$bundle['size'] && !CSM_Support::due() && self::unpack($path,$bundle,true);
     }
 }

@@ -494,7 +494,7 @@ final class CSM_Files {
         yield CSM_Support::json(['type'=>'end','files'=>$cursor['index'],'started'=>$cursor['started'],'sha256'=>$cursor['hash']]);
     }
 
-    public static function stage_step($fp, array &$job): bool {
+    public static function stage_step($fp, array &$job, bool $continuing = false): bool {
         $state = $job['imports']['files'] ?? null;
         if (!$state) {
             $header = CSM_Support::line($fp);
@@ -509,7 +509,7 @@ final class CSM_Files {
         $dir=CSM_Support::private_dir().'/'.$job['id'];
         if (!is_dir($dir) && !mkdir($dir,0700)) { throw new RuntimeException('Cannot create transfer staging directory.'); }
         if (fseek($fp,$state['offset'])!==0) { throw new RuntimeException('Cannot resume file import.'); }
-        CSM_Support::step();
+        CSM_Support::step(8, $continuing);
         do {
             CSM_Support::check_cancel();
             if (!$state['current']) {

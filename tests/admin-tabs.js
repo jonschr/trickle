@@ -1,6 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const panels=['settings','migrate','diagnostics'].map(view=>({dataset:{csmView:view},hidden:true,selection:'retained'}));
 const links=['settings','migrate','backups','diagnostics'].map(view=>({dataset:{csmTab:view},href:'https://local.test/wp-admin/tools.php?page=trickle'+(view==='migrate'?'':'&view='+view),attrs:{},classList:{toggle(_,active){this.active=active;}},closest(){return true;},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];},addEventListener(_,fn){this.click=fn;}}));
+const home={...links[1],attrs:{},classList:{toggle(){throw Error('Home icon must not receive tab styling');}},closest(){return false;}};links.push(home);
 let toggles=0,popstate;
 const logs={open:false,dispatchEvent(){toggles++;}};
 const location={href:links[0].href};
@@ -13,4 +14,5 @@ click(3);assert.equal(logs.open,true);assert.equal(toggles,1);assert.equal(panel
 assert.equal(click(0,{metaKey:true}),false);assert.equal(click(2),false);
 location.href=links[0].href;popstate();assert.equal(panels[0].hidden,false);assert.equal(panels[1].selection,'retained');
 location.href='https://local.test/wp-admin/tools.php?page=trickle&view=unknown';popstate();assert.equal(panels[1].hidden,false);
+click(3);assert.equal(click(4),true);assert.equal(panels[1].hidden,false,'Home icon returns to Migrate without reloading');assert.equal(panels[1].selection,'retained');assert.equal(location.href,links[1].href);assert.equal(click(4,{metaKey:true}),false,'Home supports opening in a new tab');
 console.log('Tab checks passed: deep links, selected tab, retained selection, diagnostics loading, browser back, modifier clicks and Backups navigation.');

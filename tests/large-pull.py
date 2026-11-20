@@ -43,7 +43,7 @@ try:
  tid=prepare();p,prep_steps=complete('preflight',{'id':tid,'kind':'files'});wire=p['timeline']['streams']['files']['size']
  print(json.dumps({'phase':'prepared','bytes':wire,'steps':prep_steps,'elapsed':round(time.monotonic()-start,2)}),flush=True)
  r,transfer_steps=complete('transfer',{'id':tid,'kind':'files'});assert r['ready'] and r['files']>=2
- r,apply_steps=complete('commit',{'id':tid});assert r['status']=='applied' and r['health']['verified']
+ r,apply_steps=complete('commit',{'id':tid});assert r['status']=='applied' and r['verification']['verified']
  target=ROOT[D]/'wp-content/plugins'/NAME/'payload.bin';assert target.stat().st_size==SIZE and digest(target)==expected
  op('finish',{'id':tid});first_seconds=round(time.monotonic()-start,2)
  print(json.dumps({'phase':'applied','bytes':SIZE,'transfer_steps':transfer_steps,'apply_steps':apply_steps,'elapsed':first_seconds,'hash_verified':True}),flush=True)

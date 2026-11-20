@@ -3,6 +3,8 @@
     'use strict';
     const $ = id => document.getElementById(`csm-${id}`);
     let connectionState = CSM.state, sites = null, session = CSM.state.session, busy = false, summary = null, replacementRules = [], remoteUpdate = null;
+    let inventoryGeneration=0, inventoryLoading=false, inventoryError='', presetRequest=0, presetLoading=false;
+    let comparisonGeneration=0, comparisonState=null, comparisonPromise=Promise.resolve();
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MiB` : `${(n / 1073741824).toFixed(1)} GiB`;
     const transferMeter = new CSMTransferProgress($('transfer-meter'));
@@ -31,11 +33,11 @@
             const key = panel.dataset.componentPanel, current = key === kind;
             panel.toggleAttribute('data-current', current);
             const button = $('disclose-' + key);
-            button.setAttribute('aria-expanded', String(current && !$(key + '-body').hidden));
+            button.setAttribute('aria-expanded', String(!$(key + '-body').hidden));
             button.setAttribute('aria-label', `View ${labels[key]} selection`);
             if (current) button.setAttribute('aria-current', 'true'); else button.removeAttribute('aria-current');
         });
-        $('selection-placeholder').hidden = open;
+        $('selection-placeholder').hidden = true;
         $('placeholder-title').textContent = `${$('enable-' + kind).checked ? 'Selection hidden' : 'Include ' + labels[kind]}`;
         $('include-current').textContent = $('enable-' + kind).checked ? 'Show selection' : 'Include ' + labels[kind];
     }
@@ -54,9 +56,9 @@
     let cancellation = 0, cancelling = false;
     const activeRequests=new Set();
     function cancelled() { return Object.assign(new Error("Transfer cancelled."), {cancelled:true}); }
-    async function api(op, data = {}, generation = null) {
+    async function api(op, data = {}, generation = null, requestController = null) {
         if (generation===null && data.id && !['cancel','recover','rollback'].includes(op)) generation=cancellation;
-        const controller = new AbortController();
+        const controller = requestController || new AbortController();
         if (generation !== null) activeRequests.add(controller);
         let result;
         try { result = await CSMRequest(op, data, controller); }
@@ -64,17 +66,25 @@
         finally { activeRequests.delete(controller); }
         if (generation !== null && generation !== cancellation) throw cancelled();
         if (result?.nonce) CSM.nonce = result.nonce;
-        if (Array.isArray(result?.state?.connections)) renderConnections(result.state);
+        if (!['manifest','compare_component','warm_media','estimates'].includes(op) && Array.isArray(result?.state?.connections)) renderConnections(result.state);
         return result;
     }
     function message(text) { $('status').textContent = text; }
     function fail(error) {
         transferMeter.fail?.(error);
         if (transferMeter.timeline) { $('error').hidden = true; feedback(''); return; }
-        $('error').innerHTML = `<p>${esc(error.message)}</p>`;
+        const returnFocus = document.activeElement;
+        $('error').innerHTML = `<p class="csm-error-message">${esc(error.message)}</p>`;
+        const actions = document.createElement('div'); actions.className = 'csm-error-actions';
         const copy = document.createElement('button'); copy.type = 'button'; copy.className = 'button-link'; copy.textContent = 'Copy error details';
         copy.addEventListener('click', async () => { try { await navigator.clipboard.writeText(error.message); copy.textContent = 'Copied'; } catch (_) { copy.textContent = 'Select the error text to copy'; } });
-        $('error').append(copy);
+        const dismiss = document.createElement('button'); dismiss.type = 'button'; dismiss.className = 'button-link'; dismiss.textContent = 'Dismiss';
+        dismiss.addEventListener('click', () => {
+            $('error').hidden = true;
+            if (returnFocus?.isConnected && !returnFocus.disabled && !returnFocus.closest('#csm-error')) returnFocus.focus({preventScroll:true});
+            else document.querySelector?.('.csm-tabs a')?.focus({preventScroll:true});
+        });
+        actions.append(copy, dismiss); $('error').append(actions);
         $('error').hidden = false;
         $('error').scrollIntoView({block:'nearest'});
         feedback('');
@@ -137,26 +147,30 @@
         $('activity').hidden = false;
     }
     async function transferRequest(op, data) {
-        let stopped = false, timer, lastLogRead = 0;
+        let stopped = false, timer, lastLogRead = 0, pollNotBefore = 0;
         const generation = cancellation;
         const poll = async () => {
+            if (stopped) return;
+            if (Date.now() < pollNotBefore) { timer=setTimeout(poll,pollNotBefore-Date.now()); return; }
             try {
                 const detail = await api('progress', {id:data.id});
+                if(detail.poll_retry_after>0)pollNotBefore=Math.max(pollNotBefore,Date.now()+1000*detail.poll_retry_after);
                 if (!stopped) renderActivity(detail);
                 if (!stopped && Date.now() - lastLogRead > 5000) {
                     lastLogRead = Date.now();
                     api('logs').then(logs => { if (!stopped) transferMeter.ingestLogs?.(logs.entries); }).catch(() => {});
                 }
-            } catch (_) {
+            } catch (error) {
+                pollNotBefore=Math.max(pollNotBefore,Date.now()+1000*(error.retryAfter || 0));
                 if (!stopped) { $('activity').hidden = false; $('activity').textContent = 'Live progress is unavailable. The transfer may still be running; waiting for its result.'; }
             }
-            if (!stopped) timer = setTimeout(poll, 1000);
+            if (!stopped) timer = setTimeout(poll, Math.max(3000,pollNotBefore-Date.now()));
         };
         const action = transferAction();
         transferMeter.operation?.(op, data.kind);
         $('action-title').textContent = ['commit','transfer'].includes(op) ? (action === 'Push' ? 'Pushing…' : 'Pulling…') : op === 'rollback' ? 'Restoring destination…' : `Preparing ${action.toLowerCase()}…`;
         $('activity').hidden = false; $('activity').textContent = 'Waiting for progress from the server…';
-        timer = setTimeout(poll, 300);
+        timer = setTimeout(poll, 2000);
         try {
             let result, retries = 0;
             do {
@@ -168,6 +182,7 @@
                     if (retry.stopped) { session.automatic=false; throw new Error('No progress after repeated retries. Transfer stopped; cancelling.'); }
                     message('Connection interrupted. Retrying…');
                     const wait = Math.max(error.retryAfter || 0, 2 ** retries++);
+                    pollNotBefore=Math.max(pollNotBefore,Date.now()+1000*wait);
                     transferMeter.retry?.(error.message, wait);
                     await new Promise(resolve => setTimeout(resolve, 1000 * wait));
                     result = {continue:true};
@@ -177,13 +192,13 @@
                 if (result.continue) summary = result;
             } while (result.continue);
             if (generation !== cancellation) throw cancelled();
-            api('logs').then(logs => transferMeter.ingestLogs?.(logs.entries)).catch(() => {});
+            if (['commit','recover','rollback'].includes(op)) api('logs').then(logs => transferMeter.ingestLogs?.(logs.entries)).catch(() => {});
             return result;
         }
         catch (error) {
             stopped = true;
             if (error.cancelled || generation !== cancellation) throw cancelled();
-            if (error.busy) { error.pending = true; throw error; }
+            if (error.busy || error.retryAfter>0) { error.pending = true; throw error; }
             try { summary = await api('status', {id:data.id},generation); if (generation!==cancellation) throw cancelled(); showSummary(); renderActivity(await api('progress', {id:data.id},generation)); }
             catch (_) { /* Preserve the original failure when the destination is unreachable. */ }
             if (summary?.status !== 'applied') $('action-title').textContent = summary?.error || summary?.progress?.failure ? (op === 'commit' ? `${action} failed` : op === 'rollback' ? 'Restore failed' : 'Preparation failed') : `Check ${action.toLowerCase()} status`;
@@ -199,10 +214,10 @@
         const previous = controls.map(control => control.disabled);
         controls.forEach(control => { control.disabled = true; });
         try { await fn(); } catch (error) { fail(error); }
-        finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; $('transfer-setup').setAttribute('aria-busy', 'false'); lockSelection(); updateSelection(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
+        finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; $('transfer-setup').setAttribute('aria-busy', 'false'); lockSelection(); updateSelection(); startComparisons(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
-        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-plugins-force, #csm-themes-force, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites)); });
+        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-plugins-force, #csm-themes-force, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites || inventoryLoading || !!inventoryError)); });
         lockReplacements();
     }
     const direction = () => $('direction').value;
@@ -217,7 +232,7 @@
         $('flip-direction').title=pull?'Pull from remote. Click to switch to push.':'Push to remote. Click to switch to pull.';
         $('flip-direction').setAttribute('aria-label',$('flip-direction').title);
         for (const [id, local] of [['source', !pull], ['destination', pull]]) {
-            $(id + '-location').textContent = local ? 'This site' : 'Remote site';
+            $(id + '-location').textContent = local ? 'This site' : 'Saved connection';
             $(id + '-location').classList.toggle('csm-this-site', local);
         }
     }
@@ -236,11 +251,10 @@
         } catch (_) { /* Missing artwork uses the category icon. */ }
         return `<span class="csm-identity-icon csm-icon-${kind}" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">${shapes[kind]}</svg>${image}</span>`;
     }
-    const selectAll = kind => `<label class="csm-select-heading"><input type="checkbox" class="csm-select-all" data-select-kind="${kind}" aria-label="Select all ${kind === 'tables' ? 'database tables' : kind}"><span${kind === 'tables' ? ' class="screen-reader-text"' : ''}>Select all ${kind === 'tables' ? 'database tables' : kind}</span></label>`;
-    function componentState(kind, item, inventory) {
-        if(!item)return '';
-        const parent=kind==='themes' && inventory.some(theme=>theme.active && theme.parent===item.id);
-        return parent?'Active parent':item.active?'Active':'Inactive';
+    const selectAll = kind => `<label class="csm-select-heading"><input type="checkbox" class="csm-select-all" data-select-kind="${kind}" aria-label="Select all ${kind === 'tables' ? 'database tables' : kind}"><span${kind === 'tables' ? ' class="screen-reader-text"' : ''}>${kind === 'plugins' ? 'Plugin' : kind === 'themes' ? 'Theme' : 'Select all database tables'}</span></label>`;
+    function siteLabel(site) {
+        const peer=typeof connectionState==='undefined'?null:connectionState.connections.find(peer=>peer.url===site.url);
+        return peer?.name || site.name || site.url;
     }
     function versionChange(item, target) {
         if(item.protected)return {kind:'protected',label:'Protected'};
@@ -253,24 +267,16 @@
     function components(kind) {
         if (kind === 'tables') { renderTables(); return; }
         const src=source(), dst=destination(), lookup=new Map(dst[kind].map(item=>[item.id,item]));
-        const signs={upgrade:'M12 19V5m-5 5 5-5 5 5',downgrade:'M12 5v14m-5-5 5 5 5-5',same:'M5 12h14',install:'M12 5v14m-7-7h14',different:'M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 4h.01',protected:'M7 10V7a5 5 0 0 1 10 0v3M5 10h14v11H5z'};
-        const glyph=(path,cls='')=>`<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${path}"/></svg>`;
-        let html=`<div class="csm-code-scroll" tabindex="0" role="region" aria-label="${kind === 'plugins' ? 'Plugin' : 'Theme'} comparison"><div class="csm-code-table"><div class="csm-columns csm-code-columns">${selectAll(kind)}<span class="csm-version-headings"><span>Installed</span><span class="screen-reader-text">Version change</span><span>Incoming</span></span></div>`;
-        for(const entry of src[kind]){
-            const item={...entry}; if (item.symlinks && item.follow_symlinks) { item.protected=false; delete item.protected_reason; }
-            const target=lookup.get(item.id), change=versionChange(item,target), state=componentState(kind,item,src[kind]);
-            const sizeCell=side=>item.protected?'':`<span class="csm-component-size" data-component-size="${kind}" data-size-id="${esc(item.id)}" data-size-site="${side}"></span>`;
-            const cell=(plugin,inventory,side)=>{
-                const activity=componentState(kind,plugin,inventory), label=side==='source'?'Incoming from source':'Installed on destination';
-                const update=plugin?.update, both=update && item.update===target?.update;
-                const updateBadge=update?`<span class="csm-update" title="${esc('Update available: '+update+(both?' on both sites':' · '+label))}">${glyph('M12 17V7m-4 4 4-4 4 4','csm-update-arrow')}<span class="screen-reader-text">Update available: </span>${esc(update)}</span>`:'';
-                const mark=activity==='Active parent'?'<circle cx="6" cy="6" r="4.5"/><circle cx="6" cy="6" r="1.5" fill="currentColor"/>':`<circle cx="6" cy="6" r="4"${activity==='Inactive'?'':' fill="currentColor"'}/>`;
-                return `<span class="csm-version-endpoint"><span class="screen-reader-text">${label}: </span>${plugin?`<span class="csm-activation ${activity==='Inactive'?'is-inactive':'is-active'}" role="img" aria-label="${esc(activity)}" title="${esc(activity+' · '+label)}"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" aria-hidden="true">${mark}</svg></span>`:''}<b title="${esc(plugin?.version || (plugin?'Unknown version':'Not installed'))}">${esc(plugin?.version || (plugin?'?':'—'))}</b>${plugin?sizeCell(side):''}${updateBadge}</span>`;
-            };
-            const outcome=`<span class="csm-version-indicator" role="img" aria-label="${esc(change.label)}" title="${esc(change.label)}">${glyph(signs[change.kind])}</span>`;
-            html+=`<label class="csm-component csm-code-component" data-change="${change.kind}" data-source-active="${state!=='Inactive'}"><span class="csm-component-identity ${state==='Inactive'?'csm-inactive':''}"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}>${icon(item.icon,kind)}<span><strong title="${esc(item.name+(item.protected?' · '+(item.protected_reason || 'Managed separately'):''))}">${esc(item.name)}</strong></span></span><span class="csm-version-comparison"><span class="csm-version-change">${item.protected_reason ? `<span class="csm-blocked-reason">${outcome}${esc(item.protected_reason)}${item.symlinks ? `<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}" ${busy || session ? 'disabled' : ''}>Include linked files</button>` : ''}</span>` : `${cell(target,dst[kind],'destination')}${outcome}${cell(item,src[kind],'source')}`}</span></span></label>`;
+        let html=`<div class="csm-code-scroll" tabindex="0" role="region" aria-label="${kind} comparison"><div class="csm-code-table"><div class="csm-columns csm-code-columns">${selectAll(kind)}<span>Source<strong>${esc(siteLabel(src))}</strong></span><span>Destination<strong>${esc(siteLabel(dst))}</strong></span></div>`;
+        for (const entry of src[kind]) {
+            const item={...entry}; if(item.symlinks && item.follow_symlinks){item.protected=false;delete item.protected_reason;}
+            const target=lookup.get(item.id), change=versionChange(item,target);
+            const matching=!!target && item.version===target.version && !!item.content_hash && item.content_hash===target.content_hash;
+            const label=matching?'Matching skipped':change.kind==='same'?(item.content_hash && target?.content_hash?'Files differ':'Hash not verified'):change.label;
+            const tone=matching?'same':change.kind==='same'?'different':change.kind;
+            html+=`<div class="csm-component csm-code-component" data-change="${tone}"><label class="csm-component-identity"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}><strong>${esc(item.name)}</strong></label><span class="csm-source-version"><span>${esc(item.version || '?')}</span><span class="csm-component-hash"><small>Source hash</small><code title="${esc(item.content_hash || '')}">${esc(item.content_hash?.slice(0,12) || 'Not verified')}</code></span></span><span class="csm-destination-version"><span>${target && target.version!==item.version?`<del>${esc(target.version || '?')}</del> `:!target?'<del>Not installed</del> ':''}<b data-incoming="${esc(item.version || '?')}" data-installed="${esc(target?.version || 'Not installed')}">${esc(item.version || '?')}</b></span><small data-change-label="${esc(label)}">${esc(label)}</small><span class="csm-component-hash"><small>Current hash</small><code title="${esc(target?.content_hash || '')}">${esc(target?.content_hash?.slice(0,12) || (target?'Not verified':'No files'))}</code></span>${item.protected_reason?`<span class="csm-blocked-reason">${esc(item.protected_reason)}${item.symlinks?`<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}">Include linked files</button>`:''}</span>`:''}</span></div>`;
         }
-        $(kind).innerHTML=html+(!src[kind].length?'<p>No components found on the source site.</p>':'')+'</div></div>';
+        $(kind).innerHTML=html+'</div></div>';
     }
     function renderTables() {
         const selected = new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input => input.value));
@@ -284,29 +290,25 @@
             const comparison = typeof left === 'string' ? left.localeCompare(right, undefined, {numeric:true}) : left - right;
             return (tableSort.descending ? -comparison : comparison) || a.item.name.localeCompare(b.item.name);
         });
-        const ranges = [src, dst].map(site => {
-            const sizes = site.tables.map(item => item.bytes);
-            return {min:Math.min(...sizes), max:Math.max(...sizes)};
-        });
-        const pill = (item, range, site) => {
+        const max=Math.max(1,...src.tables.map(t=>t.bytes),...dst.tables.map(t=>t.bytes));
+        const pill = item => {
             if (!item) return '<span class="csm-missing">Not installed</span>';
-            const ratio = range.max === range.min ? .5 : (Math.log1p(item.bytes) - Math.log1p(range.min)) / (Math.log1p(range.max) - Math.log1p(range.min));
-            const tone = ratio <= 1 / 3 ? 'small' : ratio >= 2 / 3 ? 'large' : 'medium';
-            const description = range.min === range.max ? 'Equal table sizes' : item.bytes === range.max ? 'Largest table' : item.bytes === range.min ? 'Smallest table' : tone === 'large' ? 'Larger table' : tone === 'small' ? 'Smaller table' : 'Medium table';
-            return `<span class="csm-size csm-size-${tone}" title="${description} on the ${site} · ${item.bytes.toLocaleString()} bytes">${bytes(item.bytes)}</span>`;
+            return `<span class="csm-table-size ${item.bytes>=250*1048576?'is-large':''}"><b>${bytes(item.bytes)}</b>${item.bytes>=250*1048576?'<small>Large</small>':''}<span class="csm-size-scale"><i style="width:${Math.max(1,item.bytes/max*100)}%"></i></span><small class="csm-table-row-count">~${Number(item.rows || 0).toLocaleString()} rows</small></span>`;
         };
-        const columns = [['name', 'Table'], ['engine', 'Engine'], ['source_rows', 'Source rows'], ['source_bytes', 'Source size'], ['destination_rows', 'Destination rows'], ['destination_bytes', 'Destination size']];
+        const columns = [['name', 'Table'], ['source_bytes', 'Source'], ['destination_bytes', 'Destination']];
+        if($('table-order'))$('table-order').value=tableSort.key;
         const headers = columns.map(([key, label]) => {
             const active = tableSort.key === key;
             const path = active ? (tableSort.descending ? 'm6 9 6 6 6-6' : 'm6 15 6-6 6 6') : 'm8 9 4-4 4 4m-8 6 4 4 4-4';
-            return `<th scope="col" aria-sort="${active ? (tableSort.descending ? 'descending' : 'ascending') : 'none'}">${key === 'name' ? '<div class="csm-table-name-heading">' + selectAll('tables') : ''}<button type="button" class="csm-sort" data-sort="${key}">${label}<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="${path}"/></svg></button>${key === 'name' ? '</div>' : ''}</th>`;
+            return `<th scope="col" aria-sort="${active ? (tableSort.descending ? 'descending' : 'ascending') : 'none'}">${key === 'name' ? '<div class="csm-table-name-heading">' + selectAll('tables') : ''}<button type="button" class="csm-sort" data-sort="${key}">${esc(label)}${key==='source_bytes'?`<strong>${esc(siteLabel(src))}</strong>`:key==='destination_bytes'?`<strong>${esc(siteLabel(dst))}</strong>`:''}<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="${path}"/></svg></button>${key === 'name' ? '</div>' : ''}</th>`;
         }).join('');
-        $('tables').innerHTML = `<p class="csm-scroll-hint">Scroll horizontally to compare both sites.</p><div class="csm-table-scroll" role="region" aria-label="Database table comparison" tabindex="0"><table class="csm-data-table"><caption class="screen-reader-text">Database tables. Activate a column heading to sort; activate it again to reverse the order. Sizes include data and indexes.</caption><thead><tr>${headers}</tr></thead><tbody>${rows.map(({item, target}) => `<tr><th scope="row"><label><input type="checkbox" data-kind="tables" value="${esc(item.id)}" aria-label="Transfer ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''} ${session ? 'disabled' : ''}><span><strong>${esc(item.name)}</strong></span></label></th><td class="csm-table-engine">${esc(item.engine)}</td><td>~${item.rows.toLocaleString()}</td><td>${pill(item, ranges[0], 'source')}</td><td>${target ? '~' + target.rows.toLocaleString() : '<span class="csm-missing">Not installed</span>'}</td><td>${pill(target, ranges[1], 'destination')}</td></tr>`).join('') || '<tr><td colspan="6">No database tables found on the source site.</td></tr>'}</tbody></table></div>`;
+        $('tables').innerHTML = `<p class="csm-scroll-hint">Scroll horizontally to compare both sites.</p><div class="csm-table-scroll" role="region" aria-label="Database table comparison" tabindex="0"><table class="csm-data-table"><caption class="screen-reader-text">Database tables. Activate a column heading to sort; activate it again to reverse the order. Sizes include data and indexes.</caption><thead><tr>${headers}</tr></thead><tbody>${rows.map(({item, target}) => `<tr><th scope="row"><label><input type="checkbox" data-kind="tables" value="${esc(item.id)}" aria-label="Transfer ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''} ${session ? 'disabled' : ''}><span><strong>${esc(item.name)}</strong><small>${esc(item.engine)}</small></span></label></th><td>${pill(item)}</td><td>${pill(target)}</td></tr>`).join('') || '<tr><td colspan="3">No database tables found on the source site.</td></tr>'}</tbody></table></div>`;
     }
     function updateSelection() {
         const counts = {};
+        if($('preset-modified') && typeof presetBaseline!=='undefined')$('preset-modified').hidden=!presetBaseline || JSON.stringify({...currentSelection(),expanded_components:undefined})===presetBaseline;
         for (const kind of ['plugins', 'themes', 'tables', 'media_ids']) {
-            counts[kind] = !sites && session?.selection ? (session.selection[kind] || []).length : document.querySelectorAll(`input[data-kind="${kind}"]:checked`).length;
+            counts[kind] = !sites && session?.selection ? (session.selection[kind] || []).length : $('enable-' + (kind === 'media_ids' ? 'media' : kind)).checked ? document.querySelectorAll(`input[data-kind="${kind}"]:checked`).length : 0;
             if (kind !== 'media_ids') {
                 const total = document.querySelectorAll(`input[data-kind="${kind}"]:not([data-protected="true"])`).length;
                 $(kind + '-summary').textContent = sites ? `${counts[kind]} of ${total} selected` : `${counts[kind]} selected`;
@@ -318,18 +320,36 @@
                 }
             }
         }
+        if(sites){const selected=($('enable-tables').checked?source().tables:[]).filter(t=>[...document.querySelectorAll('input[data-kind="tables"]:checked')].some(e=>e.value===t.id));const large=selected.filter(t=>t.bytes>=250*1048576).length;$('tables-summary').classList?.toggle('is-warning',$('enable-tables').checked && large>0);$('tables-summary').textContent=$('enable-tables').checked?`${selected.length} tables · ${bytes(selected.reduce((n,t)=>n+t.bytes,0))}${large?` · ${large} large included`:''}`:'Not included';}
+        if(sites)for(const kind of ['plugins','themes']) {
+            const outcomes={};
+            $(kind).querySelectorAll('.csm-code-component').forEach(row=>{
+                const input=row.querySelector('input[data-kind]'), value=row.querySelector('[data-incoming]'), status=row.querySelector('[data-change-label]');
+                const included=$('enable-'+kind).checked && input.checked;row.dataset.included=String(included);
+                if(value)value.textContent=included?value.dataset.incoming:value.dataset.installed;
+                const old=row.querySelector('del');if(old)old.hidden=!included;
+                if(status)status.textContent=input.dataset.protected==='true'?status.dataset.changeLabel:included?(status.dataset.changeLabel==='Matching skipped' && $(kind+'-force').checked?'Matching · forced':status.dataset.changeLabel):'Not selected';
+                if(included){const key=status?.dataset.changeLabel || '';outcomes[key]=(outcomes[key]||0)+1;}
+            });
+            const labels=Object.entries(outcomes).map(([label,n])=>`${n} ${label==='Hash not verified'?'unverified':label==='Matching skipped'?($(kind+'-force').checked?'matching forced':'matching skipped'):label==='Files differ'?(n===1?'file differs':'files differ'):label.toLowerCase()+(n===1?'':'s')}`);
+            $(kind+'-summary').textContent=$('enable-'+kind).checked?(labels.join(' · ') || 'Empty selection'):'Not included';
+        }
         document.querySelectorAll('.csm-sort').forEach(button => { button.disabled = busy || !sites; });
-        document.querySelectorAll('input[data-component]').forEach(input => { input.disabled = busy || !!session || !sites; });
-        for (const kind of componentKinds) $('disclose-' + kind).disabled = !sites;
+        document.querySelectorAll('input[data-component]').forEach(input => { input.disabled = busy || !!session || !sites || inventoryLoading || !!inventoryError; });
+        for (const kind of componentKinds) $('disclose-' + kind).disabled = !sites && !inventoryLoading;
         $('remote-site').disabled = busy || !!session || !connectionState.connections.length;
         $('recent').disabled = busy || !!session || !connectionState.recents.length;
-        const mode = !sites && session?.selection ? session.selection.media : $('media-mode').value;
+        const mode = !sites && session?.selection ? session.selection.media : $('enable-media').checked ? $('media-mode').value : 'none';
+        document.querySelectorAll('[data-media-mode]').forEach(input=>{input.checked=input.dataset.mediaMode===$('media-mode').value;input.disabled=busy || !!session || !sites || input.dataset.mediaMode==='uploaded' && !source().media_dates;});
+        if($('replace-summary'))$('replace-summary').textContent=$('replace').checked?'Adjust site addresses':'Off';
         const media = ['all','compare'].includes(mode) ? ((sites ? $('media-force').checked : session?.selection?.media_force) ? 'All media files · forced' : 'All media files') : mode === 'changed' ? 'Changed media files' : mode === 'uploaded' ? 'Attachments by upload date' : mode === 'selected' ? `${counts.media_ids} attachment${counts.media_ids === 1 ? '' : 's'} selected` : 'No media files';
         $('media-summary').textContent = media;
         $('selection-summary').textContent = `${counts.tables} table${counts.tables === 1 ? '' : 's'} · ${counts.plugins} plugin${counts.plugins === 1 ? '' : 's'} · ${counts.themes} theme${counts.themes === 1 ? '' : 's'} · ${media.toLowerCase()}`;
+        if($('included-summary'))$('included-summary').textContent=`${componentKinds.filter(kind=>$('enable-'+kind).checked).length} components included`;
+        if($('database-summary'))$('database-summary').textContent=inventoryLoading?'Loading database sizes…':$('enable-tables').checked && sites?`${bytes(source().tables.filter(t=>[...document.querySelectorAll('input[data-kind="tables"]:checked')].some(e=>e.value===t.id)).reduce((sum,t)=>sum+t.bytes,0))} of source database selected`:'Database not included';
         const selected = counts.plugins + counts.themes + counts.tables > 0 || (mode !== 'none' && (mode !== 'selected' || counts.media_ids > 0));
         const validMediaDates = mode !== 'uploaded' || (!!($('media-after').value || $('media-before').value) && (!$('media-after').value || !$('media-before').value || $('media-after').value <= $('media-before').value));
-        $('stage').disabled = busy || cancelling || (session?.retryAt > Date.now()) || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
+        $('stage').disabled = busy || cancelling || inventoryLoading || !!inventoryError || presetLoading || (session?.retryAt > Date.now()) || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
         $('apply').disabled = busy || cancelling || !versionsMatch() || !transferVersionMatches();
         renderVersionStatus();
         syncMediaSelection();
@@ -346,19 +366,33 @@
         }
     }
     function destinationAction() {
-        return (session?.direction || direction()) === 'pull' ? 'Pull site' : 'Push site';
+        const pull=(session?.direction || direction())==='pull';
+        return sites?`${pull?'Pull into':'Push to'} ${siteLabel(destination())}`:pull?'Pull site':'Push site';
+    }
+    function presetsAvailable() {
+        return !!sites && !inventoryLoading && !inventoryError && versionsMatch() && transferVersionMatches();
     }
     function updateSetup() {
         $('action-destination').textContent = session?.destination || (sites ? destination().url : '');
-        $('preset').disabled = busy || !!session || !sites;
-        $('selection-workspace').hidden=!sites && !session;
-        $('transfer-shortcuts').hidden=!sites && !connectionState.recents?.length;
-        $('flip-direction').disabled=busy || !!session || !sites;
+        const ready=presetsAvailable();
+        $('preset-undo').hidden=!presetUndo || !ready;
+        $('recent-wrap').hidden=activePreset!=='recent' || !ready || presetLoading || !!session || !connectionState.recents.some(item=>item.remote_id===connectionState.selected);
+        if($('preset-title'))$('preset-title').textContent=presetChosen?'Starting preset':'Choose a preset';
+        $('preset-undo').disabled=busy || !!session || inventoryLoading || !!inventoryError;
+        if(inventoryLoading || presetLoading || inventoryError)$('stage').disabled=true;
+        document.querySelectorAll('input[data-component]').forEach(input=>input.disabled=busy || !!session || !sites || inventoryLoading || !!inventoryError);
+        $('preset').disabled = busy || !!session || !ready;
+        document.querySelectorAll('[data-verify-matching]').forEach(button=>button.disabled=busy || !!session || !sites);
+        $('selection-workspace').hidden=(!presetChosen || !ready) && !session;
+        if($('preset-choices'))$('preset-choices').querySelectorAll('button').forEach(button=>button.disabled=busy || !!session || !ready || !connectionState.selected || button.dataset.presetChoice==='recent' && !connectionState.recents.some(item=>item.remote_id===$('remote-site').value && item.direction===direction()));
+        $('transfer-shortcuts').hidden=!connectionState.selected || !ready;
+        $('flip-direction').disabled=busy || !!session || !connectionState.selected;
         const menu=$('site-menu');if(busy || session)menu.open=false;
         $('site-menu-toggle').setAttribute('aria-disabled',String(busy || !!session));
         for(const button of document.querySelectorAll('[data-select-site], [data-add-site], #csm-update-connection'))button.disabled=busy || !!session || button.hasAttribute('data-select-site') && button.dataset.selectSite===connectionState.selected;
         $('refresh').disabled=busy || !!session || !connectionState.selected;
         $('stage').hidden = busy && (!!session || transferView) || !session && !$('completion').hidden;
+        document.querySelectorAll('[data-reuse-recent]').forEach(button=>button.disabled=busy || !!session);
         syncTransferDialog();
     }
     function syncTransferDialog() {
@@ -405,20 +439,57 @@
             const item = inventory.get(input.value), target = lookup.get(kind === 'tables' ? input.value.slice(source().prefix.length) : input.value);
             const row = input.closest(kind === 'tables' ? 'tr' : '.csm-component');
             if (!item || !row) return;
-            const matches = `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || item.version !== target.version && item.version_order !== 0));
+            const verifiedMatch = kind !== 'tables' && target && item.version === target.version && !!item.content_hash && item.content_hash === target.content_hash;
+            const showMatching = kind === 'tables' || $(kind+'-force')?.checked || $('show-matching-' + kind)?.checked || mode === 'selected';
+            const matches = (!verifiedMatch || showMatching) && `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || (item.version !== target.version && item.version_order !== 0 || !!item.content_hash && !!target.content_hash && item.content_hash !== target.content_hash)));
             row.hidden = !matches; total++; if (matches) shown++;
         });
+        if($('options-summary-'+kind))$('options-summary-'+kind).textContent=query?'Search active':mode!=='all'?'Filter active':kind!=='tables' && $(kind+'-force')?.checked?'Forced retransfer':'';
         $('filter-count-' + kind).textContent = `${shown} of ${total}`;
         $('filter-empty-' + kind).hidden = shown > 0 || total === 0;
     }
-    async function applyPreset(name) {
-        if (!name || session) return;
-        const preset = await api('preset', {preset:name, site:$('remote-site').value});
-        $('direction').value = preset.direction; render();
-        const enabled = ['tables','plugins','themes'].filter(kind => preset.selection[kind]?.length);
-        restoreSelection({...currentSelection(), ...preset.selection, file_verify:$('file-verify').checked, enabled_components:enabled, expanded_components:enabled});
-        $('preset').value = name;
-        $('preset-status').textContent = 'Preset loaded. Selections remain editable.'; feedback('');
+    let presetUndo = null, presetChosen = false, presetBaseline = null, activePreset = '';
+    const presetIcons={"everything": "<svg viewBox=\"0 0 36 36\" aria-hidden=\"true\" fill=\"currentColor\"><path d=\"M31.49 8.92206L19.49 2.12991C19.16 1.93985 18.75 1.95986 18.43 2.17993L4.43 11.803C4.16 11.993 4 12.3031 4 12.6232V26.2075C4 26.5676 4.19 26.8978 4.51 27.0778L16.51 33.87C16.66 33.96 16.83 34 17 34C17.2 34 17.4 33.94 17.57 33.8199L31.57 24.1869C31.84 23.9968 32 23.6867 32 23.3666V9.79234C32 9.43222 31.81 9.10212 31.49 8.92206ZM19.05 4.18056L28.78 9.6923L24.1 12.9133L14.37 7.40158L19.05 4.18056ZM16 31.2991L6 25.6374V13.9336L16 19.5954V31.2991ZM16.95 17.8349L7.22 12.3231L12.54 8.66198L22.27 14.1737L16.95 17.8349ZM30 22.8565L18 31.1091V19.5354L30 11.2828V22.8565Z\"/></svg>", "push-git": "<svg viewBox=\"0 0 36 36\" aria-hidden=\"true\" fill=\"currentColor\"><path d=\"M13.86 11.4917C13.58 11.0215 12.97 10.8614 12.49 11.1415L2.49 17.0642C2.19 17.2442 2 17.5744 2 17.9245C2 18.2747 2.18 18.6048 2.48 18.7849L12.48 24.8676C12.64 24.9677 12.82 25.0177 13 25.0177C13.34 25.0177 13.67 24.8476 13.86 24.5375C14.15 24.0673 14 23.447 13.53 23.1669L4.94 17.9345L13.51 12.8523C13.99 12.5722 14.14 11.9619 13.86 11.4817V11.4917ZM33.52 17.2242L23.52 11.1415C23.05 10.8514 22.43 11.0015 22.15 11.4717C21.86 11.9419 22.01 12.5622 22.48 12.8423L31.06 18.0546L22.49 23.1369C22.01 23.417 21.86 24.0273 22.14 24.5075C22.33 24.8276 22.66 24.9977 23 24.9977C23.17 24.9977 23.35 24.9577 23.51 24.8576L33.51 18.935C33.81 18.7549 34 18.4348 34 18.0846C34 17.7345 33.82 17.4043 33.52 17.2242ZM20.22 8.02013C19.68 7.91008 19.15 8.24023 19.03 8.78047L15.03 26.7885C14.91 27.3287 15.25 27.859 15.79 27.979C15.86 27.999 15.94 27.999 16.01 27.999C16.47 27.999 16.88 27.6789 16.99 27.2187L20.98 9.21066C21.1 8.67042 20.76 8.14018 20.22 8.02013Z\"/></svg>", "custom": "<svg viewBox=\"0 0 36 36\" aria-hidden=\"true\" fill=\"currentColor\"><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M11.9804 12.37C11.9881 10.5397 10.7556 8.93757 8.98767 8.48V5C8.98767 4.44772 8.54105 4 7.99011 4C7.43917 4 6.99255 4.44772 6.99255 5V8.48C5.19755 8.91093 3.93164 10.5197 3.93164 12.37C3.93164 14.2203 5.19755 15.8291 6.99255 16.26V31C6.99255 31.5523 7.43917 32 7.99011 32C8.54105 32 8.98767 31.5523 8.98767 31V16.26C10.7556 15.8024 11.9881 14.2003 11.9804 12.37ZM28.9389 11.94C30.7069 12.3976 31.9394 13.9997 31.9316 15.83C31.9394 17.6603 30.7069 19.2624 28.9389 19.72V31C28.9389 31.5523 28.4923 32 27.9414 32C27.3904 32 26.9438 31.5523 26.9438 31V19.72C25.1488 19.2891 23.8829 17.6803 23.8829 15.83C23.8829 13.9797 25.1488 12.3709 26.9438 11.94V5C26.9438 4.44772 27.3904 4 27.9414 4C28.4923 4 28.9389 4.44772 28.9389 5V11.94ZM25.9462 15.8301C25.9462 16.9346 26.8395 17.8301 27.9414 17.8301V17.8701C28.4775 17.8702 28.9911 17.654 29.3664 17.2702C29.7417 16.8865 29.9472 16.3674 29.9365 15.8301C29.9365 14.7255 29.0432 13.8301 27.9414 13.8301C26.8395 13.8301 25.9462 14.7255 25.9462 15.8301ZM5.99499 12.3701C5.99499 13.4747 6.88824 14.3701 7.99011 14.3701V14.4001C8.52448 14.4002 9.03654 14.1854 9.41157 13.8038C9.7866 13.4222 9.99325 12.9057 9.98524 12.3701C9.98524 11.2655 9.09199 10.3701 7.99011 10.3701C6.88824 10.3701 5.99499 11.2655 5.99499 12.3701ZM21.956 24.5C21.9638 22.6697 20.7312 21.0676 18.9633 20.61V5C18.9633 4.44772 18.5167 4 17.9658 4C17.4148 4 16.9682 4.44772 16.9682 5V20.61C15.1732 21.0409 13.9073 22.6497 13.9073 24.5C13.9073 26.3503 15.1732 27.9591 16.9682 28.39V31C16.9682 31.5523 17.4148 32 17.9658 32C18.5167 32 18.9633 31.5523 18.9633 31V28.39C20.7312 27.9324 21.9638 26.3303 21.956 24.5ZM15.9706 24.5C15.9706 25.6046 16.8639 26.5 17.9657 26.5V26.53C18.5001 26.5301 19.0122 26.3152 19.3872 25.9336C19.7622 25.5521 19.9689 25.0356 19.9609 24.5C19.9609 23.3954 19.0676 22.5 17.9657 22.5C16.8639 22.5 15.9706 23.3954 15.9706 24.5Z\"/></svg>", "recent": "<svg viewBox=\"0 0 36 36\" aria-hidden=\"true\" fill=\"currentColor\"><path d=\"M3.99805 10.26C6.82862 5.17851 12.1814 2.02037 17.998 2C25.1475 1.99879 31.4301 6.7409 33.3887 13.6169C35.3472 20.4928 32.5064 27.8337 26.4294 31.5999C20.3523 35.3662 12.5142 34.6437 7.22805 29.83C6.96367 29.5888 6.84803 29.225 6.92469 28.8754C7.00135 28.5259 7.25865 28.2438 7.59969 28.1354C7.94072 28.0271 8.31367 28.1088 8.57805 28.35C13.0467 32.4157 19.6193 33.1563 24.8806 30.187C30.142 27.2176 32.9051 21.2082 31.7342 15.2814C30.5634 9.3545 25.7226 4.84725 19.7274 4.10169C13.7322 3.35613 7.93492 6.54045 5.34805 12H10.798C11.3503 12 11.798 12.4477 11.798 13C11.798 13.5523 11.3503 14 10.798 14H1.99805V5.2C1.99805 4.64772 2.44576 4.2 2.99805 4.2C3.55033 4.2 3.99805 4.64772 3.99805 5.2V10.26Z\"/><path d=\"M16.998 10.83C16.998 10.2777 17.4458 9.83 17.998 9.83C18.5503 9.83 18.998 10.2777 18.998 10.83V18.49L23.998 21.88C24.4488 22.1878 24.5696 22.8001 24.2693 23.256C23.9691 23.7118 23.3588 23.8426 22.898 23.55L16.998 19.55V10.83Z\"/></svg>", "database": "<svg viewBox=\"0 0 36 36\" aria-hidden=\"true\" fill=\"currentColor\"><path d=\"M18 2C16.57 2 4 2.11 4 6V30C4 33.89 16.57 34 18 34C19.43 34 32 33.89 32 30V6C32 2.11 19.43 2 18 2ZM30 13.92C29.52 14.68 25.17 16 18 16C13.42 16 10.01 15.46 8 14.88V16.96C11.81 17.96 17.1 18.01 18 18.01C19.07 18.01 26.39 17.95 30 16.28V21.93C29.52 22.69 25.17 24.01 18 24.01C13.42 24.01 10.01 23.47 8 22.89V24.97C11.81 25.97 17.1 26.02 18 26.02C19.07 26.02 26.39 25.96 30 24.29V29.95C29.49 30.71 25.14 32.02 18 32.02C10.86 32.02 6.51 30.71 6 29.95V6H6.05C6.77 5.23 11.07 4 18 4C24.93 4 29.23 5.23 29.95 6C29.23 6.77 24.93 8 18 8C13.43 8 10.01 7.46 8 6.88V8.96C11.81 9.96 17.1 10.01 18 10.01C19.07 10.01 26.39 9.95 30 8.28V13.93V13.92Z\"/></svg>", "database-media": "<svg viewBox=\"0 0 36 36\" aria-hidden=\"true\" fill=\"currentColor\"><path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M32 4H4C2.89543 4 2 4.89543 2 6V30C2 31.1046 2.89543 32 4 32H32C33.1046 32 34 31.1046 34 30V6C34 4.89543 33.1046 4 32 4ZM8.92 14C10.5769 14 11.92 12.6569 11.92 11C11.92 9.34315 10.5769 8 8.92 8C7.26315 8 5.92 9.34315 5.92 11C5.92 12.6569 7.26315 14 8.92 14ZM22.78 15.37L17.38 20.77L13.38 16.77C12.99 16.3823 12.36 16.3823 11.97 16.77L5.92 22.9V25.73L12.71 18.94L16 22.18L12.25 25.93H15L23.45 17.48L30 24V21.18L24.19 15.37C23.8 14.9823 23.17 14.9823 22.78 15.37ZM10.4053 10.3807C10.1545 9.7832 9.56803 9.39595 8.92 9.4V9.41C8.04414 9.41546 7.33546 10.1241 7.33 11C7.33001 11.648 7.72093 12.2321 8.32004 12.4791C8.91915 12.7262 9.60811 12.5875 10.0649 12.1278C10.5217 11.6681 10.6561 10.9783 10.4053 10.3807ZM4 6V30H32V6H4Z\"/></svg>"};
+    function renderPresetChoices() {
+        const choices=direction()==='push'?[['everything','Everything','All content'],['push-git','Version-controlled files','Tracked files'],['custom','Custom','Choose your own'],['recent','Most recent','Last push for these sites']]:[['everything','Everything','All content'],['database','Database only','Content and settings'],['database-media','Database + media','Content and uploads'],['recent','Most recent','Last pull for these sites']];
+        $('preset-choices').innerHTML=choices.map(([id,label,hint])=>`<button type="button" class="csm-preset-choice" data-preset-choice="${id}" ${busy || session || !presetsAvailable() || !connectionState.selected?'disabled':''}><span class="csm-preset-icon">${presetIcons[id]}</span><span><strong>${label}</strong><small>${hint}</small></span></button>`).join('');
+    }
+    async function applyPreset(name, recentProfile=null) {
+        if (!name || session || busy || !presetsAvailable()) return;
+        $('recent-wrap').hidden=name!=='recent';
+        const request=++presetRequest, site=$('remote-site').value, flow=direction();
+        if(name==='recent' && !recentProfile)recentProfile=connectionState.recents.find(item=>item.remote_id===site && item.direction===flow) || null;
+        const previous={...currentSelection(),_ui:{chosen:presetChosen,baseline:presetBaseline,active:activePreset}};
+        previous.media=$('media-mode').value;
+        for(const kind of ['plugins','themes','tables','media_ids'])previous[kind]=[...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(e=>e.value);
+        presetLoading=true;updateSelection();
+        try {
+            let selection;
+            if(name==='recent') {
+                const recent=recentProfile || connectionState.recents.find(item=>item.remote_id===site && item.direction===flow);
+                if(!recent)throw new Error('No recent migration for these sites and direction.');
+                const profile=recent.selection?recent:await api('recent',{id:recent.id});
+                await loadSelectedMedia(profile.selection);
+                if(request!==presetRequest || site!==$('remote-site').value || flow!==direction())return;
+                renderMediaGrid();selection=profile.selection;$('recent').value=profile.id;
+                $('recent-wrap').hidden=false;
+            } else if(name==='push-git') {
+                const preset=await api('preset',{preset:name,site});
+                selection={...currentSelection(),...preset.selection,enabled_components:['plugins','themes'],expanded_components:[]};
+            } else {
+                selection={...currentSelection(),tables:[],plugins:[],themes:[],media:'none',enabled_components:[],expanded_components:[]};
+                const enabled=name==='everything'?componentKinds:name==='database'?['tables']:name==='database-media'?['tables','media']:[];
+                for(const kind of enabled){if(kind==='media')selection.media='all';else selection[kind]=source()[kind].filter(item=>!item.protected).map(item=>item.id);}
+                selection.enabled_components=enabled;
+            }
+            if(request!==presetRequest || site!==$('remote-site').value || flow!==direction())return;
+            restoreSelection(selection);presetUndo=previous;
+            presetChosen=true;activePreset=name;$('recent-wrap').open=name==='recent';presetBaseline=JSON.stringify({...currentSelection(),expanded_components:undefined});
+            document.querySelectorAll('[data-preset-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.presetChoice===name)));
+            $('preset-status').textContent='Preset applied. Selections remain editable.';feedback('');
+        } catch(error) {
+            if(request===presetRequest && site===$('remote-site').value && flow===direction())throw error;
+        } finally {if(request===presetRequest){presetLoading=false;updateSelection();startComparisons();}}
     }
     function renderComponentSizes() {
         const estimate=sites?source().estimates:null;
@@ -449,52 +520,59 @@
     }
     let estimateTimer=null, estimateGeneration=0;
     async function loadEstimates(generation=++estimateGeneration) {
-        if (!sites || session || generation!==estimateGeneration) return;
+        if (!presetsAvailable() || session || generation!==estimateGeneration) return;
         const site=$('remote-site').value;
         try {
             const result=await api('estimates',{site});
             if (session || generation!==estimateGeneration || site!==$('remote-site').value) return;
             for (const key of ['local','remote']) { sites[key].estimates=result[key]; }
             renderComponentSizes();
-            if (!result.local.complete || result.local.refreshing || !result.remote.complete || result.remote.refreshing) estimateTimer=setTimeout(()=>loadEstimates(generation),750);
+            if (!result.local.complete || result.local.refreshing || !result.remote.complete || result.remote.refreshing) estimateTimer=setTimeout(()=>loadEstimates(generation),3000);
         } catch (_) { if (!session && generation===estimateGeneration) $('summary-size-note').textContent='Size estimate unavailable. Try Refresh versions.'; }
     }
     function transferVersionMatches() { return !session || (!!sites && session.plugin_version === sites.local.plugin_version); }
     function versionsMatch() { return !!sites && sites.local.plugin_version === sites.remote.plugin_version && (!sites.remote.remote_build_update || sites.local.trickle_build === sites.remote.trickle_build); }
     function renderEndpoints() {
-        const peer=connectionState.connections.find(site=>site.id===connectionState.selected), pull=(session?.direction || direction())==='pull';
+        const menu=$('site-menu'), peer=connectionState.connections.find(site=>site.id===connectionState.selected), pull=(session?.direction || direction())==='pull';
         const local=sites?.local || CSM.local, remote=sites?.remote || peer;
         labelRoute();
         for(const [id,site] of [['source',pull?remote:local],['destination',pull?local:remote]]){
             const card=$(id).closest('.csm-endpoint'), isRemote=id===(pull?'source':'destination');
             card.classList.toggle('csm-empty-endpoint',!site);card.classList.toggle('csm-remote-endpoint',isRemote);
             if(!site){$(id).innerHTML=`<button type="button" class="button" data-add-site>Add ${pull?'source':'destination'}</button>`;continue;}
+            const name=isRemote?(peer?.name || site.name || site.url):(site.name || site.url);
             const versions=[['Trickle',site.plugin_version],['WordPress',site.wordpress],['PHP',site.php]].filter(([,value])=>value);
-            $(id).innerHTML=`${icon(site.icon,'site')}<span class="csm-site-identity"><strong>${esc(site.url)}</strong>${site.name?`<small>${esc(site.name)}</small>`:''}${versions.length?`<span class="csm-site-versions">${versions.map(([label,version])=>`<span>${label} <b>${esc(version)}</b></span>`).join('')}</span>`:''}</span>`;
+            $(id).innerHTML=`${icon(site.icon,'site')}<span class="csm-site-identity" title="${esc([site.url,...versions.map(([label,version])=>label+' '+version)].join(' · '))}"><strong>${esc(name)}</strong><small>${esc(site.url)}</small>${versions.length?`<span class="csm-site-versions">${versions.map(([label,version])=>`<span>${label} <b>${esc(version)}</b></span>`).join('')}</span>`:''}</span>`;
         }
-        $(pull?'source':'destination').closest('.csm-endpoint').append($('site-menu'));
-        $('site-menu').hidden=!connectionState.connections.length;
+        $(pull?'source':'destination').append(menu);
+        menu.hidden=!connectionState.connections.length;
+        $('site-menu-toggle').innerHTML=`<span>${esc(peer?.name || remote?.name || 'Choose site')}</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
         $('update-connection').hidden=!peer;
     }
     function renderVersionStatus() {
+        $('clear-update-comparisons').hidden=!remoteUpdate?.retained;
+        $('clear-update-comparisons').disabled=busy || !!session;
+        const peerUrl=connectionState.connections.find(peer=>peer.id===connectionState.selected)?.url;
+        $('open-remote-trickle').hidden=!(remoteUpdate?.retained || remoteUpdate?.syncError) || !peerUrl;
+        if(peerUrl)$('open-remote-trickle').href=peerUrl.replace(/\/$/,'')+'/wp-admin/tools.php?page=trickle&view=settings#csm-source-preparations';
         $('trickle-versions').hidden = !sites;
         $('install-local-build').hidden = !sites;
-        $('install-local-build').textContent = sites?.remote.remote_build_update ? 'Install local Trickle build' : 'Install the new ZIP once to enable build sync';
+        $('install-local-build').textContent = sites?.remote.remote_build_update ? 'Sync remote Trickle' : 'Install the latest Trickle ZIP to enable syncing';
         $('install-local-build').disabled = busy || !!session || !sites?.remote.remote_build_update || !sites?.remote.can_update_trickle || sites?.remote.file_modifications===false;
         if (!sites) return;
         renderEndpoints();
         const same = versionsMatch(), local = sites.local.plugin_version;
         $('trickle-versions').hidden = same && transferVersionMatches();
         $('trickle-versions').classList.toggle('csm-version-mismatch', !same || !transferVersionMatches());
-        $('trickle-version-status').textContent = same ? '' : 'Trickle update required before transferring';
+        $('trickle-version-status').textContent = same && transferVersionMatches() ? '' : 'Trickle version conflict';
         if (sites.remote.remote_build_update) {
             const mayUpdate=!!sites.remote.can_update_trickle;
             $('check-remote-update').hidden=true;
             $('update-remote').hidden=same||!mayUpdate;
             $('update-remote').disabled=busy||!!session||sites.remote.file_modifications===false;
-            $('update-remote').textContent='Install local Trickle build';
-            $('trickle-version-status').textContent=same?'':'Trickle builds differ';
-            $('trickle-update-status').textContent=session?'Finish the transfer before changing Trickle.':sites.remote.file_modifications===false?'WordPress disallows file modifications on the remote site.':!mayUpdate?'Use an administrator or read/write key to update Trickle.':'Copy this site’s installed Trickle files to the remote site.';
+            $('update-remote').textContent='Sync remote Trickle';
+            $('trickle-version-status').textContent=same && transferVersionMatches()?'':'Trickle version conflict';
+            $('trickle-update-status').textContent=session?'Finish the transfer before changing Trickle.':sites.remote.file_modifications===false?'WordPress disallows file modifications on the remote site.':!mayUpdate?'Use an administrator or read/write key to update Trickle.':remoteUpdate?.retained?'The remote site has retained state. Clear completed comparisons here, or open remote Trickle to resolve an unfinished transfer. Backups and migration recovery data are kept.':'The installed Trickle files differ between sites. Sync the remote site with this installation.';
             return;
         }
         const supported = sites.remote.remote_update === 1;
@@ -504,28 +582,147 @@
         $('update-remote').hidden = same || !remoteUpdate?.can_update_to_target;
         $('update-remote').disabled = busy || !!session;
         $('update-remote').textContent = `Update remote Trickle to ${local}`;
-        $('trickle-update-status').textContent = !transferVersionMatches() ? 'This retained transfer was prepared with an older Trickle version. Discard and prepare again; rollback and recovery remain available.' : same ? 'Push and pull use the same Trickle version on both sites.' : session ? 'Versions changed during a retained transfer. Recovery remains available; discard and prepare again after aligning versions.' : !supported ? 'Install this Trickle build on the remote site once to enable remote updates.' : !mayUpdate ? 'Use an administrator or read/write key to update Trickle.' : remoteUpdate ? remoteUpdate.reason : 'Check whether the remote JSON feed offers the version installed on this site. Newer remote versions require updating this site first.';
+        $('trickle-update-status').textContent = !transferVersionMatches() ? 'This retained transfer was prepared with an older Trickle version. Discard and prepare again; rollback and recovery remain available.' : same ? 'Push and pull use the same Trickle version on both sites.' : session ? 'Versions changed during a retained transfer. Recovery remains available; discard and prepare again after aligning versions.' : !supported ? 'Install this Trickle version on the remote site to enable remote updates.' : !mayUpdate ? 'Use an administrator or read/write key to update Trickle.' : remoteUpdate ? remoteUpdate.reason : 'Check whether the remote JSON feed offers the version installed on this site. Newer remote versions require updating this site first.';
     }
     const transferDate = stamp => new Date(stamp * 1000).toLocaleString(undefined, {dateStyle:'medium', timeStyle:'short'});
+    function recentScope(profile) {
+        const s=profile.selection || {}, parts=[];
+        for(const [kind,label] of [['tables','table'],['plugins','plugin'],['themes','theme']]) {
+            const count=(s[kind] || []).length;if(count)parts.push(`${count} ${label}${count===1?'':'s'}`);
+        }
+        if(['all','compare'].includes(s.media))parts.push(s.media_force?'All media · forced':'All media · unchanged files skipped');
+        else if(s.media==='uploaded')parts.push(`Media uploaded ${s.media_after || 'any date'} → ${s.media_before || 'now'}`);
+        else if(s.media==='selected')parts.push(`${(s.media_ids || []).length} selected attachments + image sizes`);
+        else if(s.media && s.media!=='none')parts.push('Media · saved date filter');
+        return parts;
+    }
+    function renderRecentMigrations() {
+        const profiles=connectionState.recents.filter(item=>item.remote_id===connectionState.selected).sort((a,b)=>b.started_at-a.started_at);
+        $('recent-wrap').hidden=activePreset!=='recent' || presetLoading || !!session || !profiles.length;
+        $('recents-context').textContent=profiles.length?`${profiles.length} with ${connectionState.connections.find(item=>item.id===connectionState.selected)?.name || 'this site'}`:'';
+        const card=profile=>{
+            const done=profile.status==='applied', result=profile.result, s=profile.selection || {};
+            const status={applied:'Completed',staged:'Staged · not applied',staging:'Incomplete',applying:'Applying',restored:'Rolled back',cancelled:'Cancelled',failed:'Failed',restoring:'Restoring'}[profile.status] || profile.status;
+            const items=['tables','plugins','themes'].filter(kind=>(s[kind] || []).length).map(kind=>{
+                const names=new Map((profile.scope?.[kind] || []).map(item=>[item.id,item.name+(item.version?' '+item.version:'')]));
+                return `<div><dt>${kind==='tables'?'Database tables':kind==='plugins'?'Plugins':'Themes'}</dt><dd>${(s[kind] || []).map(id=>esc(names.get(id) || id)).join(', ')}</dd></div>`;
+            }).join('');
+            const actual=done && result?`${Number(result.tables || 0)} tables transferred · ${Number(result.files || 0)} files copied${result.unchanged_files?` · ${Number(result.unchanged_files)} unchanged files skipped`:''}`:'';
+            return `<article class="csm-recent-migration"><div class="csm-recent-route"><strong>${profile.direction==='push'?'Push to':'Pull from'} ${esc(profile.remote_name || profile.remote_url)}</strong><span class="csm-recent-outcome" data-completed="${done}">${esc(status)}</span><time>${esc(transferDate(done && profile.completed_at || profile.started_at))}</time></div><p class="csm-recent-scope"><small>Selected scope</small>${recentScope(profile).map(part=>`<span>${esc(part)}</span>`).join('') || 'No components selected'}</p>${actual?`<p class="csm-recent-result">${esc(actual)}</p>`:''}<div class="csm-recent-actions"><details><summary>View selected items</summary><dl>${items}${s.media && s.media!=='none'?`<div><dt>Media</dt><dd>${esc(recentScope(profile).at(-1))}</dd></div>`:''}</dl></details><button type="button" class="button" data-reuse-recent="${esc(profile.id)}" ${busy || session?'disabled':''}>Use these settings</button></div></article>`;
+        };
+        $('recent-list').innerHTML=profiles.slice(0,3).map(card).join('')+(profiles.length>3?`<details class="csm-older-migrations"><summary>${profiles.length-3} older migrations</summary>${profiles.slice(3).map(card).join('')}</details>`:'');
+    }
+    async function reuseRecent(id) {
+        if(busy || session)return;
+        const profile=connectionState.recents.find(item=>item.id===id);
+        if(!profile)throw new Error('This migration is no longer in recent history.');
+        if(profile.remote_id!==connectionState.selected)await selectSite(profile.remote_id);
+        if(direction()!==profile.direction){$('direction').value=profile.direction;$('direction').dispatchEvent(new Event('change'));}
+        await applyPreset('recent',profile);
+        $('preset-choices').scrollIntoView({block:'nearest'});
+        document.querySelector('[data-preset-choice="recent"]')?.focus({preventScroll:true});
+    }
+    function renderSectionLoading() {
+        const loading=inventoryLoading || !!inventoryError;
+        $('inventory-status').hidden=!loading;
+        $('inventory-status').textContent=inventoryError?`Could not load site details: ${inventoryError}`:inventoryLoading?'Checking the connection and Trickle versions…':'';
+        for(const kind of componentKinds) {
+            const panel=document.querySelector(`[data-component-panel="${kind}"]`), placeholder=document.querySelector(`[data-loading-section="${kind}"]`);
+            panel.toggleAttribute('data-loading',loading);panel.setAttribute('aria-busy',String(inventoryLoading));
+            placeholder.hidden=!loading;
+            placeholder.querySelector('p').textContent=inventoryError?'These choices could not be loaded. Retry loading above.':`Loading ${kind==='tables'?'database tables':kind==='media'?'media library':kind}…`;
+            if(loading)$(kind+'-summary').textContent=$('enable-'+kind).checked?(inventoryError?'Loading failed':'Loading choices…'):'Not included';
+        }
+    }
+    function comparisonRelevant(kind) {
+        if(!presetChosen)return kind!=='media';
+        return $('enable-'+kind).checked && (kind==='media'?$('media-mode').value==='all' && !$('media-force').checked:!$(kind+'-force').checked && !$('file-verify').checked);
+    }
+    function invalidateComparisons() {
+        comparisonGeneration++;comparisonState?.controller?.abort();
+    }
+    async function pauseComparisons() {
+        invalidateComparisons();
+        await comparisonPromise.catch(()=>{});
+    }
+    function startComparisons() {
+        if(!presetsAvailable() || session || busy || transferView || sites.local.bounded_work!==2 || sites.remote.bounded_work!==2)return;
+        if(!comparisonState || comparisonState.generation!==comparisonGeneration || comparisonState.inventory!==sites || comparisonState.direction!==direction()) {
+            comparisonState={generation:comparisonGeneration,inventory:sites,direction:direction(),site:$('remote-site').value,id:crypto.randomUUID().replaceAll('-',''),done:new Set(),failed:new Set(),running:false};
+        }
+        const state=comparisonState;if(state.running || state.throttled)return;
+        const src=state.direction==='pull'?state.inventory.remote:state.inventory.local, dst=state.direction==='pull'?state.inventory.local:state.inventory.remote;
+        const current=()=>state.generation===comparisonGeneration && state.inventory===sites && state.site===$('remote-site').value && state.direction===direction() && !session && !busy;
+        state.running=true;
+        comparisonPromise=comparisonPromise.catch(()=>{}).then(async()=>{
+            while(current()) {
+                let task=null;
+                for(const kind of ['plugins','themes']) {
+                    if(!comparisonRelevant(kind))continue;
+                    const item=src[kind].find(item=>!item.protected && !item.follow_symlinks && !item.content_hash && !state.done.has(kind+'/'+item.id) && !state.failed.has(kind+'/'+item.id));
+                    if(item){task={kind,item,key:kind+'/'+item.id};break;}
+                }
+                if(!task && comparisonRelevant('media') && !state.done.has('media') && !state.failed.has('media') && src.media_compare && dst.media_compare)task={kind:'media',key:'media'};
+                if(!task)break;
+                const status=task.kind==='media'?$('media-comparison-status'):$('hash-status-'+task.kind);
+                status.textContent=task.kind==='media'?'Comparing media in the background…':`Comparing ${task.item.name || task.item.id}…`;
+                try {
+                    let result;
+                    do {
+                        if(!current() || !comparisonRelevant(task.kind))break;
+                        state.controller=new AbortController();
+                        const wait=Math.max(0,(state.nextRequestAt || 0)-Date.now());
+                        if(wait)await new Promise(resolve=>{
+                            const signal=state.controller.signal;let timer;
+                            const done=()=>{clearTimeout(timer);signal.removeEventListener('abort',done);resolve();};
+                            signal.addEventListener('abort',done,{once:true});timer=setTimeout(done,wait);
+                        });
+                        if(!current() || !comparisonRelevant(task.kind)) { state.controller=null;break; }
+                        state.nextRequestAt=Date.now()+1000;
+                        result=await api(task.kind==='media'?'warm_media':'compare_component',{site:state.site,direction:state.direction,comparison:state.id,...(task.item?{kind:task.kind,component:task.item.id}:{})},null,state.controller);
+                        state.controller=null;
+                    } while(result.continue);
+                    if(!current())break;
+                    if(!result || result.continue)continue;
+                    state.done.add(task.key);
+                    if(task.item) {
+                        task.item.content_hash=result.source;
+                        const target=dst[task.kind].find(item=>item.id===task.item.id);if(target)target.content_hash=result.destination;
+                        const selected=new Set([...document.querySelectorAll(`input[data-kind="${task.kind}"]:checked`)].map(e=>e.value));
+                        components(task.kind);document.querySelectorAll(`input[data-kind="${task.kind}"]`).forEach(input=>input.checked=selected.has(input.value));
+                        status.textContent='Versions and content hashes compared. Changes are checked again before transferring.';
+                        lockSelection();updateSelection();
+                    } else status.textContent=`${Number(result.stats?.files_selected || 0).toLocaleString()} media files new or different. Checked again before transfer.`;
+                } catch(error) {
+                    if(!current())break;
+                    if(error.retryAfter>0) {
+                        state.throttled=true;
+                        status.textContent='The site requested a cooldown. Background comparisons paused. Use Refresh versions to retry after the cooldown.';
+                        break;
+                    }
+                    state.failed.add(task.key);
+                    status.textContent=`Comparison will be retried when transferring. ${error.message}`;
+                }
+            }
+        }).finally(()=>{state.running=false;});
+    }
     function renderConnections(state) {
         connectionState = state; session = state.session;
         if(state.selected!==$('remote-site').value && !session)sites=null;
         $('remote-site').value = state.selected;
-        const recent = $('recent').value;
-        $('recent').innerHTML = '<option value="">Reuse a recent transfer…</option>' + state.recents.map(item => `<option value="${esc(item.id)}">${esc(transferDate(item.started_at))} · ${item.direction === 'push' ? 'Push to' : 'Pull from'} ${esc(item.remote_name)} · ${esc(item.status)}</option>`).join('');
-        $('recent').value = recent;
-        $('recent-wrap').hidden = !state.recents.length;
+        renderRecentMigrations();
         $('retained-note').hidden = !session;
         $('saved-sites').innerHTML=state.connections.map(site=>`<button type="button" data-select-site="${esc(site.id)}" aria-pressed="${site.id===state.selected}"><strong>${esc(site.name)}</strong><small>${esc(site.url)}</small></button>`).join('');
         $('workspace').hidden=false;renderEndpoints();
     }
     function clearInventory() {
+        inventoryGeneration++;invalidateComparisons();presetRequest++;presetLoading=false;presetChosen=false;activePreset='';presetBaseline=null;presetUndo=null;inventoryError='';
         sites = null; remoteUpdate = null; resetComponents(); $('ignore-active-plugins').checked = false;
         $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
-        renderEndpoints();
-        $('version-note').textContent = 'Loading site inventories…';
+        renderEndpoints();renderPresetChoices();
+        $('version-note').textContent = ''; $('version-note').hidden = true;
         updateSelection();
     }
     function renderReplacements(rules) {
@@ -542,7 +739,7 @@
     function lockReplacements() {
         const available = !!sites?.replacements;
         document.querySelectorAll('.csm-replacement-control').forEach(control => { control.disabled = busy || !!session || !$('replace').checked || !available; });
-        $('replacement-status').textContent = !available ? 'Load matching Trickle builds to edit replacements.' : !$('replace').checked ? 'Find & replace is off.' : `${replacementRules.filter(rule => rule.enabled).length} rules enabled.`;
+        $('replacement-status').textContent = !available ? 'Resolve the Trickle version conflict to edit replacements.' : !$('replace').checked ? 'Find & replace is off.' : `${replacementRules.filter(rule => rule.enabled).length} rules enabled.`;
     }
     function currentSelection() {
         const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:!$('ignore-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
@@ -556,6 +753,7 @@
         return selection;
     }
     function restoreSelection(selection, strict = true) {
+        presetChosen=true;
         if (!session && sites) for (const kind of ['plugins','themes']) {
             let changed=false;
             for (const item of source()[kind]) { if (item.follow_symlinks) { delete item.follow_symlinks; changed=true; } }
@@ -578,7 +776,7 @@
         showComponent(componentKinds.find(kind => !$(kind + '-body').hidden) || 'tables');
         for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = !!(selection[kind + '_force'] ?? selection.file_force);
         $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('ignore-active-plugins').checked = selection.sync_active_plugins === false;
-        $('media-mode').value = selection.media === 'compare' ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
+        $('media-mode').value = ['compare','changed'].includes(selection.media) && !session ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
         renderReplacements(selection.replacements ?? sites.replacements?.[direction()] ?? []);
         renderMedia();
@@ -643,7 +841,7 @@
         updateSelection();
     }
     function render() {
-        $('preset').value = ''; $('preset-status').textContent = 'Selections stay editable.';
+        presetUndo=null;presetBaseline=null;activePreset='';presetChosen=!!session;renderPresetChoices();$('preset').value = ''; $('preset-status').textContent = 'Choose a starting scope above. Switch presets here at any time.';
         resetComponents(); $('media-mode').value = 'none'; $('media-force').checked = false;
         if (session) $('direction').value = session.direction;
         labelRoute();
@@ -675,16 +873,31 @@
             if (['applying','restoring'].includes(summary.status)) { summary = await transferRequest('recover', {id:session.id}); const route = {...session}; await finishTransfer(summary, route); return; }
             showSummary();
         }
-        feedback(refresh ? 'Checking installed versions and available updates on both sites…' : 'Connecting and estimating site sizes…');
-        sites = inventory || await api('manifest', {refresh}); remoteUpdate = null;
-        await loadSelectedMedia(session?.selection || preserve); render();
-        if (preserve) restoreSelection(preserve);
-        if (session && summary?.id !== session.id) { summary = await api('status', {id:session.id}); showSummary(); }
-        $('connect-status').textContent = 'Paste a code to connect.';
-        feedback(refresh ? 'Versions refreshed on both sites.' : '');
-
-        if (session?.automatic) await migrate();
+        const generation=++inventoryGeneration, site=$('remote-site').value;
+        inventoryLoading=true;inventoryError='';invalidateComparisons();presetRequest++;presetLoading=false;
+        $('inventory-retry').hidden=true;renderSectionLoading();updateSetup();
+        try {
+            const next=inventory || await api('manifest',{refresh,site});
+            if(generation!==inventoryGeneration || site!==$('remote-site').value)return;
+            if(next.state)renderConnections(next.state);
+            sites=next;remoteUpdate=null;
+            if(versionsMatch() && transferVersionMatches())await loadSelectedMedia(session?.selection || preserve);
+            if(generation!==inventoryGeneration || site!==$('remote-site').value)return;
+            inventoryLoading=false;render();
+            if(preserve)restoreSelection(preserve);
+            if(session && summary?.id!==session.id){summary=await api('status',{id:session.id});showSummary();}
+            $('connect-status').textContent='Paste a code to connect.';
+            if(session?.automatic)await migrate();
+        } catch(error) {
+            if(generation!==inventoryGeneration)return;
+            inventoryError=error.message;$('inventory-retry').hidden=false;
+            if(session)throw error;
+        } finally {
+            if(generation===inventoryGeneration){inventoryLoading=false;renderSectionLoading();updateSelection();startComparisons();}
+        }
     }
+    function startInventoryLoad(refresh=false) { return load(refresh).catch(fail); }
+
     function renderSkippedFolders() {
         const folders = summary?.skipped_folders || [];
         const container = $('skipped-folders');
@@ -733,7 +946,7 @@
         else backupUrl.searchParams.delete('backup');
         $('backup-link').textContent = result.status === 'applied' ? 'View backup' : 'Backups';
         $('backup-link').href = backupUrl.href;
-        try { await load(true); }
+        try { await load(); }
         catch (_) { message(''); feedback('Complete. Reload to refresh the inventory.'); return; }
         message('');
         $('action-title').textContent = $('completion-title').textContent;
@@ -758,27 +971,6 @@
         const page = await api('preview', {id:session.id, offset:previewItems.length});
         previewItems = [...previewItems, ...page.items]; renderPreview();
     }));
-    for (const button of [$('copy'), $('copy-settings')]) {
-        let copyResetTimer;
-        button.addEventListener('click', async () => {
-            try {
-                await navigator.clipboard.writeText($('pairing').value);
-                const label = button.querySelector('span');
-                button.style.minWidth = `${button.offsetWidth}px`;
-                label.textContent = 'Code copied';
-                clearTimeout(copyResetTimer);
-                copyResetTimer = setTimeout(() => { label.textContent = 'Copy connection code'; }, 2000);
-            } catch (_) {
-                document.querySelector('[data-csm-tab="settings"]').click();
-                $('connection').open = true;
-                $('pairing').hidden = false;
-                $('reveal').setAttribute('aria-expanded', 'true');
-                $('reveal').textContent = 'Hide connection code';
-                $('pairing').focus(); $('pairing').select();
-                feedback('Your browser could not copy automatically. The connection code is selected; copy it with your keyboard.');
-            }
-        });
-    }
     $('reveal').addEventListener('click', () => {
         const show = $('pairing').hidden; $('pairing').hidden = !show;
         $('reveal').setAttribute('aria-expanded', String(show));
@@ -819,7 +1011,7 @@
         await run(async()=>{
             try{renderConnections(await api('select',{site:id}));}
             catch(error){renderConnections(connectionState);throw error;}
-            clearInventory();await load();$('site-menu-toggle').focus();
+            clearInventory();startInventoryLoad();$('site-menu-toggle').focus();
         });
     }
     $('site-menu-toggle').addEventListener('click',event=>{if(busy || session)event.preventDefault();});
@@ -852,7 +1044,7 @@
             try{
                 const result=await api('connect',{pairing:code,name:$('remote-name').value});
                 $('remote-code').value='';$('remote-name').value='';
-                renderConnections(result.state);clearInventory();await load();
+                renderConnections(result.state);clearInventory();startInventoryLoad();
                 $('connection-dialog').close();feedback('');
             }catch(error){
                 if(!$('connection-dialog').open)throw error;
@@ -870,10 +1062,40 @@
     }));
     async function installLocalBuild() {
         if (!sites?.remote.remote_build_update || !sites.remote.can_update_trickle || session) return;
-        $('site-menu').open=false;feedback('Installing local Trickle build…');
-        await api('update_remote',{site:$('remote-site').value});
+        $('site-menu').open=false;feedback('Syncing remote Trickle…');
+        try { await api('update_remote',{site:$('remote-site').value}); }
+        catch(error) {
+            remoteUpdate={retained:/Finish and discard retained transfers/.test(error.message),syncError:true};renderVersionStatus();
+            throw error;
+        }
         await load();feedback('Remote Trickle matches this site.');
     }
+    async function refreshSourcePreparations() {
+        const result=await api('retained_sources');
+        $('source-preparations-status').textContent=result.sources.length?`${result.sources.length} retained preparation${result.sources.length===1?'':'s'}`:'No retained source preparations.';
+        $('source-preparations-list').innerHTML=result.sources.map(item=>`<div class="csm-backup-row"><div><strong>${item.snapshot?'Source snapshot':'Read-only comparison'}</strong><p>${esc(item.kinds.join(' + '))} · ${bytes(item.bytes)} · ${esc(transferDate(item.created))}</p><small>${esc(item.id)}</small>${!item.can_discard?'<p>Resolve this transfer using its recovery controls first.</p>':''}</div><button type="button" class="button" data-discard-source="${esc(item.id)}" ${item.can_discard?'':'disabled'}>Cancel preparation</button></div>`).join('');
+    }
+    $('refresh-source-preparations').addEventListener('click',()=>run(refreshSourcePreparations));
+    $('source-preparations').addEventListener('toggle',()=>{if($('source-preparations').open)run(refreshSourcePreparations);});
+    $('source-preparations-list').addEventListener('click',event=>{
+        const button=event.target.closest('[data-discard-source]');if(!button)return;
+        if(!confirm('Cancel this source preparation and discard its export? Destination backups will be kept. Any connected site using it will need to cancel or prepare again.'))return;
+        run(async()=>{await api('discard_source_preparation',{id:button.dataset.discardSource});await refreshSourcePreparations();feedback('Source preparation cancelled. Retry the Trickle sync from your controlling site.');});
+    });
+    if(location.hash==='#csm-source-preparations')$('source-preparations').open=true;
+    $('clear-update-comparisons').addEventListener('click',()=>run(async()=>{
+        if(!remoteUpdate?.retained || session || !sites?.remote.can_update_trickle)return;
+        await pauseComparisons();let offset=0,cleared=0,result;
+        do {
+            feedback('Checking completed comparisons on the remote site…');
+            result=await api('clear_update_comparisons',{site:$('remote-site').value,offset});
+            offset=result.checked;cleared+=result.cleared;
+        } while(result.continue);
+        remoteUpdate=await api('remote_update_info',{site:$('remote-site').value});
+        remoteUpdate.retained=!remoteUpdate.ready;renderVersionStatus();
+        if(!remoteUpdate.ready)throw new Error(`${cleared} completed comparisons cleared. ${remoteUpdate.reason} Open remote Trickle to resolve the remaining transfer; its recovery data has been kept.`);
+        feedback(`${cleared} completed comparisons cleared. Retry Sync remote Trickle.`);
+    }));
     $('install-local-build').addEventListener('click',()=>run(installLocalBuild));
     $('update-remote').addEventListener('click', () => run(async () => {
         if (sites?.remote.remote_build_update) { await installLocalBuild(); return; }
@@ -883,27 +1105,43 @@
         await api('update_remote', {site:$('remote-site').value});
         await load(true); feedback('Remote Trickle updated. Versions match; choose what to transfer.');
     }));
-    $('preset').addEventListener('change', () => run(() => applyPreset($('preset').value)));
-    document.querySelectorAll('[data-search-kind]').forEach(input => input.addEventListener('input', () => filterComponents(input.dataset.searchKind)));
-    document.querySelectorAll('[data-filter-kind]').forEach(input => input.addEventListener('change', () => filterComponents(input.dataset.filterKind)));
-    $('refresh').addEventListener('click', () => { $('site-menu').open=false;run(() => load(true)); });
-    $('recent').addEventListener('change', () => {
-        const id = $('recent').value;
-        if (!id) return;
-        run(async () => {
-            const profile = await api('recent', {id});
-            renderConnections(await api('select', {site:profile.remote_id}));
-            $('direction').value = profile.direction;
-            clearInventory(); await load(false, null, profile.selection);
-            $('recent').value = id;
-            feedback(`Loaded the ${profile.direction} settings from ${transferDate(profile.started_at)}. Nothing has been staged or applied.`);
+    $('collapse-all').addEventListener('click',()=>{for(const kind of componentKinds)setPanelOpen(kind,false);});
+    $('preset-undo').addEventListener('click',()=>{if(!presetUndo || busy || session)return;const saved=presetUndo;restoreSelection(saved);for(const kind of componentKinds){setComponent(kind,saved.enabled_components.includes(kind));setPanelOpen(kind,saved.expanded_components.includes(kind));}presetChosen=saved._ui.chosen;presetBaseline=saved._ui.baseline;activePreset=saved._ui.active;presetUndo=null;document.querySelectorAll('[data-preset-choice]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.presetChoice===activePreset)));$('preset-status').textContent='Previous selections restored.';updateSelection();});
+    $('preset-choices').addEventListener('click',event=>{const button=event.target.closest('[data-preset-choice]');if(button)applyPreset(button.dataset.presetChoice).catch(fail);});
+    $('table-order').addEventListener('change',()=>{tableSort.key=$('table-order').value;tableSort.descending=tableSort.key!=='name';renderTables();updateSelection();});
+    document.querySelectorAll('[data-media-mode]').forEach(input=>input.addEventListener('change',()=>{if(input.checked){$('media-mode').value=input.dataset.mediaMode;$('media-mode').dispatchEvent(new Event('change'));}}));
+    for(const kind of ['plugins','themes']) {
+        $('show-matching-'+kind).addEventListener('change',()=>filterComponents(kind));
+        $('show-hashes-'+kind).addEventListener('change',()=>$(kind).classList.toggle('csm-show-hashes',$('show-hashes-'+kind).checked));
+    }
+    $('workspace').addEventListener('click',event=>{
+        const button=event.target.closest('[data-verify-matching]');if(!button)return;
+        run(async()=>{
+            await pauseComparisons();
+            const kind=button.dataset.verifyMatching, dst=new Map(destination()[kind].map(item=>[item.id,item]));
+            const checked=new Set([...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(e=>e.value));
+            for(const item of source()[kind]) {
+                const target=dst.get(item.id);if(item.protected || !target || item.version!==target.version)continue;
+                $('hash-status-'+kind).textContent='Verifying '+item.name+'…';
+                const comparison=crypto.randomUUID().replaceAll('-','');let result;
+                do { result=await api('compare_component',{site:$('remote-site').value,direction:direction(),kind,component:item.id,comparison}); } while(result.continue);
+                item.content_hash=result.source;target.content_hash=result.destination;
+            }
+            components(kind);document.querySelectorAll(`input[data-kind="${kind}"]`).forEach(e=>e.checked=checked.has(e.value));
+            $('hash-status-'+kind).textContent='Matching requires equal versions and verified content hashes.';updateSelection();
         });
     });
+    $('preset').addEventListener('change', () => applyPreset($('preset').value).catch(fail));
+    document.querySelectorAll('[data-search-kind]').forEach(input => input.addEventListener('input', () => filterComponents(input.dataset.searchKind)));
+    document.querySelectorAll('[data-filter-kind]').forEach(input => input.addEventListener('change', () => filterComponents(input.dataset.filterKind)));
+    $('refresh').addEventListener('click', () => { $('site-menu').open=false;startInventoryLoad(true); });
+    $('inventory-retry').addEventListener('click',()=>startInventoryLoad());
+    $('recent-list').addEventListener('click',event=>{const button=event.target.closest('[data-reuse-recent]');if(button)reuseRecent(button.dataset.reuseRecent).catch(fail);});
     $('flip-direction').addEventListener('click',()=>{
-        if(busy || session || !sites)return;
+        if(busy || session || !connectionState.selected)return;
         $('direction').value=direction()==='pull'?'push':'pull';$('direction').dispatchEvent(new Event('change'));
     });
-    $('direction').addEventListener('change', () => { if (sites) { $('media-mode').value = 'none'; $('replace').checked = true; $('recent').value = ''; render(); } });
+    $('direction').addEventListener('change', () => { try{localStorage.setItem('trickle-last-direction',direction());}catch{} invalidateComparisons();presetRequest++;presetLoading=false;presetChosen=false;activePreset='';$('media-mode').value='none';$('replace').checked=true;$('recent').value='';if(sites)render();else{renderPresetChoices();renderEndpoints();updateSetup();}renderRecentMigrations();startComparisons(); });
     let savedTransferSettings = {transport:$('transport').value, file_verify:$('file-verify').checked};
     for (const id of ['transport', 'file-verify']) $(id).addEventListener('change', () => run(async () => {
         $('transfer-settings-status').textContent = 'Saving…';
@@ -967,16 +1205,18 @@
         const checkbox = event.target;
         if (checkbox.matches('input[data-component]')) {
             if (busy || session) return;
-            setComponent(checkbox.dataset.component, checkbox.checked, true);
+            const kind=checkbox.dataset.component;
+            const initialize=checkbox.checked && (kind==='media'?$('media-mode').value==='none':!document.querySelector(`input[data-kind="${kind}"]:checked`));
+            setComponent(kind, checkbox.checked, initialize);
             $('recent').value = '';
         }
         if (checkbox.matches('.csm-select-all')) {
             document.querySelectorAll(`input[data-kind="${checkbox.dataset.selectKind}"]:not(:disabled)`).forEach(input => { input.checked = checkbox.checked; });
         }
-        updateSelection();
+        updateSelection();startComparisons();
     });
     document.querySelectorAll('.csm-panel-disclosure').forEach(button => button.addEventListener('click', () => {
-        setPanelOpen(button.dataset.disclose, true);
+        setPanelOpen(button.dataset.disclose, $(button.dataset.disclose + '-body').hidden);
     }));
     $('include-current').addEventListener('click', () => {
         if (busy || session || !sites) return;
@@ -1024,6 +1264,7 @@
         if (event.target.checked && !confirm(`Include ${event.target.value}? This can replace or delete actively developed destination code. Repository metadata, node_modules, .gitignore and environment files remain excluded.`)) event.target.checked = false;
     });
     async function migrate() {
+        if(!session)await pauseComparisons();
         if(!session)transferMeter.clear?.();
         $('completion').hidden = true;
         if (!session) {
@@ -1059,10 +1300,7 @@
             }
             showSummary();
             const pending = [...summary.pending];
-            for (const kind of pending) {
-                message('');
-                summary = await transferRequest('preflight', {id:session.id,kind});
-            }
+            // Transfer prepares its immutable snapshot first; all streams must still stage before commit.
             for (const kind of pending) {
                 message('');
                 summary = await transferRequest('transfer', {id:session.id, kind}); showSummary();
@@ -1142,15 +1380,16 @@
         link.href = url; link.download = `trickle-diagnostics-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     });
-    $('direction').value = session?.direction || connectionState.recents.find(item => ['push','pull'].includes(item.direction))?.direction || 'pull';
-    renderConnections(connectionState); updateSelection();
-    if (CSM.state.recovery_error) { fail(new Error(`Recovery needs attention: ${CSM.state.recovery_error}. The site remains protected. Check Diagnostics, then retry recovery.`)); const retry=document.createElement('button'); retry.type='button'; retry.className='button'; retry.textContent='Retry recovery'; retry.addEventListener('click',()=>run(async()=>{ let result; do { result=await api('recover_destination'); } while (result.continue); location.reload(); })); $('error').append(retry); }
+    $('direction').value = session?.direction || (()=>{try{return localStorage.getItem('trickle-last-direction');}catch{return null;}})() || connectionState.recents.find(item => ['push','pull'].includes(item.direction))?.direction || 'pull';
+    renderConnections(connectionState);renderPresetChoices();updateSelection();
+    if (CSM.state.recovery_error) { fail(new Error(`Recovery needs attention: ${CSM.state.recovery_error}. The site remains protected. Check Diagnostics, then retry recovery.`)); const retry=document.createElement('button'); retry.type='button'; retry.className='button'; retry.textContent='Retry recovery'; retry.addEventListener('click',()=>run(async()=>{ let result; do { result=await api('recover_destination'); } while (result.continue); location.reload(); })); ($('error').querySelector('.csm-error-actions') || $('error')).append(retry); }
     else if (CSM.state.destination_recovery) run(async () => {
         feedback('Recovering…'); let result; do { result=await api('recover_destination'); } while (result.continue);
         if (connectionState.selected || session) await load();
         else feedback('Destination restored.');
     });
-    else if (connectionState.selected || session) run(() => load());
+    else if(session)run(()=>load());
+    else if(connectionState.selected)startInventoryLoad();
     setInterval(() => transferMeter.render(), 1000);
     setInterval(() => { if (!busy && session?.automatic && Date.now() >= (session.retryAt || 0) && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
     let checkingProgress = false;

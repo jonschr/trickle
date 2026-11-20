@@ -15,6 +15,8 @@ final class CSM_Segments {
         $path=self::path($id,'files','.source.owner'); $lock=fopen(self::path($id,'files','.source.lock'),'c');
         if (!$lock || !flock($lock,LOCK_EX|LOCK_NB)) { if ($lock) fclose($lock); throw new CSM_Busy_Error('Source preparation is busy.'); }
         try {
+            $identity=self::path($id,'files','.comparison.owner');
+            if (is_file($identity)) { CSM_Access::assert_owner(json_decode(file_get_contents($identity),true,32,JSON_THROW_ON_ERROR)); }
             if (is_file($path)) { CSM_Access::assert_owner(json_decode(file_get_contents($path),true,32,JSON_THROW_ON_ERROR)); @touch($path); }
             else { CSM_Support::atomic_json($path,['credential'=>CSM_Access::owner(),'created'=>time()]); }
         } finally { flock($lock,LOCK_UN); fclose($lock); }
@@ -26,6 +28,8 @@ final class CSM_Segments {
         if (!$lock) { throw new RuntimeException('Cannot open source snapshot lock.'); }
         if (!flock($lock, LOCK_EX | LOCK_NB)) { fclose($lock); throw new CSM_Busy_Error('Source stream is still being built. Retry preparation shortly.'); }
         try {
+            $identity=self::path($id,'files','.comparison.owner');
+            if (is_file($identity)) { CSM_Access::assert_owner(json_decode(file_get_contents($identity),true,32,JSON_THROW_ON_ERROR)); }
             if (is_file($meta)) {
                 $info = json_decode(file_get_contents($meta), true, 32, JSON_THROW_ON_ERROR);
                 CSM_Access::assert_owner($info);
@@ -84,6 +88,7 @@ final class CSM_Segments {
     }
 
     public static function pull(array $peer, array $job, string $kind, array $bundle): array {
+        CSM_Support::step();
         $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
         if ($state['offset'] < $bundle['size']) {
             CSM_Support::atomic_json($path . '.json', $bundle);
@@ -96,10 +101,11 @@ final class CSM_Segments {
         }
         clearstatcache(true, $path); $next = is_file($path) ? filesize($path) : 0;
         if ($next !== $bundle['size']) { throw new CSM_Network_Error('Connection failed: Incomplete snapshot stream. Resume from the saved offset.'); }
-        return self::receive($job,$kind,$bundle,$next,'',hash('sha256',''),$state['offset']<$bundle['size']);
+        return self::receive($job,$kind,$bundle,$next,'',hash('sha256',''),false,true);
     }
 
     public static function receive_stream(array $job, string $kind, array $bundle, int $offset, $input, ?int $length = null): array {
+        CSM_Support::step();
         $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
         if ($offset !== $state['offset']) { throw new RuntimeException('Destination offset changed. Refresh its checkpoint before resuming.'); }
         if ($length !== null && ($length < 0 || $length > self::UPLOAD_SIZE || $length > $bundle['size'] - $offset || ($length === 0 && $offset !== $bundle['size']))) { throw new RuntimeException('Invalid upload window length.'); }
@@ -119,7 +125,7 @@ final class CSM_Segments {
             }
         } finally { fclose($fp); }
         if ($offset !== $end) { throw new CSM_Network_Error('Connection failed: Incoming stream interrupted. Resume from the saved offset.'); }
-        return self::receive($job,$kind,$bundle,$offset,'',hash('sha256',''),$end>$state['offset']);
+        return self::receive($job,$kind,$bundle,$offset,'',hash('sha256',''),false,true);
     }
 
     private static function validate_bundle(array $bundle): void {
@@ -140,7 +146,8 @@ final class CSM_Segments {
         return ['offset' => $offset, 'size' => $bundle['size'], 'sha256' => $bundle['sha256']];
     }
 
-    public static function receive(array $job, string $kind, array $bundle, int $offset, string $bytes, string $checksum, bool $defer = false): array {
+    public static function receive(array $job, string $kind, array $bundle, int $offset, string $bytes, string $checksum, bool $defer = false, bool $continuing = false): array {
+        CSM_Support::step(8, $continuing);
         $state = self::state($job, $kind, $bundle); $path = self::path($job['id'], $kind, '.incoming');
         if (strlen($bytes) > self::SIZE || !hash_equals(hash('sha256', $bytes), $checksum) || $offset < 0 || $offset > $state['offset'] || $offset + strlen($bytes) > $bundle['size']) { throw new RuntimeException('Segment checksum or offset mismatch.'); }
         if (isset($job['received'][$kind])) { return CSM_Plugin::summary($job) + ['continue' => false, 'checkpoint' => $state]; }
@@ -156,11 +163,11 @@ final class CSM_Segments {
         }
         clearstatcache(true, $path); $next = is_file($path) ? filesize($path) : 0;
         CSM_Progress::update(['phase' => 'Receiving resumable stream', 'component' => $kind, 'bytes' => $next, 'count' => $next, 'total' => $bundle['size'], 'unit' => 'bytes']);
-        if ($next === $bundle['size'] && !$defer && $bytes==='') {
+        if ($next === $bundle['size'] && !$defer && !CSM_Support::due()) {
             if (($bundle['format'] ?? 1) === 2) {
-                if (CSM_Package::unpack($path,$bundle)) {
+                if (CSM_Package::unpack($path,$bundle,true) && !CSM_Support::due()) {
                     $fp = fopen($path.'.raw','rb');
-                    try { $job = CSM_Plugin::receive_step($job,$kind,$fp); }
+                    try { $job = CSM_Plugin::receive_step($job,$kind,$fp,true); }
                     finally { fclose($fp); }
                 }
             } else {
@@ -182,8 +189,10 @@ final class CSM_Segments {
         $job = get_option('_csm_job_' . $id);
         if ($job) { CSM_Access::assert_owner($job); return; }
         foreach (['files', 'database'] as $kind) {
-            $path = self::path($id, $kind, '.source.owner');
-            if (is_file($path)) { CSM_Access::assert_owner(json_decode(file_get_contents($path), true, 32, JSON_THROW_ON_ERROR)); return; }
+            foreach (['.source.owner','.comparison.owner'] as $suffix) {
+                $path = self::path($id, $kind, $suffix);
+                if (is_file($path)) { CSM_Access::assert_owner(json_decode(file_get_contents($path), true, 32, JSON_THROW_ON_ERROR)); return; }
+            }
         }
     }
 
@@ -191,14 +200,17 @@ final class CSM_Segments {
         $found = false;
         if ($job = get_option('_csm_job_'.$id)) { CSM_Access::assert_owner($job); $found=true; }
         foreach (['database','files'] as $kind) {
-            $path=self::path($id,$kind,'.source.owner');
-            if (is_file($path)) { CSM_Access::assert_owner(json_decode(file_get_contents($path),true,32,JSON_THROW_ON_ERROR)); $found=true; }
+            foreach (['.source.owner','.comparison.owner'] as $suffix) {
+                $path=self::path($id,$kind,$suffix);
+                if (is_file($path)) { CSM_Access::assert_owner(json_decode(file_get_contents($path),true,32,JSON_THROW_ON_ERROR)); $found=true; }
+            }
         }
         CSM_Support::cancel($id);
     }
 
     public static function prune_sources(): void {
         CSM_Jobs::prune();
+        foreach (glob(CSM_Support::private_dir().'/segment-*.comparison.owner') ?: [] as $marker) { if (filemtime($marker)<time()-DAY_IN_SECONDS) { @unlink($marker); } }
         foreach (glob(CSM_Support::private_dir().'/media-compare-*.json') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
         foreach (glob(CSM_Support::private_dir().'/*.comparison-*.json') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
         foreach (glob(CSM_Support::private_dir().'/*.build-*') ?: [] as $cache) { if (filemtime($cache)<time()-DAY_IN_SECONDS) { @unlink($cache); } }
@@ -219,6 +231,72 @@ final class CSM_Segments {
             }
             fclose($lock);
         }
+    }
+
+    public static function retained_sources(): array {
+        $sources=[];
+        foreach (glob(CSM_Support::private_dir().'/segment-*.source.owner') ?: [] as $path) {
+            if (!preg_match('/segment-([a-f0-9]{32})-(database|files)\.source\.owner$/D',$path,$m)) { continue; }
+            $owner=json_decode(file_get_contents($path),true,32,JSON_THROW_ON_ERROR);
+            try { CSM_Access::assert_owner($owner); } catch (RuntimeException $error) { if ($error->getCode()===403) { continue; } throw $error; }
+            $id=$m[1]; $base=substr($path,0,-6);
+            $sources[$id] ??= ['id'=>$id,'created'=>$owner['created'] ?? $owner['touched'] ?? filemtime($path),'kinds'=>[],'bytes'=>0,'snapshot'=>false];
+            $sources[$id]['kinds'][]=$m[2];
+            $sources[$id]['snapshot']=$sources[$id]['snapshot'] || isset($owner['selection']);
+            $sources[$id]['bytes']+=is_file($base)?filesize($base):(is_file($base.'.part')?filesize($base.'.part'):0);
+            $sources[$id]['can_discard']=(get_option('_csm_control')['id'] ?? '')!==$id && get_option('_csm_active_job')!==$id && !get_option('_csm_job_'.$id);
+        }
+        return array_values($sources);
+    }
+
+    public static function discard_preparation(string $id): void {
+        $source=array_column(self::retained_sources(),null,'id')[$id] ?? null;
+        if (!$source) { throw new RuntimeException('Source preparation not found. Refresh its status.'); }
+        if (!$source['can_discard']) { throw new RuntimeException('Use this transfer’s recovery controls before discarding its source preparation.'); }
+        $owner=null;
+        foreach (['database','files'] as $kind) {
+            $path=self::path($id,$kind,'.source.owner');
+            if (!is_file($path)) { continue; }
+            $record=json_decode(file_get_contents($path),true,32,JSON_THROW_ON_ERROR); CSM_Access::assert_owner($record);
+            if ($owner!==null && $owner!==$record['credential']) { throw new RuntimeException('Inconsistent source ownership. Recovery state has been kept.'); }
+            $owner=$record['credential'];
+        }
+        $previous=$GLOBALS['_csm_credential'] ?? null;
+        try {
+            // A site administrator's cancellation must also stop the original remote credential's worker.
+            $GLOBALS['_csm_credential']=array_replace($previous ?? [],['id'=>$owner]);
+            self::cancel($id); self::cleanup_source($id);
+            CSM_Support::atomic_json(self::path($id,'files','.comparison.owner'),['credential'=>$owner,'created'=>time()]);
+        } finally { if ($previous===null) { unset($GLOBALS['_csm_credential']); } else { $GLOBALS['_csm_credential']=$previous; } }
+    }
+
+    public static function release_comparison(string $id): bool {
+        $locks=[]; $ownership=null;
+        try {
+            foreach (['database','files'] as $kind) {
+                $fp=fopen(self::path($id,$kind,'.source.lock'),'c');
+                if (!$fp) { return false; }
+                if (!flock($fp,LOCK_EX|LOCK_NB)) { fclose($fp); return false; }
+                $locks[]=$fp;
+            }
+            if (get_option('_csm_job_'.$id) || (get_option('_csm_control')['id'] ?? '')===$id) { return false; }
+            foreach (['database','files'] as $kind) {
+                $path=self::path($id,$kind,'.source');
+                foreach (['','.json','.part','.build'] as $suffix) { if (file_exists($path.$suffix)) { return false; } }
+                if (is_file($path.'.owner')) {
+                    $owner=json_decode(file_get_contents($path.'.owner'),true,32,JSON_THROW_ON_ERROR);
+                    CSM_Access::assert_owner($owner);
+                    if (isset($owner['selection'])) { return false; }
+                    $ownership=$owner;
+                }
+            }
+            $identity=self::path($id,'files','.comparison.owner');
+            if (is_file($identity)) { CSM_Access::assert_owner(json_decode(file_get_contents($identity),true,32,JSON_THROW_ON_ERROR)); }
+            if ($ownership) { CSM_Support::atomic_json($identity,$ownership); }
+            // Keep progress/cancel ownership without counting read-only comparisons as retained snapshots.
+            foreach (['database','files'] as $kind) { $path=self::path($id,$kind,'.source.owner'); if (is_file($path) && !unlink($path)) { return false; } }
+            return true;
+        } finally { foreach ($locks as $fp) { flock($fp,LOCK_UN); fclose($fp); } }
     }
 
     public static function cleanup_source(string $id): void {

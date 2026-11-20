@@ -38,7 +38,7 @@ try:
  state=ev(D,'$r=get_option("_csm_job_".'+repr(tid)+');echo wp_json_encode(["bytes"=>strlen(maybe_serialize($r)),"private"=>isset($r["_csm_blob"])]);')
  assert state['private'] and state['bytes']<2048,state
  report('verified',files=COUNT,steps=steps,database_record_bytes=state['bytes'])
- r,steps=complete('commit',{'id':tid});assert r['status']=='applied' and r['health']['verified'],r
+ r,steps=complete('commit',{'id':tid});assert r['status']=='applied' and r['verification']['verified'],r
  op('finish',{'id':tid})
  assert not (FOLDERS[D]/'destination.txt').exists()
  for source in (FOLDERS[S]/'payload').rglob('*.txt'):

@@ -9,7 +9,7 @@ try{
  CSM_Transport::request(['url'=>site_url(),'key'=>get_option('_csm_key')],'manifest');
  $health=CSM_Transport::health(home_url());
  $rows=array_map(static fn($line)=>json_decode($line,true,512,JSON_THROW_ON_ERROR),file($log,FILE_IGNORE_NEW_LINES));
- if(count($rows)!==2||$rows[0]!==['user_agent'=>'Trickle/'.CSM_VERSION.' (WordPress site migration)','health'=>false]||$rows[1]!==['user_agent'=>'Trickle/'.CSM_VERSION.' health check','health'=>true]||!$health['verified'])throw new RuntimeException('Actual request identity does not match ordinary plugin use.');
+ if(count($rows)!==2||$rows[0]!==['user_agent'=>'Trickle/'.CSM_VERSION.' (+https://github.com/jonschr/trickle)','health'=>false]||$rows[1]!==['user_agent'=>'Trickle/'.CSM_VERSION.' (+https://github.com/jonschr/trickle)','health'=>true]||!$health['verified'])throw new RuntimeException('Actual request identity does not match ordinary plugin use.');
  echo "PASS Actual signed API request uses the normal Trickle user agent\nPASS Actual frontend health request uses the normal Trickle health user agent\n";
  echo wp_json_encode($rows)."\n";
 }finally{if(file_exists($mu))unlink($mu);if(file_exists($log))unlink($log);}

@@ -9,5 +9,6 @@ function context(fetch){const c={CSM:{ajax:'fixture',nonce:'fixture'},cancellati
  const stale=c.api('status',{id:'fixture'});await new Promise(setImmediate);c.cancellation++;release(JSON.stringify({ok:true,data:{nonce:'stale',state:{connections:[]}}}));await assert.rejects(stale,e=>e.cancelled===true);assert.equal(c.CSM.nonce,'fixture');
  c=context(async()=>({status:400,text:async()=>JSON.stringify({ok:false,error:'Plugin Connection Tools: PHP parse error'})}));await assert.rejects(c.api('preflight',{id:'fixture'}),e=>!e.retryable);
  c=context(async()=>({status:502,text:async()=>'gateway'}));await assert.rejects(c.api('transfer',{id:'fixture'}),e=>e.retryable===true);
+ c=context(async()=>({status:200,text:async()=>JSON.stringify({ok:true,data:{state:{connections:[]}}})}));assert(Array.isArray((await c.api('manifest',{site:'old'})).state.connections),'Inventory replies must be accepted by the route generation guard before changing connections');
  console.log('API cancellation checks passed: pending fetch aborts, stale status cannot resurrect session, deterministic errors do not retry, 502 does.');
 })().catch(e=>{console.error(e);process.exit(1);});

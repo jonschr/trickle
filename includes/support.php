@@ -47,7 +47,9 @@ final class CSM_Support {
         }
     }
 
-    public static function step(float $seconds = 8): void { self::$step_deadline = hrtime(true)/1e9 + max(.01, (float)apply_filters('csm_step_seconds', $seconds)); }
+    public static function step(float $seconds = 8, bool $continuing = false): void {
+        if (!$continuing || self::$step_deadline === null) { self::$step_deadline = hrtime(true)/1e9 + max(.01, (float)apply_filters('csm_step_seconds', $seconds)); }
+    }
     public static function due(): bool { return self::$step_deadline !== null && hrtime(true)/1e9 >= self::$step_deadline; }
 
     public static function atomic_json(string $path, array $data): void {
@@ -199,7 +201,6 @@ final class CSM_Support {
     // Compatibility for integrations using the original internal helpers.
     public static function save_transactional(array $job): void { CSM_Jobs::save_transactional($job); }
     public static function save(array $job): void { CSM_Jobs::save($job); }
-    public static function prune_job_records(): void { CSM_Jobs::prune(); }
 
     public static function lock(): string {
         $id = bin2hex(random_bytes(16));

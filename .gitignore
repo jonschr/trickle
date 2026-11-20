@@ -1,1 +1,16 @@
 __pycache__/
+
+# Internal working notes belong in the project hub, outside the plugin.
+/AI-USAGE.md
+/aiusage.md
+/AGENTS.md
+/agents.md
+/DESIGN.md
+/design.md
+/PRODUCT.md
+/product.md
+/todo.md
+/TODO.md
+/.impeccable/
+.DS_Store
+/.phpcs-cache

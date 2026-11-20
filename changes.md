@@ -1,5 +1,21 @@
 # Changes
 
+## 0.1.30 — 2026-11-19
+
+- Introduce the Clarity transfer workspace with locally served fonts, a white shared header and a compact design-token scale in `assets/admin.css`. Use `#3858e9` for every blue accent.
+- Choose and switch horizontal presets, then customize transfer categories through checkboxes and expandable summaries. Retain the last site and direction; keep this site on the left when pulling.
+- Show source-to-destination component comparisons with destination upgrade, new-install and downgrade highlights. Matching requires both version and content hash; large database tables are highlighted.
+- Present recent migrations as detailed records of the transferred selection and result, shown only for the Most recent preset.
+- Validate endpoints and Trickle compatibility before exposing presets. Unify notices, connection-code copying and navigation across admin pages; prevent the saved-site menu from overlapping its labels.
+- Add completed-comparison cleanup and a remote Settings link when retained work blocks Sync. Release read-only comparison markers while retaining credential ownership and protecting real snapshots, jobs and source locks.
+- Add Settings → Retained source preparations with explicit cancellation. Cancellation stops the original source worker and preserves destination staging and backups.
+- Identify native requests with `Trickle/<version> (+https://github.com/jonschr/trickle)`. Space background comparisons, reduce competing polls and honor server-requested cooldowns, including HTML rate-limit responses.
+- Reuse acknowledged upload offsets, rediscover offsets after uncertain responses and share a bounded processing budget across small-transfer stages. Verify changed media and rebuilt components while preserving full verification for older recovery cursors.
+- Avoid separate browser preflight round trips and unrelated WordPress update checks on completion. Keep verified source snapshots, staging, resumable checkpoints and destination backups.
+- Remove internal working documents and obsolete test scripts from the repository. Add an isolated test runner and a reproducible WordPress Coding Standards audit configuration.
+
+Validation: 68 isolated checks passed, including WordPress core authorization/session fixtures. Disposable peers passed push/pull data verification, lost-receipt retry, backup restoration, legacy comparison cleanup, retained-snapshot protection, source cancellation and subsequent build sync. Packaged PHP/JavaScript syntax, archive integrity and runtime file/hash equality passed. Existing WordPress Coding Standards findings remain unresolved. Harrison dev rejected native endpoint requests with HTTP 403; hosted sync and a representative hosted performance improvement remain unverified.
+
 ## 0.1.29 — 2026-11-17
 
 - Show skipped plugins and themes by their readable names, with folder paths retained as tooltips and as a fallback when inventory is unavailable.

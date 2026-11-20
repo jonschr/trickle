@@ -1,0 +1,26 @@
+/* Exercise preset switching and Undo with real selection helpers, without a site. */
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const code=fs.readFileSync(__dirname+'/../assets/admin.js','utf8'),controls={};
+const $=id=>controls[id]??=({value:'',checked:false,hidden:true,dataset:{},setAttribute(k,v){this[k]=v;},removeAttribute(k){delete this[k];},addEventListener(k,fn){this[k]=fn;},querySelectorAll:()=>[]});
+const kinds=['tables','plugins','themes','media'];
+const items=[['tables','wp_posts'],['plugins','example'],['plugins','trickle'],['themes','theme'],['media_ids','42']].map(([kind,value])=>({value,checked:false,dataset:{kind,protected:String(value==='trickle')}}));
+const document={querySelectorAll(selector){const kind=selector.match(/data-kind="([^"]+)"/)?.[1];return selector.includes('data-kind')?items.filter(item=>(!kind||item.dataset.kind===kind)&&(!selector.includes(':checked')||item.checked)&&(!selector.includes(':not(')||item.dataset.protected!=='true')):[];}};
+$('transport').value='stream';$('media-mode').value='none';$('replace').checked=true;$('remote-site').value='remote';
+const inventory={tables:[{id:'wp_posts'}],plugins:[{id:'example'},{id:'trickle',protected:true}],themes:[{id:'theme'}]};
+const context={$,document,presetsAvailable:()=>true,presetRequest:0,presetLoading:false,inventoryLoading:false,inventoryError:'',loadSelectedMedia:async()=>{},renderMediaGrid(){},startComparisons(){},componentKinds:kinds,replacementRules:[],sites:{replacements:{}},session:null,busy:false,source:()=>inventory,renderMedia(){},renderReplacements(){},updateSelection(){},feedback(){},direction:()=> 'push',connectionState:{recents:[]},api:async()=>({selection:{plugins:['example'],themes:[],tables:[],media:'none'}})};
+vm.createContext(context);
+vm.runInContext(code.slice(code.indexOf('    function setPanelOpen('),code.indexOf('    function resetComponents('))+code.slice(code.indexOf('    function currentSelection('),code.indexOf('    let mediaAnchor'))+code.slice(code.indexOf('    let presetUndo ='),code.indexOf('    function renderComponentSizes(')),context);
+vm.runInContext(code.slice(code.indexOf("    $('preset-undo').addEventListener"),code.indexOf("    $('preset-choices').addEventListener")),context);
+(async()=>{
+ context.renderPresetChoices();assert($('preset-choices').innerHTML.indexOf('Everything')<$('preset-choices').innerHTML.indexOf('Version-controlled'));assert.match($('preset-choices').innerHTML,/Custom/);
+ await context.applyPreset('everything');assert.equal($('recent-wrap').hidden,true);assert.equal(context.currentSelection().enabled_components.join(','),kinds.join(','));assert.equal(context.currentSelection().plugins.join(','),'example');assert.equal(context.currentSelection().media,'all');assert.equal(context.currentSelection().expanded_components.length,0);assert.equal(vm.runInContext('presetBaseline',context),JSON.stringify({...context.currentSelection(),expanded_components:undefined}),'Preset baseline excludes disclosure-only state');
+ context.direction=()=> 'pull';context.renderPresetChoices();assert.match($('preset-choices').innerHTML,/Database only/);assert.doesNotMatch($('preset-choices').innerHTML,/Version-controlled/);
+ await context.applyPreset('database-media');assert.equal(context.currentSelection().enabled_components.join(','),'tables,media');assert.equal(context.currentSelection().plugins.length,0);assert.equal(context.currentSelection().media,'all');
+ $('preset-undo').click();assert.equal(context.currentSelection().enabled_components.join(','),kinds.join(','));assert.equal(vm.runInContext('activePreset',context),'everything','Undo restores the preceding active preset');assert.equal(context.currentSelection().plugins.join(','),'example');
+ // Undo restores even choices held inside an excluded section.
+ context.setComponent('plugins',false);await context.applyPreset('database');$('preset-undo').click();assert.equal($('enable-plugins').checked,false);assert.equal(items.find(i=>i.value==='example').checked,true);assert.equal(context.currentSelection().plugins.length,0);
+ await context.applyPreset('custom');assert.equal(context.currentSelection().enabled_components.length,0);assert.equal(context.currentSelection().media,'none');
+ context.connectionState.recents=[{id:'wrong',remote_id:'other',direction:'pull'},{id:'last',remote_id:'remote',direction:'pull'}];context.api=async(op,data)=>{assert.equal(op,'recent');assert.equal(data.id,'last');return {selection:{plugins:['example'],themes:[],tables:[],media:'none'}};};await context.applyPreset('recent');assert.equal(context.currentSelection().plugins.join(','),'example');
+ let resolveGit;context.direction=()=> 'push';context.api=()=>new Promise(resolve=>resolveGit=resolve);const oldGit=context.applyPreset('push-git');await context.applyPreset('everything');resolveGit({selection:{plugins:['example'],themes:[],tables:[],media:'none'}});await oldGit;assert.equal(context.currentSelection().enabled_components.join(','),kinds.join(','),'An older async preset cannot overwrite a newer choice');assert.equal(context.presetLoading,false);
+ console.log('PASS Direction-specific presets, protected exclusions, scope switching, Undo and matching recent-transfer reuse.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

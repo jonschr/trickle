@@ -2,7 +2,7 @@
 (() => {
     'use strict';
     async function request(op, data = {}, controller = new AbortController()) {
-        const timeout = ['progress','logs','diagnostics','backup_progress'].includes(op) ? 8000 : ['cancel','recover'].includes(op) ? 20000 : 150000;
+        const timeout = ['compare_component','warm_media'].includes(op) ? 45000 : ['progress','logs','diagnostics','backup_progress'].includes(op) ? 8000 : ['cancel','recover'].includes(op) ? 20000 : 150000;
         let timedOut = false;
         const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
         let response, text;
@@ -15,11 +15,14 @@
             error.retryable = true;
             throw error;
         } finally { clearTimeout(timer); }
+        const retryHeader = response.headers?.get('Retry-After');
+        const headerWait = retryHeader ? (/^\d+$/.test(retryHeader.trim()) ? Number(retryHeader) : Math.max(0, Math.ceil((Date.parse(retryHeader) - Date.now()) / 1000))) : 0;
+        const retryAfter = Math.max(Number.isFinite(headerWait) ? headerWait : 0, response.status === 429 ? 30 : 0);
         let result;
         try { result = JSON.parse(text); }
-        catch (_) { throw Object.assign(new Error(`Unexpected response (HTTP ${response.status}). Check Diagnostics.`), {retryable:[429,502,503,504].includes(response.status)}); }
+        catch (_) { throw Object.assign(new Error(`Unexpected response (HTTP ${response.status}). Check Diagnostics.`), {retryable:[429,502,503,504].includes(response.status), retryAfter}); }
         if (!result || typeof result !== 'object' || !result.ok) {
-            throw Object.assign(new Error(result?.error || 'Request failed.'), {retryable:!!result?.retryable, busy:!!result?.busy, retryExhausted:!!result?.retry_exhausted, retryAfter:result?.retry_after || 0});
+            throw Object.assign(new Error(result?.error || 'Request failed.'), {retryable:response.status===429 || !!result?.retryable, busy:!!result?.busy, retryExhausted:!!result?.retry_exhausted, retryAfter:Math.max(retryAfter, Number(result?.retry_after) || 0)});
         }
         return result.data;
     }

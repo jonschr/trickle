@@ -6,6 +6,7 @@ function node(id){return nodes[id]??=( {id,hidden:true,children:[],focus(){docum
 const dialog=node('transfer-dialog');dialog.open=false;dialog.showModal=function(){this.open=true;};dialog.close=function(){this.open=false;};
 const actionHome=node('action-home');
 const c={transferMeter:{clear(){}},$:node,transferView:false,session:null,busy:false,actionHome,document,updateSelection(){c.syncTransferDialog();}};
+c.renderSkippedFolders=()=>{};
 vm.createContext(c);vm.runInContext(source.slice(source.indexOf('    function syncTransferDialog('),source.indexOf('    function filterComponents(')),c);
 c.syncTransferDialog();assert(!dialog.open);
 c.session={id:'retained'};c.syncTransferDialog();assert(dialog.open);assert(classes.has('csm-transfer-open'));assert.equal(node('error').parentElement,node('transfer-notices'));assert.equal(node('stage').parentElement,node('transfer-controls'));assert.equal(document.activeElement,node('action-title'));assert(node('close-transfer').hidden);

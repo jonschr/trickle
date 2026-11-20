@@ -89,7 +89,7 @@ final class CSM_Transport {
         $ch = curl_init($url); $ca = self::ca_bundle($url);
         $options = [CURLOPT_NOBODY => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
-            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Cache-Control: no-cache', 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' health check')]];
+            CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Cache-Control: no-cache', 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' (+https://github.com/jonschr/trickle)')]];
         if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
         if ($probe !== '') { $options[CURLOPT_HTTPHEADER][] = 'X-Trickle-Health: ' . $probe; }
         curl_setopt_array($ch, $options); $ok = curl_exec($ch); $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
@@ -123,7 +123,7 @@ final class CSM_Transport {
         $headers[] = 'Content-Type: ' . ($upload ? 'application/octet-stream' : 'application/json');
         $headers[] = 'Accept: ' . ($download ? 'application/octet-stream' : 'application/json');
         $headers[] = 'Cache-Control: no-store';
-        $headers[] = 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' (WordPress site migration)');
+        $headers[] = 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' (+https://github.com/jonschr/trickle)');
         $options = [CURLOPT_HTTPHEADER => $headers, CURLOPT_CONNECTTIMEOUT => min(10, $timeout), CURLOPT_TIMEOUT => $timeout, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2, CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
             CURLOPT_HEADERFUNCTION => static function ($curl, $line) use (&$status, &$retry_after) {

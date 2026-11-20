@@ -11,7 +11,8 @@ function setup(fetch){
 const tick=()=>new Promise(setImmediate);
 (async()=>{
  for(const phase of ['headers','body']){
-  const {c,timers}=setup((url,{signal})=>new Promise((resolve,reject)=>{
+  for(const op of ['compare_component','warm_media']){const warm=setup((url,{signal})=>new Promise((_,reject)=>signal.addEventListener('abort',()=>reject(Error('aborted')))));const pending=warm.c.CSMRequest(op);await tick();assert.equal([...warm.timers.values()][0].ms,45000);[...warm.timers.values()][0].fn();await assert.rejects(pending,e=>e.retryable);}
+ const {c,timers}=setup((url,{signal})=>new Promise((resolve,reject)=>{
    const stalled=new Promise((_,rejectBody)=>signal.addEventListener('abort',()=>{reject(Error('aborted'));rejectBody(Error('aborted'));}));
    if(phase==='body')resolve({status:200,text:()=>stalled});else stalled.catch(()=>{});
   }));
@@ -29,5 +30,9 @@ const tick=()=>new Promise(setImmediate);
  assert.equal((await success.c.CSMRequest('state')).answer,42);assert.equal(success.c.CSM.nonce,'fixture','Transport cannot mutate nonce before cancellation guards');assert.equal(success.timers.size,0);
  const failure=setup(async()=>({status:400,text:async()=>JSON.stringify({ok:false,error:'Busy',busy:true,retryable:true,retry_exhausted:true,retry_after:3})}));
  await assert.rejects(failure.c.CSMRequest('restore_backup'),e=>e.busy&&e.retryable&&e.retryExhausted&&e.retryAfter===3);
+ for(const [body,header,expected]of[['firewall','60',60],[JSON.stringify({ok:false,error:'Limited'}),'45',45],['firewall',null,30],['firewall','invalid',30],[JSON.stringify({ok:false,error:'Limited',retry_after:90}),'45',90]]){
+  const limited=setup(async()=>({status:429,headers:{get:()=>header},text:async()=>body}));
+  await assert.rejects(limited.c.CSMRequest('compare_component'),e=>e.retryable&&e.retryAfter===expected);
+ }
  console.log('PASS Request deadlines cover headers and bodies; Backups unlocks on timeout; nonce ownership and retry flags are preserved.');
 })().catch(error=>{console.error(error);process.exit(1);});

@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<ruleset name="Trickle">
+    <description>WordPress coding standards for first-party plugin PHP.</description>
+    <file>trickle.php</file>
+    <file>includes</file>
+    <arg name="extensions" value="php"/>
+    <rule ref="WordPress"/>
+</ruleset>

@@ -65,7 +65,6 @@ final class CSM_CLI {
         self::guard(static function () use ($assoc) {
             $inventory = empty($assoc['remote']) ? ['local' => CSM_Plugin::manifest()] : CSM_Controller::inventory(CSM_Controller::peer($assoc['remote']));
             unset($inventory['state'], $inventory['history']); $inventory['version_controlled'] = CSM_Presets::version_controlled();
-            $inventory['operator_guide'] = ['file' => dirname(CSM_FILE) . '/AI-USAGE.md', 'url' => plugins_url('AI-USAGE.md', CSM_FILE)];
             if (($assoc['format'] ?? '') === 'json') { self::output($inventory, $assoc); return; }
             self::output(array_map(static fn($site) => ['url' => $site['url'], 'plugin_version' => $site['plugin_version'], 'plugins' => count($site['plugins']), 'themes' => count($site['themes']), 'tables' => count($site['tables'])], array_values(array_intersect_key($inventory, array_flip(['local', 'remote'])))), $assoc, ['url', 'plugin_version', 'plugins', 'themes', 'tables']);
         }, $assoc);

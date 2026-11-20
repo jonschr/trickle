@@ -1,0 +1,15 @@
+/* Real overview rendering must agree with the transfer's included sections. */
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const code=fs.readFileSync(__dirname+'/../assets/admin.js','utf8'),controls={};
+const $=id=>controls[id]??=({checked:false,value:'',hidden:true,dataset:{},querySelectorAll:()=>[]});
+const items={tables:[{value:'large',checked:true}],plugins:[{value:'example',checked:true,dataset:{protected:'false'}}],themes:[],media_ids:[]};
+const value={dataset:{incoming:'2.0',installed:'1.0'}},status={dataset:{changeLabel:'Upgrade'}},old={};
+const row={dataset:{},querySelector:selector=>selector==='input[data-kind]'?items.plugins[0]:selector==='[data-incoming]'?value:selector==='[data-change-label]'?status:old};
+$('plugins').querySelectorAll=()=>[row];$('enable-plugins').checked=true;$('enable-tables').checked=true;$('enable-media').checked=true;$('media-mode').value='all';
+const context={$,inventoryLoading:false,inventoryError:'',presetLoading:false,sites:{replacements:{}},session:null,busy:false,cancelling:false,transferView:false,componentKinds:['tables','plugins','themes','media'],connectionState:{connections:[],recents:[]},source:()=>({tables:[{id:'large',bytes:300*1048576}]}),document:{querySelector:()=>null,querySelectorAll(selector){const kind=selector.match(/data-kind="([^"]+)"/)?.[1];return kind?items[kind]||[]:[];}},versionsMatch:()=>true,transferVersionMatches:()=>true,renderVersionStatus(){},syncMediaSelection(){},updateSetup(){},renderComponentSizes(){},filterComponents(){},lockReplacements(){},transferAction:()=> 'Pull',destinationAction:()=> 'Pull site'};
+vm.createContext(context);vm.runInContext(code.slice(code.indexOf('    const bytes ='),code.indexOf('    const transferMeter'))+code.slice(code.indexOf('    function updateSelection('),code.indexOf('    function destinationAction(')),context);
+context.updateSelection();assert.equal($('stage').disabled,false);assert.match($('tables-summary').textContent,/300.0 MiB.*1 large/);assert.equal(row.dataset.included,'true');assert.equal(value.textContent,'2.0');assert.equal(old.hidden,false);
+for(const kind of ['tables','plugins','media'])$('enable-'+kind).checked=false;
+context.updateSelection();assert.equal($('stage').disabled,true,'Excluded child choices cannot enable an empty transfer');assert.equal($('tables-summary').textContent,'Not included');assert.equal($('plugins-summary').textContent,'Not included');assert.match($('selection-summary').textContent,/0 tables · 0 plugins.*no media/);assert.equal(row.dataset.included,'false');assert.equal(value.textContent,'1.0');assert.equal(old.hidden,true);assert.equal(status.textContent,'Not selected');assert(items.plugins[0].checked,'Removing section preserves the child choice');
+$('enable-plugins').checked=true;context.updateSelection();assert.equal($('stage').disabled,false);assert.equal(value.textContent,'2.0');assert.equal(row.dataset.included,'true');
+console.log('PASS Overview, destination cells and transfer availability respect inclusion while preserving child choices.');

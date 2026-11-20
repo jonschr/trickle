@@ -18,9 +18,9 @@ function rejected($job,$message){try{verify($job);}catch(RuntimeException $e){re
 try{
  $new=[];$paths=[];foreach(['a.txt','b.txt']as$name){file_put_contents($base.'/'.$name,'new-'.$name);$key='plugins/fixture/'.$name;$paths[$key]=$base.'/'.$name;$new[$key]=['sha256'=>hash_file('sha256',$base.'/'.$name)];}
  $tables=['target','backup'];$job=['id'=>str_repeat('a',32),'selection'=>[],'file_plan'=>['paths'=>$paths,'new'=>$new],'database'=>[['target'=>'target','stage'=>'stage','backup'=>'backup','existed'=>true]],'active_plugins_before'=>['old.php'],'source_active_plugins'=>$active];
- $due=true;pass(!verify($job)&&$job['verification_work']===['phase'=>'files','cursor'=>1],'Installed-file verification checkpoints its exact cursor');
+ $due=true;pass(!verify($job)&&$job['verification_work']===['phase'=>'files','cursor'=>1,'scoped_components'=>true],'Installed-file verification checkpoints its exact cursor');
  pass(!verify($job)&&$job['verification_work']['cursor']===2,'Next step resumes at the next file');
- pass(!verify($job)&&$job['verification_work']===['phase'=>'tables','cursor'=>1],'Table verification has its own bounded cursor');
+ pass(!verify($job)&&$job['verification_work']===['phase'=>'tables','cursor'=>1,'scoped_components'=>true],'Table verification has its own bounded cursor');
  pass(verify($job)&&$job['verification']===['verified'=>true,'files'=>2,'tables'=>1],'Completion requires installed bytes, committed tables and activation state');
  unset($job['verification_work'],$job['verification']);$due=false;
  file_put_contents($base.'/a.txt','corrupt');pass(rejected($job,'Installed file checksum failed'),'Actual installed-byte corruption fails verification');file_put_contents($base.'/a.txt','new-a.txt');
@@ -31,4 +31,14 @@ try{
  $obsolete=$job;$obsolete['file_plan']['paths']['plugins/fixture/obsolete.txt']=$base.'/obsolete.txt';file_put_contents($base.'/obsolete.txt','leftover');pass(rejected($obsolete,'Obsolete file remains'),'An obsolete file left behind fails verification');unlink($base.'/obsolete.txt');
  $cancel=true;pass(rejected($job,'Cancelled'),'Cancellation interrupts installed verification');$cancel=false;
  $empty=['selection'=>[],'file_plan'=>['paths'=>[],'new'=>[]],'database'=>[]];pass(verify($empty)&&$empty['verification']['verified'],'An unchanged transfer completes without an HTTP liveness probe');
+ $matching=$empty;$matching['file_plan']['new']=['plugins/matching/missing.txt'=>['sha256'=>hash('sha256','same'),'unchanged'=>true]];
+ $matching['apply_work']=['whole_components'=>true,'directories'=>['ops'=>[]]];
+ pass(verify($matching)&&$matching['verification']['files']===0,'An untouched matching component does not enter installed-file verification');
+ unset($matching['verification_work'],$matching['verification']);
+ $legacy=$matching;$legacy['verification_work']=['phase'=>'files','cursor'=>0];
+ pass(rejected($legacy,'Installed file checksum failed'),'A pre-upgrade cursor retains its original full file ordering');
+ $matching['apply_work']['directories']['ops']=[['path'=>'plugins/matching']];
+ pass(rejected($matching,'Installed file checksum failed'),'An unchanged file inside a rebuilt component must still be verified');
+ unset($matching['apply_work']['directories']);
+ pass(rejected($matching,'Installed file checksum failed'),'Older jobs without component operation records retain full verification');
 }finally{foreach(new FilesystemIterator($base)as$file)unlink($file->getPathname());rmdir($base);}

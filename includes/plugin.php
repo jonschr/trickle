@@ -160,7 +160,10 @@ final class CSM_Plugin {
                 nocache_headers(); header('Content-Type: application/octet-stream'); echo $bytes; exit;
             }
             if ($action === 'cancel') { CSM_Segments::cancel($data['id'] ?? ''); self::respond(['cancel_requested'=>true]); }
-            if ($action === 'bundle_discard') { CSM_Segments::cleanup_source($data['id'] ?? ''); self::respond([]); }
+            if ($action === 'bundle_discard') {
+                if (!empty($data['comparison_only'])) { self::respond(['comparison_cleared'=>CSM_Segments::release_comparison($data['id'] ?? '')]); }
+                CSM_Segments::cleanup_source($data['id'] ?? ''); self::respond([]);
+            }
             if ($action === 'bundle_stream') {
                 $offset = $data['offset'] ?? -1;
                 if (!is_int($offset)) { throw new RuntimeException('Invalid source offset.'); }
@@ -179,9 +182,9 @@ final class CSM_Plugin {
                 while (ob_get_level()) { ob_end_clean(); }
                 nocache_headers(); header('Content-Type: application/octet-stream'); header('Content-Length: ' . strlen($bytes)); echo $bytes; exit;
             }
-            if ($action === 'component_hashes') { $result=CSM_Components::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Plugin and theme checksums ready'); self::respond($result); }
+            if ($action === 'component_hashes') { $result=CSM_Components::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Plugin and theme checksums ready'); if (!empty($data['selection']['comparison_only'])) { CSM_Segments::release_comparison($work_id); } self::respond($result); }
             if ($action === 'file_policy') { self::respond(['git_folders' => CSM_Files::git_folders($data['selection'] ?? [], !empty($data['source']))]); }
-            if ($action === 'media_hashes') { $result=CSM_Media::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Media checksums ready'); self::respond($result); }
+            if ($action === 'media_hashes') { $result=CSM_Media::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Media checksums ready'); if (!empty($data['selection']['comparison_only'])) { CSM_Segments::release_comparison($work_id); } self::respond($result); }
             if ($action === 'progress') { CSM_Segments::assert_progress_owner($data['id'] ?? ''); self::respond(CSM_Progress::read($data['id'] ?? '')); }
             if ($action === 'preview') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::preview_page($job, (int)($data['offset'] ?? 0))); }
             if ($action === 'status') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::summary($job)); }
@@ -299,17 +302,18 @@ final class CSM_Plugin {
         CSM_Jobs::save($job); CSM_Progress::finish(ucfirst($kind) . ' verified'); return $job;
     }
 
-    public static function receive_step(array $job, string $kind, $fp): array {
+    public static function receive_step(array $job, string $kind, $fp, bool $continuing = false): array {
+        CSM_Support::step(8, $continuing);
         CSM_Updates::assert_job($job);
         if ($job['status']!=='staging' || !in_array($kind,self::kinds($job['selection']),true)) { throw new RuntimeException('Transfer is not awaiting this stream.'); }
         if (!empty($job['received'][$kind])) { return $job; }
         $already=!empty($job['import_done'][$kind]);
-        $done=$already || ($kind==='database'?CSM_Database::stage_step($fp,$job):CSM_Files::stage_step($fp,$job));
+        $done=$already || ($kind==='database'?CSM_Database::stage_step($fp,$job,true):CSM_Files::stage_step($fp,$job,true));
         if ($done) { $job['import_done'][$kind]=true; }
         if ($done) { $job['received'][$kind]=true; unset($job['error']); }
         if (!array_diff(self::kinds($job['selection']),array_keys($job['received']))) {
-            if (!$already) { unset($job['received'][$kind]); CSM_Jobs::save($job); return $job; }
-            $preview=self::preview_step($job);
+            if (CSM_Support::due()) { unset($job['received'][$kind]); CSM_Jobs::save($job); return $job; }
+            $preview=self::preview_step($job,true);
             if ($preview) { $job['preview']=$preview; }
             else { unset($job['received'][$kind]); }
         }
@@ -401,9 +405,9 @@ final class CSM_Plugin {
     }
 
 
-    public static function preview_step(array &$job): ?array {
+    public static function preview_step(array &$job, bool $continuing = false): ?array {
         $state=$job['preview_work'] ?? ['phase'=>'files','index'=>0,'new'=>[],'paths'=>[],'items'=>[],'counts'=>['add'=>0,'replace'=>0,'delete'=>0,'unchanged'=>0],'backup'=>0,'signature'=>[]];
-        CSM_Support::step();
+        CSM_Support::step(8, $continuing);
         if ($state['phase']==='files') {
             while ($state['index']<count($job['files'])) {
                 $file=$job['files'][$state['index']]; $target=CSM_Files::destination($file['path'],$job['selection']);
@@ -642,9 +646,18 @@ final class CSM_Plugin {
 
     private static function verify_installed_step(array &$job): bool {
         $state = &$job['verification_work'];
-        $state ??= ['phase'=>'files','cursor'=>0];
+        $state ??= ['phase'=>'files','cursor'=>0,'scoped_components'=>true];
         $paths = $job['file_plan']['paths']; $new = $job['file_plan']['new'];
-        if (!empty($job['apply_work']['whole_components'])) { $paths += array_fill_keys(array_keys($new), true); }
+        if (!empty($job['apply_work']['whole_components'])) {
+            // Older cursors index the complete list; changing that list mid-resume could skip files.
+            $ops=!empty($state['scoped_components'])?($job['apply_work']['directories']['ops'] ?? null):null;
+            $rebuilt=$ops===null?null:array_fill_keys(array_column($ops,'path'),true);
+            foreach ($new as $relative=>$file) {
+                // Only rebuilt components have new copies of otherwise unchanged files to verify.
+                $parts=explode('/',$relative,3); $component=$parts[0].'/'.($parts[1] ?? '');
+                if ($rebuilt===null || isset($rebuilt[$component])) { $paths[$relative]=true; }
+            }
+        }
         if ($state['phase'] === 'files') {
             foreach (array_keys($paths) as $index=>$relative) {
                 if ($index < $state['cursor']) { continue; }
@@ -657,7 +670,7 @@ final class CSM_Plugin {
                 $state['cursor'] = $index + 1;
                 if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
             }
-            $state = ['phase'=>'tables','cursor'=>0];
+            $state['phase']='tables'; $state['cursor']=0;
         }
         foreach ($job['database'] as $index=>$table) {
             if ($index < $state['cursor']) { continue; }
@@ -911,10 +924,12 @@ final class CSM_Plugin {
         if ($hook !== 'tools_page_trickle') { return; }
         wp_enqueue_style('trickle', plugins_url('assets/admin.css', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin.css'));
         wp_enqueue_style('trickle-workspace', plugins_url('assets/workspace.css', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/workspace.css'));
+        wp_enqueue_style('trickle-clarity', plugins_url('assets/clarity.css', CSM_FILE), ['trickle-workspace'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/clarity.css'));
         $script = ($_GET['view'] ?? '') === 'backups' ? 'backups' : 'admin';
         if ($script === 'admin') {
             wp_enqueue_script('trickle-progress', plugins_url('assets/transfer-progress.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/transfer-progress.js'), true);
         }
+        wp_enqueue_script('trickle-header', plugins_url('assets/app-header.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/app-header.js'), true);
         wp_enqueue_script('trickle-request', plugins_url('assets/request.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/request.js'), true);
         wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-request', 'trickle-progress'] : ['trickle-request'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
         if ($script === 'admin') { wp_enqueue_script('trickle-tabs', plugins_url('assets/admin-tabs.js', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin-tabs.js'), true); }

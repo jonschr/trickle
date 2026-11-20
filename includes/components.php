@@ -24,8 +24,10 @@ final class CSM_Components {
         return $cache;
     }
 
-    private static function folder_path(string $kind,string $id,array $selection): string {
-        return CSM_Support::private_dir().'/component-folder-'.hash('sha256',CSM_Support::json([CSM_Files::root($kind,$id),$kind,$id,$selection['skip_paths'] ?? [],$selection['git_overrides'] ?? [], $selection['follow_symlinks'] ?? [],!empty($selection['protect_source_git'])])).'.json';
+    // Reuse file hashes across scopes and policy choices. The current scan still applies every
+    // exclusion/approval, rebuilds the digest, and checks each resolved file's full metadata stamp.
+    private static function folder_path(string $kind,string $id): string {
+        return CSM_Support::private_dir().'/component-folder-'.hash('sha256',CSM_Support::json([CSM_Files::root($kind,$id),$kind,$id])).'.json';
     }
 
     public static function inventory(array $query): array {
@@ -49,7 +51,7 @@ final class CSM_Components {
                 CSM_Files::safe_relative($id);
                 if (str_contains($id, '/')) { throw new RuntimeException('Invalid component ID.'); }
                 $root = CSM_Files::root($kind, $id);
-                $folder_path=self::folder_path($kind,$id,$selection); $folder=self::read_cache($folder_path); $component_files=[];
+                $folder_path=self::folder_path($kind,$id); $folder=self::read_cache($folder_path); $component_files=[];
                 foreach (CSM_Files::scan($root . '/' . $id, $kind . '/' . $id, $selection, null, $source) as $file) {
                     $relative = $kind . '/' . substr($file, strlen($root) + 1); $resolved = $source ? CSM_Files::source_path($file, $relative, $selection) : $file; if ($resolved === null) { continue; } $file = $resolved; $stamp = self::stamp($file);
                     CSM_Progress::update(['phase'=>'Comparing plugin and theme checksums','component'=>$relative,'count'=>count($files),'total'=>null,'unit'=>'files']);
