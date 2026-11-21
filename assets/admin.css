@@ -225,7 +225,7 @@
 .csm-data-table tbody tr:hover { background: var(--csm-surface); }
 .csm-data-table tbody tr:has(input:checked) { background: var(--csm-selected); }
 .csm-sort { display: flex; align-items: center; justify-content: space-between; gap: var(--csm-space-1); width: 100%; min-height: var(--csm-control-height); padding: var(--csm-space-2) var(--csm-space-3); border: 0; background: none; color: var(--csm-muted); font: inherit; font-size: var(--csm-text-small); font-weight: var(--csm-weight-semibold); text-align: left; cursor: pointer; }
-.csm-sort:hover { color: var(--csm-accent); background: var(--csm-selected); }
+.csm-sort:hover { color: var(--csm-accent); }
 .csm-sort:disabled { cursor: default; color: var(--csm-muted); }
 .csm-sort svg { width: var(--csm-icon-size); height: var(--csm-icon-size); flex-shrink: 0; }
 .csm-data-table th[aria-sort="ascending"] .csm-sort, .csm-data-table th[aria-sort="descending"] .csm-sort { color: var(--csm-accent); }

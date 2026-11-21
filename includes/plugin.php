@@ -932,11 +932,13 @@ final class CSM_Plugin {
         wp_enqueue_style('trickle-clarity', plugins_url('assets/clarity.css', CSM_FILE), ['trickle-workspace'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/clarity.css'));
         $script = ($_GET['view'] ?? '') === 'backups' ? 'backups' : 'admin';
         if ($script === 'admin') {
+            wp_enqueue_script('trickle-carbon-date-picker', plugins_url('vendor/carbon/date-picker.min.js', CSM_FILE), [], '2.68.0', true);
+            wp_enqueue_script('trickle-media-dates', plugins_url('assets/media-dates.js', CSM_FILE), ['trickle-carbon-date-picker'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/media-dates.js'), true);
             wp_enqueue_script('trickle-progress', plugins_url('assets/transfer-progress.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/transfer-progress.js'), true);
         }
         wp_enqueue_script('trickle-header', plugins_url('assets/app-header.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/app-header.js'), true);
         wp_enqueue_script('trickle-request', plugins_url('assets/request.js', CSM_FILE), [], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/request.js'), true);
-        wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-request', 'trickle-progress'] : ['trickle-request'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
+        wp_enqueue_script('trickle', plugins_url('assets/' . $script . '.js', CSM_FILE), $script === 'admin' ? ['trickle-request', 'trickle-progress', 'trickle-media-dates'] : ['trickle-request'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/' . $script . '.js'), true);
         if ($script === 'admin') { wp_enqueue_script('trickle-tabs', plugins_url('assets/admin-tabs.js', CSM_FILE), ['trickle'], CSM_VERSION . '.' . filemtime(dirname(CSM_FILE) . '/assets/admin-tabs.js'), true); }
         wp_localize_script('trickle', 'CSM', ['ajax' => admin_url('admin-ajax.php'), 'nonce' => wp_create_nonce('csm_admin'), 'state' => CSM_Controller::state(), 'local' => ['url'=>site_url(), 'name'=>html_entity_decode(get_bloginfo('name'), ENT_QUOTES | ENT_HTML5, 'UTF-8'), 'icon'=>get_site_icon_url(64), 'wordpress'=>get_bloginfo('version'), 'plugin_version'=>CSM_VERSION, 'php'=>PHP_VERSION]]);
     }

@@ -54,3 +54,24 @@ $check(CSM_Controller::peers()===[] && !get_option('_csm_peer'),'Last connection
 $check($options['_csm_backups']===['keep-backup'] && isset($options['_csm_recents']['keep-history']),'Removal changed backup/history.');
 try{$call('remove_connection',['site'=>'missing']);throw new LogicException('Removed missing site.');}catch(RuntimeException $e){}
 echo "PASS Local rename, immutable URL/key, private responses, validation, retained-work guards, removal, fallback selection and backup/history preservation.\n";
+
+$self=['id'=>CSM_Controller::site_id(site_url()),'url'=>site_url(),'key'=>'fixture-private-self','name'=>'Matching URL'];
+$alias=['id'=>CSM_Controller::site_id('https://alias.test'),'url'=>'https://alias.test','key'=>'fixture-private-alias','name'=>'Matching identity','instance_fingerprint'=>CSM_Controller::fingerprint()];
+$options['_csm_peers']=[$self['id']=>$self,$alias['id']=>$alias,$bid=>$b];$options['_csm_peer']=$self;
+$state=CSM_Controller::state();
+$check($state['selected']===$self['id'],'A matching URL silently changed the selection.');
+$check(count($state['connections'])===3,'Matching URLs or fingerprints disappeared from the selector.');
+$check(!str_contains(json_encode($state),'fixture-private'),'Matching connection state exposed credentials.');
+$check($call('select',['site'=>$alias['id']])['selected']===$alias['id'],'A matching fingerprint prevented explicit selection.');
+$call('rename_connection',['site'=>$alias['id'],'name'=>'Keep this connection']);
+$check(CSM_Controller::state()['selected']===$alias['id'],'Renaming a matching connection lost the selection.');
+$call('select',['site'=>$bid]);$options['siteurl']=$b['url'];
+$check(CSM_Controller::state()['selected']===$bid,'A site URL change silently deselected its saved remote.');
+$options['siteurl']=site_url();
+foreach([$self,$alias] as $peer){
+    $rejected=false;try{CSM_Controller::assert_remote($peer);}catch(RuntimeException $e){$rejected=true;}
+    $check($rejected,'Keeping a connection selected removed the transfer identity guard.');
+}
+$options['_csm_peers']=[];$options['_csm_peer']=$self;
+$check(CSM_Controller::state()['selected']===$self['id'],'Legacy matching selections were lost.');
+echo "PASS Matching saved URLs, stored identities, URL changes and legacy selections stay visible and selected; transfer identity validation remains intact.\n";

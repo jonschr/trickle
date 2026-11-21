@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carbon media date integration</title>
+<!-- Open in a browser, or use Chrome headless --allow-file-access-from-files --virtual-time-budget=2000 --dump-dom. Expect PASS. -->
+<link rel="stylesheet" href="../assets/admin.css">
+<link rel="stylesheet" href="../assets/clarity.css">
+<style>body{padding:24px}.csm{padding:0}#result{margin-top:24px}</style>
+<main class="csm"><h2>Choose upload dates</h2><div class="csm-media-dates"><cds-date-picker id="csm-media-after" value=""><cds-date-picker-input kind="single" label-text="Uploaded from (UTC)" placeholder="mm/dd/yyyy"></cds-date-picker-input></cds-date-picker><cds-date-picker id="csm-media-before" value=""><cds-date-picker-input kind="single" label-text="Uploaded through (UTC)" placeholder="mm/dd/yyyy"></cds-date-picker-input></cds-date-picker></div><p>Dates are inclusive (UTC).</p><pre id="result">Running…</pre></main>
+<script src="../vendor/carbon/date-picker.min.js"></script>
+<script src="../assets/media-dates.js"></script>
+<script>window.onload = async () => {
+    const after=document.getElementById('csm-media-after'),before=document.getElementById('csm-media-before'),checks=[];
+    const assert=(condition,message)=>{if(!condition)throw new Error(message);checks.push(message);};
+    try {
+        await after.updateComplete;await before.updateComplete;
+        await Promise.all([...document.querySelectorAll('cds-date-picker-input')].map(el=>el.updateComplete));
+        await new Promise(resolve=>setTimeout(resolve,50));
+        assert(!!after.calendar && !!before.calendar,'Carbon calendars initialize');
+        assert(after.value==='' && before.value==='','Blank bounds stay blank');
+        let changed=0;after.addEventListener('change',()=>changed++);
+        after.calendar.setDate('11/20/2026',true);
+        assert(after.value==='2026-11-20','Calendar selection stores the UTC date-only format');
+        assert(changed>0,'Calendar selection triggers the existing change handler');
+        const typed=after.querySelector('cds-date-picker-input').input;
+        typed.value='12/02/2026';
+        typed.dispatchEvent(new Event('input',{bubbles:true,composed:true}));
+        typed.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,composed:true}));
+        assert(after.value==='2026-12-02','Typing a date and pressing Enter updates the ISO selection');
+        before.value='2026-11-25';await before.updateComplete;
+        assert(before.querySelector('cds-date-picker-input').value==='11/25/2026','Restored ISO date updates the displayed field');
+        assert(before.calendar.selectedDates[0].getDate()===25,'Restored date retains its calendar day in the local time zone');
+        after.value='';await after.updateComplete;
+        assert(after.querySelector('cds-date-picker-input').value==='','Reset clears the calendar field');
+        assert(before.value==='2026-11-25','An end-only range retains its end date');
+        before.disabled=true;await before.updateComplete;await before.querySelector('cds-date-picker-input').updateComplete;
+        assert(before.querySelector('cds-date-picker-input').input.disabled,'Transfer lock disables the date input');
+        before.disabled=false;await before.updateComplete;
+        after.value='2026-11-20';await after.updateComplete;
+        after.calendar.open();
+        assert(after.calendar.isOpen,'Carbon calendar opens');
+        const input=after.querySelector('cds-date-picker-input').input;
+        assert(input.type==='text','Browser-native date popup is replaced');
+        assert(input.getBoundingClientRect().right<=innerWidth,'Date input fits the viewport');
+        document.getElementById('result').textContent='PASS '+checks.length+' checks';
+        document.body.dataset.result=JSON.stringify(checks);
+    } catch(error){document.getElementById('result').textContent='FAIL '+error.message;document.body.dataset.error=error.stack;}
+};
+</script>

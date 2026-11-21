@@ -31,10 +31,11 @@ try {
     update_option('_csm_peers',$peers,false);update_option('_csm_peer',$self,false);
     $recents=get_option('_csm_recents',[]);$recents['self-check']=['id'=>'self-check','remote_id'=>$id,'remote_url'=>$url];update_option('_csm_recents',$recents,false);
     $state=CSM_Controller::state();
-    $check(!in_array($id,array_column($state['connections'],'id'),true)&&!in_array($alias_id,array_column($state['connections'],'id'),true),'Saved self URLs and known self aliases are hidden from the selector');
+    $check(in_array($id,array_column($state['connections'],'id'),true)&&in_array($alias_id,array_column($state['connections'],'id'),true),'Saved matching URLs and identities remain visible in the selector');
     $check(!in_array('self-check',array_column($state['recents'],'id'),true),'Self-transfer presets are hidden from recent transfers');
-    $check($state['selected']!==$id,'A saved self selection is not selected by default');
-    $check($reject(static fn()=>CSM_Controller::execute('select',['site'=>$id])),'The backend refuses selecting a saved self connection');
+    $check($state['selected']===$id,'A saved matching selection remains selected');
+    $check(CSM_Controller::execute('select',['site'=>$alias_id])['selected']===$alias_id,'A saved matching identity can be selected');
+    $check(CSM_Controller::execute('select',['site'=>$id])['selected']===$id,'A saved matching URL can be selected');
     foreach(['push','pull'] as $direction){
         $check($reject(static fn()=>CSM_Controller::execute('prepare',['site'=>$id,'direction'=>$direction,'selection'=>['plugins'=>['csm-fixture']]]))&&!get_option('_csm_active_job'),'Self '.$direction.' is rejected before creating destination staging');
     }

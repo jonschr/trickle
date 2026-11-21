@@ -1,5 +1,17 @@
 # Changes
 
+## 0.1.32 — 2026-11-20
+
+- Replace component inclusion, matching visibility and hash checkboxes with accessible toggles; show matching plugins and themes by default.
+- Align compact database comparisons with plugin/theme rows, separate table engine into its own column, and color source size cells from green through yellow to red using source-relative byte sizes. Keep destination cells white.
+- Keep comparison columns in the same local-first, remote-second order as the site cards for both pushes and pulls. Add larger Carbon sort arrows, single-line database headings and a scroll fade beneath sticky headers.
+- Improve preset padding, summary spacing and edge-to-edge comparison fills while preserving text alignment. Remove gray sort-header hover backgrounds and replace summary focus outlines with a keyboard title indicator.
+- Use locally bundled IBM Carbon calendars for media upload dates, preserving ISO/UTC date values, typed entry, independent bounds and transfer locking.
+- Show selected database, plugin, theme and media sizes only in section summaries and the combined total. Preserve pending states for incomplete estimates and filtered media.
+- Keep saved remotes visible and selected when their URL or stored identity matches this installation; retain operation-level checks against self-transfers.
+
+Validation: all 71 isolated checks passed, including WordPress core authorization/session fixtures and the OPcache regression. The Carbon picker passed 13 real-browser checks at desktop and narrow widths. Seven live WordPress markup/asset checks and PHP/JavaScript syntax checks passed. Rendered fixtures verified table ordering, row density, source-only colors, summary totals and responsive layouts. Release ZIP integrity and runtime file/hash equality passed. No live migration was run.
+
 ## 0.1.31 — 2026-11-20
 
 - Prevent false obsolete-PHP-file failures after whole-directory replacement by invalidating the path's OPcache entry before verifying removal. Keep failures for actual leftover files.

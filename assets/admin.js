@@ -269,14 +269,19 @@
     function components(kind) {
         if (kind === 'tables') { renderTables(); return; }
         const src=source(), dst=destination(), lookup=new Map(dst[kind].map(item=>[item.id,item]));
-        let html=`<div class="csm-code-scroll" tabindex="0" role="region" aria-label="${kind} comparison"><div class="csm-code-table"><div class="csm-columns csm-code-columns">${selectAll(kind)}<span>Source<strong>${esc(siteLabel(src))}</strong></span><span>Destination<strong>${esc(siteLabel(dst))}</strong></span></div>`;
+        const pull=direction()==='pull';
+        const headings=[`<span>Source<strong>${esc(siteLabel(src))}</strong></span>`,`<span>Destination<strong>${esc(siteLabel(dst))}</strong></span>`];
+        if(pull)headings.reverse();
+        let html=`<div class="csm-code-scroll" tabindex="0" role="region" aria-label="${kind} comparison"><div class="csm-code-table"><div class="csm-columns csm-code-columns">${selectAll(kind)}${headings.join('')}</div>`;
         for (const entry of src[kind]) {
             const item={...entry}; if(item.symlinks && item.follow_symlinks){item.protected=false;delete item.protected_reason;}
             const target=lookup.get(item.id), change=versionChange(item,target);
             const matching=!!target && item.version===target.version && !!item.content_hash && item.content_hash===target.content_hash;
             const label=matching?'Matching skipped':change.kind==='same'?(item.content_hash && target?.content_hash?'Files differ':'Hash not verified'):change.label;
             const tone=matching?'same':change.kind==='same'?'different':change.kind;
-            html+=`<div class="csm-component csm-code-component" data-change="${tone}"><label class="csm-component-identity"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}><strong>${esc(item.name)}</strong></label><span class="csm-source-version"><span>${esc(item.version || '?')}</span><span class="csm-component-hash"><small>Source hash</small><code title="${esc(item.content_hash || '')}">${esc(item.content_hash?.slice(0,12) || 'Not verified')}</code></span></span><span class="csm-destination-version"><span>${target && target.version!==item.version?`<del>${esc(target.version || '?')}</del> `:!target?'<del>Not installed</del> ':''}<b data-incoming="${esc(item.version || '?')}" data-installed="${esc(target?.version || 'Not installed')}">${esc(item.version || '?')}</b></span><small data-change-label="${esc(label)}">${esc(label)}</small><span class="csm-component-hash"><small>Current hash</small><code title="${esc(target?.content_hash || '')}">${esc(target?.content_hash?.slice(0,12) || (target?'Not verified':'No files'))}</code></span>${item.protected_reason?`<span class="csm-blocked-reason">${esc(item.protected_reason)}${item.symlinks?`<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}">Include linked files</button>`:''}</span>`:''}</span></div>`;
+            const sourceCell=`<span class="csm-source-version"><span>${esc(item.version || '?')}</span><span class="csm-component-hash"><small>Source hash</small><code title="${esc(item.content_hash || '')}">${esc(item.content_hash?.slice(0,12) || 'Not verified')}</code></span></span>`;
+            const destinationCell=`<span class="csm-destination-version"><span>${target && target.version!==item.version?`<del>${esc(target.version || '?')}</del> `:!target?'<del>Not installed</del> ':''}<b data-incoming="${esc(item.version || '?')}" data-installed="${esc(target?.version || 'Not installed')}">${esc(item.version || '?')}</b></span><small data-change-label="${esc(label)}">${esc(label)}</small><span class="csm-component-hash"><small>Current hash</small><code title="${esc(target?.content_hash || '')}">${esc(target?.content_hash?.slice(0,12) || (target?'Not verified':'No files'))}</code></span>${item.protected_reason?`<span class="csm-blocked-reason">${esc(item.protected_reason)}${item.symlinks?`<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}">Include linked files</button>`:''}</span>`:''}</span>`;
+            html+=`<div class="csm-component csm-code-component" data-change="${tone}"><label class="csm-component-identity"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}><strong>${esc(item.name)}</strong></label>${pull?destinationCell+sourceCell:sourceCell+destinationCell}</div>`;
         }
         $(kind).innerHTML=html+'</div></div>';
     }
@@ -292,19 +297,33 @@
             const comparison = typeof left === 'string' ? left.localeCompare(right, undefined, {numeric:true}) : left - right;
             return (tableSort.descending ? -comparison : comparison) || a.item.name.localeCompare(b.item.name);
         });
-        const max=Math.max(1,...src.tables.map(t=>t.bytes),...dst.tables.map(t=>t.bytes));
+        const sizes=src.tables.map(t=>t.bytes);
+        const max=Math.max(1,...sizes), min=Math.min(max,...sizes);
         const pill = item => {
             if (!item) return '<span class="csm-missing">Not installed</span>';
-            return `<span class="csm-table-size ${item.bytes>=250*1048576?'is-large':''}"><b>${bytes(item.bytes)}</b>${item.bytes>=250*1048576?'<small>Large</small>':''}<span class="csm-size-scale"><i style="width:${Math.max(1,item.bytes/max*100)}%"></i></span><small class="csm-table-row-count">~${Number(item.rows || 0).toLocaleString()} rows</small></span>`;
+            return `<span class="csm-table-metrics"><b>${bytes(item.bytes)}</b><small class="csm-table-row-count">~${Number(item.rows || 0).toLocaleString()} rows</small></span>`;
         };
-        const columns = [['name', 'Table'], ['source_bytes', 'Source'], ['destination_bytes', 'Destination']];
+        const pull=direction()==='pull';
+        const siteColumns=[['source_bytes','Source',src],['destination_bytes','Destination',dst]];
+        if(pull)siteColumns.reverse();
+        const columns = [['name', 'Table'], ['engine', 'Type'], ...siteColumns];
         if($('table-order'))$('table-order').value=tableSort.key;
         const headers = columns.map(([key, label]) => {
+            if(key==='engine')return '<th scope="col">Type</th>';
             const active = tableSort.key === key;
-            const path = active ? (tableSort.descending ? 'm6 9 6 6 6-6' : 'm6 15 6-6 6 6') : 'm8 9 4-4 4 4m-8 6 4 4 4-4';
-            return `<th scope="col" aria-sort="${active ? (tableSort.descending ? 'descending' : 'ascending') : 'none'}">${key === 'name' ? '<div class="csm-table-name-heading">' + selectAll('tables') : ''}<button type="button" class="csm-sort" data-sort="${key}">${esc(label)}${key==='source_bytes'?`<strong>${esc(siteLabel(src))}</strong>`:key==='destination_bytes'?`<strong>${esc(siteLabel(dst))}</strong>`:''}<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2"><path d="${path}"/></svg></button>${key === 'name' ? '</div>' : ''}</th>`;
+            // Carbon @carbon/icons 11.92.0; Apache-2.0 notices are in vendor/carbon.
+            const path = active ? (tableSort.descending ? 'M24.59 16.59 17 24.17 17 4 15 4 15 24.17 7.41 16.59 6 18 16 28 26 18 24.59 16.59z' : 'M16 4 6 14 7.41 15.41 15 7.83 15 28 17 28 17 7.83 24.59 15.41 26 14 16 4z') : 'M27.6 20.6 24 24.2 24 4 22 4 22 24.2 18.4 20.6 17 22 23 28 29 22z M9 4 3 10 4.4 11.4 8 7.8 8 28 10 28 10 7.8 13.6 11.4 15 10z';
+            const nextDescending = active ? !tableSort.descending : key !== 'name';
+            const action = `Sort by ${key === 'name' ? 'table name' : label.toLowerCase() + ' size'} ${nextDescending ? 'descending' : 'ascending'}`;
+            return `<th scope="col" aria-sort="${active ? (tableSort.descending ? 'descending' : 'ascending') : 'none'}">${key === 'name' ? '<div class="csm-table-name-heading">' + selectAll('tables') : ''}<button type="button" class="csm-sort" data-sort="${key}" aria-label="${esc(action)}" title="${esc(action)}"><span>${esc(label)}</span><svg viewBox="0 0 32 32" width="20" height="20" aria-hidden="true" focusable="false" fill="currentColor"><path d="${path}"/></svg></button>${key === 'name' ? '</div>' : ''}</th>`;
         }).join('');
-        $('tables').innerHTML = `<p class="csm-scroll-hint">Scroll horizontally to compare both sites.</p><div class="csm-table-scroll" role="region" aria-label="Database table comparison" tabindex="0"><table class="csm-data-table"><caption class="screen-reader-text">Database tables. Activate a column heading to sort; activate it again to reverse the order. Sizes include data and indexes.</caption><thead><tr>${headers}</tr></thead><tbody>${rows.map(({item, target}) => `<tr><th scope="row"><label><input type="checkbox" data-kind="tables" value="${esc(item.id)}" aria-label="Transfer ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''} ${session ? 'disabled' : ''}><span><strong>${esc(item.name)}</strong><small>${esc(item.engine)}</small></span></label></th><td>${pill(item)}</td><td>${pill(target)}</td></tr>`).join('') || '<tr><td colspan="3">No database tables found on the source site.</td></tr>'}</tbody></table></div>`;
+        $('tables').innerHTML = `<p class="csm-table-context">${siteColumns.map(([,label,site])=>`<span><strong>${label}:</strong> ${esc(siteLabel(site))}</span>`).join('')}</p><p class="csm-scroll-hint">Scroll horizontally to compare both sites.</p><div class="csm-table-scroll" role="region" aria-label="Database table comparison" tabindex="0"><table class="csm-data-table"><colgroup><col class="csm-table-name-column"><col class="csm-table-engine-column"><col><col></colgroup><caption class="screen-reader-text">Database tables. Activate a column heading to sort; activate it again to reverse the order. Sizes include data and indexes. Size sorting uses bytes, not row counts.</caption><thead><tr>${headers}</tr></thead><tbody>${rows.map(({item, target}) => {
+            const position=max===min?0:(item.bytes-min)/(max-min);
+            const band=position<=.5?'small':'large', mix=(position<=.5?position:position-.5)*200;
+            const sourceCell=`<td class="csm-table-source" data-size-band="${band}" style="--csm-size-mix:${mix}%">${pill(item)}</td>`;
+            const destinationCell=`<td class="csm-table-destination">${pill(target)}</td>`;
+            return `<tr><th scope="row"><label><input type="checkbox" data-kind="tables" value="${esc(item.id)}" aria-label="Transfer ${esc(item.name)}" ${selected.has(item.id) ? 'checked' : ''} ${session ? 'disabled' : ''}><strong>${esc(item.name)}</strong></label></th><td class="csm-table-engine">${esc(item.engine)}</td>${pull?destinationCell+sourceCell:sourceCell+destinationCell}</tr>`;
+        }).join('') || '<tr><td colspan="4">No database tables found on the source site.</td></tr>'}</tbody></table></div>`;
     }
     function updateSelection() {
         const counts = {};
@@ -322,7 +341,7 @@
                 }
             }
         }
-        if(sites){const selected=($('enable-tables').checked?source().tables:[]).filter(t=>[...document.querySelectorAll('input[data-kind="tables"]:checked')].some(e=>e.value===t.id));const large=selected.filter(t=>t.bytes>=250*1048576).length;$('tables-summary').classList?.toggle('is-warning',$('enable-tables').checked && large>0);$('tables-summary').textContent=$('enable-tables').checked?`${selected.length} tables · ${bytes(selected.reduce((n,t)=>n+t.bytes,0))}${large?` · ${large} large included`:''}`:'Not included';}
+        if(sites){const selected=($('enable-tables').checked?source().tables:[]).filter(t=>[...document.querySelectorAll('input[data-kind="tables"]:checked')].some(e=>e.value===t.id));const large=selected.filter(t=>t.bytes>=250*1048576).length;$('tables-summary').classList?.toggle('is-warning',$('enable-tables').checked && large>0);$('tables-summary').textContent=$('enable-tables').checked?`${selected.length} tables${large?` · ${large} large included`:''}`:'Not included';}
         if(sites)for(const kind of ['plugins','themes']) {
             const outcomes={};
             $(kind).querySelectorAll('.csm-code-component').forEach(row=>{
@@ -348,7 +367,7 @@
         $('media-summary').textContent = media;
         $('selection-summary').textContent = `${counts.tables} table${counts.tables === 1 ? '' : 's'} · ${counts.plugins} plugin${counts.plugins === 1 ? '' : 's'} · ${counts.themes} theme${counts.themes === 1 ? '' : 's'} · ${media.toLowerCase()}`;
         if($('included-summary'))$('included-summary').textContent=`${componentKinds.filter(kind=>$('enable-'+kind).checked).length} components included`;
-        if($('database-summary'))$('database-summary').textContent=inventoryLoading?'Loading database sizes…':$('enable-tables').checked && sites?`${bytes(source().tables.filter(t=>[...document.querySelectorAll('input[data-kind="tables"]:checked')].some(e=>e.value===t.id)).reduce((sum,t)=>sum+t.bytes,0))} of source database selected`:'Database not included';
+
         const selected = counts.plugins + counts.themes + counts.tables > 0 || (mode !== 'none' && (mode !== 'selected' || counts.media_ids > 0));
         const validMediaDates = mode !== 'uploaded' || (!!($('media-after').value || $('media-before').value) && (!$('media-after').value || !$('media-before').value || $('media-after').value <= $('media-before').value));
         $('stage').disabled = busy || cancelling || inventoryLoading || !!inventoryError || presetLoading || (session?.retryAt > Date.now()) || !versionsMatch() || !transferVersionMatches() || (!session && (!sites || !selected || !validMediaDates || (counts.tables > 0 && $('replace').checked && !sites.replacements)));
@@ -494,16 +513,37 @@
         } finally {if(request===presetRequest){presetLoading=false;updateSelection();startComparisons();}}
     }
     function renderComponentSizes() {
-        const estimate=sites?source().estimates:null;
+        const src=sites?source():null, estimate=src?.estimates;
+        let total=0, complete=true, included=0, pendingMedia=false;
         for (const kind of componentKinds) {
-            const size = kind === 'tables' ? (sites ? source().tables.reduce((sum,table)=>sum+table.bytes,0) : null) : estimate?.bytes[kind];
-            const complete = kind === 'tables' ? !!sites : estimate?.complete;
-            const cell = $(kind + '-source-size');
-            cell.textContent = size != null && (complete || size > 0) ? `${complete ? '~' : '≥ '}${(size / 1048576).toLocaleString(undefined,{minimumFractionDigits:1,maximumFractionDigits:1})} MiB` : 'Estimating…';
-            cell.title = size != null ? `${kind === 'tables' ? 'Database' : kind} on the source · ${bytes(size)} before compression and matching-file skips` : 'Source size not yet available';
+            const cell=$(kind+'-source-size'), enabled=$('enable-'+kind).checked;
+            cell.hidden=!enabled;
+            if(!enabled)continue;
+            included++;
+            let size=null, ready=false, pending=false;
+            if(src && kind==='tables') {
+                const selected=new Set([...document.querySelectorAll('input[data-kind="tables"]:checked')].map(input=>input.value));
+                size=src.tables.filter(table=>selected.has(table.id)).reduce((sum,table)=>sum+table.bytes,0);
+                ready=true;
+            } else if(src && ['plugins','themes'].includes(kind)) {
+                const ids=[...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input=>input.value);
+                const sizes=ids.map(id=>estimate?.items?.[kind]?.[id]);
+                size=sizes.reduce((sum,value)=>sum+(value || 0),0);
+                ready=!ids.length || !!estimate?.complete && sizes.every(value=>value!=null);
+            } else if(src && kind==='media') {
+                const mode=$('media-mode').value;
+                if(mode==='none' || mode==='selected' && !document.querySelectorAll('input[data-kind="media_ids"]:checked').length) { size=0;ready=true; }
+                else if(['all','compare'].includes(mode)) { size=estimate?.bytes?.media;ready=!!estimate?.complete && size!=null; }
+                else { pending=true;pendingMedia=true; }
+            }
+            cell.textContent=pending?'Size pending':size!=null && (ready || size>0)?`${ready?'~':'≥ '}${bytes(size)}`:'Estimating…';
+            cell.title=pending?'This media selection is sized during preparation.':'Selected source data before compression and matching-file skips.';
+            total+=size || 0;
+            complete=complete && ready;
         }
+        if($('database-summary'))$('database-summary').textContent=!src?'Loading component sizes…':!included?'No components included':complete?`~${bytes(total)} of source data selected`:`${bytes(total)} known · ${pendingMedia?'media size pending':'estimating total…'}`;
         renderSizeDetails();
-        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing source sizes…':estimate?.complete?'Source sizes before compression. Matching files are skipped unless forced.':'Estimating source sizes…';
+        $('summary-size-note').textContent=estimate?.refreshing?'Refreshing source sizes…':'Estimated before compression. Matching files are skipped unless forced.';
     }
     function estimateSize(estimate, size) {
         return estimate && (estimate.complete || size>0) ? `${estimate.complete?'~':'≥ '}${bytes(size || 0)}` : 'Estimating…';
@@ -1254,6 +1294,12 @@
         document.querySelectorAll(`input[data-kind="${kind}"]`).forEach(input=>{input.checked=input.dataset.protected!=='true' && checked.has(input.value);});
         $('recent').value=''; lockSelection(); updateSelection();
     });
+    document.addEventListener('scroll', event => {
+        const scroller = event.target;
+        if (scroller.matches?.('.csm-table-scroll, .csm-code-scroll')) {
+            scroller.classList.toggle('csm-scrolled', scroller.scrollTop > 0);
+        }
+    }, {capture:true, passive:true});
     $('workspace').addEventListener('change', event => {
         if (!session && !$('completion').hidden) { $('completion').hidden = true; $('transfer-meter').hidden = true; }
         const checkbox = event.target;

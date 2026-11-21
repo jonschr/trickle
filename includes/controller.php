@@ -45,7 +45,8 @@ final class CSM_Controller {
                 update_option('_csm_peers', $peers, false);
             }
         }
-        return array_filter($peers, static fn($peer) => !self::is_self($peer['url']) && (empty($peer['instance_fingerprint']) || !hash_equals(self::fingerprint(), $peer['instance_fingerprint'])));
+        // Preserve saved choices; operation-level validation handles installation identity.
+        return $peers;
     }
 
     public static function peer(string $site = ''): array {
