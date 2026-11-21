@@ -1,5 +1,6 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__ . '/timing.php';
 
 class CSM_Network_Error extends RuntimeException {
     public int $retry_after = 0;
@@ -74,8 +75,8 @@ final class CSM_Transport {
         $nonce_key = '_csm_nonce_' . $nonce;
         if (!add_option($nonce_key, time(), '', false)) { throw new RuntimeException('Request was already used.', 403); }
         $params = json_decode(base64_decode($params, true), true, 64, JSON_THROW_ON_ERROR);
-        if (in_array($action, ['prepare', 'bundle', 'bundle_chunk', 'bundle_stream', 'component_manifest', 'media_manifest', 'export', 'receive', 'stream_data', 'segment_state', 'segment_data', 'commit'], true)) { CSM_Updates::assert_version($params['trickle_version'] ?? null); }
-        if (in_array($action, ['receive', 'stream_data', 'segment_data'], true)) {
+        if (in_array($action, ['live_files', 'live_receive', 'live_state', 'prepare', 'bundle', 'bundle_chunk', 'bundle_stream', 'component_manifest', 'media_manifest', 'export', 'receive', 'stream_data', 'segment_state', 'segment_data', 'commit'], true)) { CSM_Updates::assert_version($params['trickle_version'] ?? null); }
+        if (in_array($action, ['live_receive', 'receive', 'stream_data', 'segment_data'], true)) {
             if ($hash !== 'stream') { throw new RuntimeException('Expected a stream upload.'); }
             return $params;
         }
@@ -117,7 +118,7 @@ final class CSM_Transport {
         $remaining = (int)get_option($cooldown, 0) - time();
         if ($remaining > 0) { $e = new CSM_Network_Error('Remote server requested a pause. Retry in ' . $remaining . ' seconds.'); $e->retry_after = $remaining; throw $e; }
         $ch = curl_init($url); $response = ''; $status = 0; $bytes = 0; $retry_after = 0;
-        $download_offset = $download ? ftell($download) : 0;
+        $download_offset = $download && !is_callable($download) ? ftell($download) : 0;
         $body = $upload ? '' : CSM_Support::json($data);
         $headers = self::headers($action, $peer['key'], $upload ? 'stream' : hash('sha256', $body), $upload ? $data : []);
         $headers[] = 'Content-Type: ' . ($upload ? 'application/octet-stream' : 'application/json');
@@ -134,14 +135,22 @@ final class CSM_Transport {
             CURLOPT_WRITEFUNCTION => static function ($curl, $chunk) use ($action, $download, $download_limit, $download_offset, &$response, &$bytes, &$status) {
                 if ($download && $status === 200) {
                     if ($download_limit && $bytes + strlen($chunk) > $download_limit) { throw new RuntimeException('Downloaded stream exceeds its declared size limit.'); }
-                    CSM_Support::write($download, $chunk); $bytes += strlen($chunk); if (!in_array($action,['component_manifest','media_manifest'],true)) { CSM_Progress::update(['bytes' => $download_offset + $bytes, 'count'=>$download_offset + $bytes]); }
+                    if (is_callable($download)) { CSM_Timing::measure('stream.receive',static fn()=>$download($chunk)); } else { CSM_Support::write($download, $chunk); } $bytes += strlen($chunk); if (!is_callable($download) && !in_array($action,['component_manifest','media_manifest'],true)) { CSM_Progress::update(['bytes' => $download_offset + $bytes, 'count'=>$download_offset + $bytes]); }
                 }
                 elseif (strlen($response) < 1048576) { $response .= $chunk; }
                 return strlen($chunk);
             },
         ];
         $options[CURLOPT_NOPROGRESS] = false;
-        $options[CURLOPT_XFERINFOFUNCTION] = static function () use ($action) { if (!in_array($action,['cancel','bundle_discard','rollback','status','progress'],true)) { CSM_Support::check_cancel(); } return 0; };
+        $cancel_checked=0.0; $cancellable=!in_array($action,['cancel','bundle_discard','rollback','status','progress'],true);
+        $options[CURLOPT_XFERINFOFUNCTION] = static function () use ($cancellable,&$cancel_checked) {
+            // cURL may call repeatedly between data callbacks, which retain their own work-loop guards.
+            if ($cancellable) {
+                $now=hrtime(true)/1e9;
+                if ($now-$cancel_checked>=.05) { CSM_Support::check_cancel(); $cancel_checked=$now; }
+            }
+            return 0;
+        };
         // A retained snapshot should respond immediately; a stalled body can safely resume.
         if ($download && $action === 'bundle_stream') { $options[CURLOPT_LOW_SPEED_LIMIT] = 1; $options[CURLOPT_LOW_SPEED_TIME] = 30; }
         $ca = self::ca_bundle($peer['url']);
@@ -170,7 +179,10 @@ final class CSM_Transport {
             $options[CURLOPT_POST] = true; $options[CURLOPT_POSTFIELDS] = $body;
         }
         curl_setopt_array($ch, $options);
-        $ok = curl_exec($ch); $error = curl_error($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+        $timing=hrtime(true);
+        try { $ok = curl_exec($ch); } finally { CSM_Timing::add('http.'.$action,$timing,$bytes); }
+        if ($cancellable) { CSM_Support::check_cancel(); }
+        $error = curl_error($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $context += ['http_status' => $status, 'curl_errno' => curl_errno($ch), 'ssl_verify_result' => curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT), 'duration_ms' => (int)round(curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000)];
         if ($retry_after) { $context['retry_after'] = $retry_after; }
         do_action('csm_request_complete', $action, $context, $bytes);
@@ -186,6 +198,11 @@ final class CSM_Transport {
             } catch (Throwable $probe) { CSM_Log::write('error', 'Source activity unavailable after packaging failure', $context + ['error'=>$probe->getMessage()]); }
         }
         if ($upload_error) { CSM_Log::write('error', 'Source stream failed', $context + ['error' => $upload_error->getMessage()]); throw $upload_error; }
+        // A bounded download that made progress is a normal checkpoint, not a failed migration.
+        if ($ok === false && $download && in_array($action,['bundle_stream','live_files'],true) && $status === 200 && $context['curl_errno'] === CURLE_OPERATION_TIMEDOUT && $bytes > 0) {
+            CSM_Log::write('info', 'Stream window checkpointed', $context + ['bytes'=>$bytes]);
+            return ['bytes'=>$bytes,'continue'=>true];
+        }
         if ($ok === false) {
             CSM_Log::write('error', 'Outgoing connection failed', $context + ['error' => $error]);
             $class = in_array($context['curl_errno'], [7,18,28,35,52,55,56,92], true) ? CSM_Network_Error::class : RuntimeException::class;

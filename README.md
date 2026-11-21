@@ -15,7 +15,10 @@ Treat connection codes like passwords. Selected items replace their destination 
 
 - File comparisons use content hashes. Matching file contents are not uploaded again.
 - Changed plugins and themes replace complete components, including removal of obsolete files. Protected destination exclusions are retained.
+- Selected files stream into private destination staging as frames are generated, without a complete source archive or destination decompression archive. Bounded windows and verified frame-prefix checkpoints support interrupted push and pull requests. Request limits apply to individual steps, not the entire migration.
+- Database exports retain their consistent snapshots. Existing snapshot transfers and explicitly selected chunked transport remain supported.
 - Interrupted transfers retain checkpoints for resuming. Failed replacements attempt rollback; three destination backups are retained for manual restoration.
+- Private component preparation and completed-component counters checkpoint in batches. Live replacements retain their durable journals; the complete recovery plan is persisted and checked before replacement begins. Replaying an unacknowledged batch is safe.
 - Database imports use private staging tables before replacement. InnoDB, MyISAM, and MEMORY source tables are supported. Nontransactional source tables require read locks and `LOCK TABLES` permission; writes may wait during export. Related foreign-key tables must be selected together.
 - Ordinary destination web requests pause during replacement and verification. Trickle control and recovery requests remain available.
 - Installed-file verification checks changed media and rebuilt components. It verifies migration integrity, not application behavior.
@@ -27,7 +30,7 @@ The controlling site's PHP cURL transport sends authenticated HTTPS requests dir
 The default migration and health-check header is:
 
 ```http
-User-Agent: Trickle/0.1.32 (+https://github.com/jonschr/trickle)
+User-Agent: Trickle/0.1.33 (+https://github.com/jonschr/trickle)
 ```
 
 The version follows the installed plugin. A `csm_user_agent` filter can override this value. These are plugin-originated requests, whether initiated through the dashboard or WP-CLI.
@@ -46,6 +49,10 @@ Single-site WordPress 6.4+, 64-bit PHP 8.1+, cURL, writable private storage, and
 
 ## Development checks
 
-Run `python3 tests/run-offline.py` for isolated checks. Optional core API checks use `--wordpress-core /path/to/wordpress` without loading a site or its database. Integration scripts require their named disposable sites and are not part of this runner.
+Copied transfer diagnostics include a `performance` section with retained per-request elapsed measurements and process-wide CPU deltas, progress overhead, checksum read volume, checkpoint persistence and local apply phases. Timers are inclusive: nested work and concurrent polling overlap, so their totals must not be added. HTTP time includes remote production, network waits and local receive callbacks; it is not a network-only measurement. Samples use the existing bounded private diagnostic logs and introduce no extra requests. Remote samples remain on the remote site. On threaded runtimes such as FrankenPHP, process CPU can include other requests and must not be interpreted or summed as per-request CPU. PHP CLI does not report web bootstrap time. Run `php tests/performance-timing.php` for an isolated check of counters, progress throttling, exception handling and unavailable diagnostic storage.
+
+Progress retains current counters and the existing dashboard cadence while coalescing cancellation-marker reads to 50 ms. Forced updates check immediately, source deadlines are checked on every update, and file work loops retain their cancellation guards. Repeated cURL progress callbacks use the same interval and check again before accepting a response. `php tests/progress-cancellation.php` covers progress cancellation and deadline behavior; the HTTP download fixture also checks cancellation during a fast response. Component preparation and cursor replay checks are included in the isolated runner; `tests/directory-cycle.php` additionally exercises apply, restore and process interruption on explicitly named disposable sites.
+
+Run `python3 tests/run-offline.py` for isolated checks. `tests/live-stream-cycle.py` exercises real interrupted push/pull streams only on its named disposable Cove peers; `tests/download-windows.py` exercises the snapshot compatibility transport over temporary local HTTP. Optional core API checks use `--wordpress-core /path/to/wordpress` without loading a site or its database. Integration scripts require their named disposable sites and are not part of this runner.
 
 Run `phpcs` with WordPress Coding Standards installed to audit first-party PHP using `.phpcs.xml.dist`. Existing standards findings are not suppressed. Shared design tokens are defined at the beginning of `assets/admin.css`.

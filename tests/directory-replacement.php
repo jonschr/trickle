@@ -6,13 +6,13 @@ define('WP_PLUGIN_DIR',$base.'/plugins');define('WP_CONTENT_DIR',$base);mkdir(WP
 $checks=0;$ticks=0;$budget=PHP_INT_MAX;$jobs=[];
 class CSM_Support {
  static function private_dir(){return $GLOBALS['base'];}static function public_path($path){return str_starts_with($path,WP_PLUGIN_DIR.'/');}
- static function check_cancel(){} static function check_source_budget(){} static function due(){return ++$GLOBALS['ticks']>=$GLOBALS['budget'];}
+ static function check_cancel(){} static function check_source_budget(){} static function due(){if(is_callable($GLOBALS['during_due']??null))($GLOBALS['during_due'])();return ++$GLOBALS['ticks']>=$GLOBALS['budget'];}
  static function write($fp,$bytes){fwrite($fp,$bytes);}static function hash_file($p){return hash_file('sha256',$p);}
  static function json($v){return json_encode($v)."\n";}static function atomic_json($p,$v){self::atomic_bytes($p,self::json($v));}
  static function atomic_bytes($p,$bytes,$mode=0600){$tmp=$p.'.tmp';file_put_contents($tmp,$bytes);chmod($tmp,$mode);rename($tmp,$p);}
  static function remove_tree($path){if(is_link($path)||is_file($path)){unlink($path);return;}if(!is_dir($path))return;foreach(new FilesystemIterator($path)as$f)self::remove_tree($f->getPathname());rmdir($path);}
 }
-class CSM_Jobs {static function save($job){$GLOBALS['jobs'][$job['id']]=unserialize(serialize($job));}}
+class CSM_Jobs {static function save($job){$GLOBALS['save_count']=($GLOBALS['save_count']??0)+1;$GLOBALS['jobs'][$job['id']]=unserialize(serialize($job));}}
 class CSM_Progress {static function update(...$args){}}
 function wp_mkdir_p($p){return is_dir($p)||mkdir($p,0755,true);}
 require __DIR__.'/../includes/files.php';require __DIR__.'/../includes/plugin.php';
@@ -35,6 +35,18 @@ function force_copy(&$job){
 function replace_bounded($op,$selection){$GLOBALS['budget']=4;for($i=0;$i<100;$i++){$GLOBALS['ticks']=0;if(CSM_Directories::replace($op,$selection)){$GLOBALS['budget']=PHP_INT_MAX;return;}}throw new RuntimeException('Copy replacement did not finish');}
 function force_copy_restore(&$job,$op){$target=CSM_Files::destination($op['path'],$job['selection']);$dir=dirname($op['backup']).'/restore-'.$job['id'].'-1';mkdir($dir,0700);$job['directory_restore']=['op'=>['path'=>$op['path'],'directory'=>true,'backup'=>$dir.'/original','stage'=>$dir.'/incoming','journal'=>$dir.'/swap.json','existed'=>file_exists($target),'copy_backend'=>true,'manifest'=>[],'incoming'=>[]],'build'=>null];}
 try{
+ $batch=make_job('batch-one');$second=make_job('batch-two');
+ foreach(['new','paths']as$key)$batch['file_plan'][$key]+=$second['file_plan'][$key];
+ foreach(['plugins','skip_paths']as$key)$batch['selection'][$key]=array_merge($batch['selection'][$key],$second['selection'][$key]);
+ $original=unserialize(serialize($batch));$GLOBALS['save_count']=0;
+ $GLOBALS['during_due']=static function()use(&$batch){if(($batch['apply_work']['directories']['index']??0)===1)throw new RuntimeException('Simulated request loss');};
+ try{prepare($batch);throw new LogicException('Request loss did not fire');}catch(RuntimeException$e){check($e->getMessage()==='Simulated request loss'&&$GLOBALS['save_count']===0,'A lost private-preparation request has no acknowledged partial checkpoint');}
+ $GLOBALS['during_due']=null;
+ check(file_get_contents(WP_PLUGIN_DIR.'/batch-one/obsolete.php')==='old'&&file_get_contents(WP_PLUGIN_DIR.'/batch-two/obsolete.php')==='old','Request loss during private preparation leaves both live components unchanged');
+ $batch=$original;prepare($batch);
+ check($GLOBALS['save_count']===1&&count($GLOBALS['jobs'][$batch['id']]['apply_work']['directories']['ops'])===2,'Rebuilding private trees persists the complete batch in one full-job save');
+ foreach($batch['apply_work']['directories']['ops']as$op){CSM_Directories::replace($op,$batch['selection']);CSM_Directories::replace($op,$batch['selection']);}
+ check(file_get_contents(WP_PLUGIN_DIR.'/batch-one/new.php')==='new'&&file_get_contents(WP_PLUGIN_DIR.'/batch-two/new.php')==='new','Completed directory journals replay safely before the outer cursor is saved');
  if (in_array('opcache', $argv ?? [], true) && function_exists('opcache_compile_file')) {
   check((bool)ini_get('opcache.enable_file_override'), 'OPcache file override is enabled for the regression');
   $cached=make_job('cached-obsolete');$obsolete='plugins/cached-obsolete/lib/licensing.php';
@@ -66,6 +78,16 @@ try{
  $fresh=make_job('fresh',false);prepare($fresh);$freshOp=$fresh['apply_work']['directories']['ops'][0];CSM_Directories::replace($freshOp,$fresh['selection']);restore($fresh,$freshOp);check(!file_exists(WP_PLUGIN_DIR.'/fresh'),'Rollback removes a newly introduced component directory');
  $interrupted=make_job('interrupted');prepare($interrupted);$interruptOp=$interrupted['apply_work']['directories']['ops'][0];CSM_Support::atomic_json($interruptOp['journal'],['phase'=>'moving']);rename(WP_PLUGIN_DIR.'/interrupted',$interruptOp['backup']);restore($interrupted,$interruptOp);check(file_exists(WP_PLUGIN_DIR.'/interrupted/obsolete.php'),'Recovery handles a hard exit between moving the old directory and installing the new one');
  $resume=make_job('resume');prepare($resume);$resumeOp=$resume['apply_work']['directories']['ops'][0];CSM_Support::atomic_json($resumeOp['journal'],['phase'=>'moving']);rename(WP_PLUGIN_DIR.'/resume',$resumeOp['backup']);CSM_Directories::replace($resumeOp,$resume['selection']);check(file_exists(WP_PLUGIN_DIR.'/resume/new.php')&&!file_exists(WP_PLUGIN_DIR.'/resume/obsolete.php'),'Apply resumes safely between the two renames');
+ // New imports stage directly in the replacement tree, without copying their bytes again.
+ $direct=make_job('direct');$component='plugins/direct';$tree=$direct['backup_dir'].'/components/'.$component;
+ wp_mkdir_p($tree);$source=$direct['file_plan']['new'][$component.'/new.php']['stage'];$directStage=$tree.'/new.php';rename($source,$directStage);$inode=fileinode($directStage);
+ $direct['file_plan']['new'][$component.'/new.php']['stage']=$directStage;$direct['component_staging'][$component]=$tree;
+ prepare($direct,4);$directOp=$direct['apply_work']['directories']['ops'][0];
+ check($directOp['stage']===$tree&&fileinode($tree.'/new.php')===$inode,'Direct component staging keeps the imported inode instead of recopying it');
+ check(file_get_contents($tree.'/same.txt')==='same'&&file_get_contents($tree.'/.env')==='destination secret','Direct staging fills unchanged files and preserves exclusions');
+ CSM_Directories::replace($directOp,$direct['selection']);check(fileinode(WP_PLUGIN_DIR.'/direct/new.php')===$inode,'Whole-directory swap installs the directly imported file');
+ restore($direct,$directOp);check(file_get_contents(WP_PLUGIN_DIR.'/direct/obsolete.php')==='old'&&!file_exists(WP_PLUGIN_DIR.'/direct/new.php'),'Direct staging retains complete rollback behavior');
+
  $link=make_job('linked');symlink($base,WP_PLUGIN_DIR.'/linked/alias');$failed=false;try{prepare($link);}catch(RuntimeException$e){$failed=str_contains($e->getMessage(),'symbolic link');}check($failed&&file_exists(WP_PLUGIN_DIR.'/linked/obsolete.php'),'Nested destination symlinks block the swap before mutation');unlink(WP_PLUGIN_DIR.'/linked/alias');
  $same=make_job('same');$same['file_plan']['paths']=[];prepare($same);check($same['apply_work']['directories']['ops']===[],'Entirely matched components allocate no component backup');
 

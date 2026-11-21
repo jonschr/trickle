@@ -1,5 +1,6 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__ . '/timing.php';
 
 final class CSM_Log {
     private static array $secrets = [];
@@ -28,10 +29,13 @@ final class CSM_Log {
     }
 
     public static function write(string $level, string $event, array $context = []): void {
+        $timing=hrtime(true);
         try {
-            $allowed = ['plugins', 'themes', 'media_mode', 'file_force', 'plugins_force', 'themes_force', 'media_force', 'transport', 'operation', 'stream_kind', 'offset', 'length', 'snapshot_size', 'timeout_seconds', 'site', 'transfer_id', 'direction', 'phase', 'component', 'http_status', 'curl_errno', 'ssl_verify_result', 'duration_ms', 'retry_after', 'ca_source', 'error', 'tables', 'files', 'bytes', 'run', 'request_run', 'count', 'total', 'unit', 'progress_age_seconds', 'progress_matches_request'];
+            $allowed = ['plugins', 'themes', 'media_mode', 'file_force', 'plugins_force', 'themes_force', 'media_force', 'transport', 'operation', 'stream_kind', 'offset', 'length', 'snapshot_size', 'timeout_seconds', 'site', 'transfer_id', 'direction', 'phase', 'component', 'http_status', 'curl_errno', 'ssl_verify_result', 'duration_ms', 'retry_after', 'ca_source', 'error', 'tables', 'files', 'bytes', 'run', 'request_run', 'count', 'total', 'unit', 'progress_age_seconds', 'progress_matches_request', 'runtime'];
+            $performance=isset($context['performance']) && is_array($context['performance']) ? CSM_Timing::numeric($context['performance']) : null;
             $context = array_intersect_key($context, array_flip($allowed));
             foreach ($context as $key => $value) { $context[$key] = is_string($value) ? self::clean($value) : (is_scalar($value) || $value === null ? $value : '[omitted]'); }
+            if ($performance!==null) { $context['performance']=$performance; }
             $entry = ['time' => gmdate('c'), 'level' => $level, 'event' => self::clean($event), 'context' => $context];
             $dir = CSM_Support::private_dir();
             $lock = @fopen($dir . '/diagnostics.lock', 'c');
@@ -44,6 +48,7 @@ final class CSM_Log {
                 if (@file_put_contents($path, CSM_Support::json($entry), FILE_APPEND | LOCK_EX) !== false) { @chmod($path, 0600); }
             } finally { fclose($lock); }
         } catch (Throwable $e) { /* Diagnostics must never block a transfer or its recovery. */ }
+        finally { CSM_Timing::add('diagnostics.write',$timing,0); }
     }
 
     public static function report(array $details): array {
@@ -62,19 +67,21 @@ final class CSM_Log {
             }
             return $result;
         };
+        $entries=self::entries($id ?: null,true);
         return ['schema_version'=>1,'copied_at'=>gmdate('c'),'site'=>self::clean(site_url()),
-            'environment'=>['trickle'=>CSM_VERSION,'wordpress'=>get_bloginfo('version'),'php'=>PHP_VERSION],
+            'environment'=>['trickle'=>CSM_VERSION,'wordpress'=>get_bloginfo('version'),'php'=>PHP_VERSION,'report_sapi'=>PHP_SAPI],
             'transfer'=>$context,'progress'=>$clean($id !== '' ? CSM_Progress::read($id) : []),
-            'entries'=>$clean(self::entries($id ?: null)),
+            'entries'=>$clean($entries),'performance'=>CSM_Timing::report($entries),
             'log_scope'=>'Retained controller logs, including recorded remote responses. Remote server logs are not included.'];
     }
 
-    public static function entries(?string $transfer_id = null): array {
+    public static function entries(?string $transfer_id = null, bool $performance = false): array {
         $dir = CSM_Support::private_dir(); $entries = [];
         foreach (['diagnostics.log.1', 'diagnostics.log'] as $name) {
             if (!is_file($dir . '/' . $name)) { continue; }
             foreach (file($dir . '/' . $name, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
                 $entry = json_decode($line, true);
+                if (!$performance && ($entry['event'] ?? '')==='Performance sample') { continue; }
                 if (is_array($entry) && ($transfer_id === null || ($entry['context']['transfer_id'] ?? '') === $transfer_id)) { $entries[] = $entry; }
             }
         }

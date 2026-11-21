@@ -5,6 +5,7 @@ defined('ABSPATH') || exit;
 final class CSM_Segments {
     public const SIZE = 524288;
     public const UPLOAD_SIZE = 16 * 1024 * 1024;
+    public const DOWNLOAD_SIZE = 64 * 1024 * 1024;
 
     private static function path(string $id, string $kind, string $suffix): string {
         if (!preg_match('/^[a-f0-9]{32}$/D', $id) || !in_array($kind, ['files', 'database'], true)) { throw new RuntimeException('Invalid segmented transfer.'); }
@@ -23,7 +24,7 @@ final class CSM_Segments {
     }
 
     public static function bundle(string $id, string $kind, array $selection): array {
-        $path = self::path($id, $kind, '.source'); $meta = $path . '.json'; $digest = hash('sha256', CSM_Support::json($selection));
+        $path = self::path($id, $kind, '.source'); if (is_dir($path.'.live')) { throw new RuntimeException('This transfer already uses live streaming.'); } $meta = $path . '.json'; $digest = hash('sha256', CSM_Support::json($selection));
         $lock = fopen($path . '.lock', 'c');
         if (!$lock) { throw new RuntimeException('Cannot open source snapshot lock.'); }
         if (!flock($lock, LOCK_EX | LOCK_NB)) { fclose($lock); throw new CSM_Busy_Error('Source stream is still being built. Retry preparation shortly.'); }
@@ -47,7 +48,7 @@ final class CSM_Segments {
                 $selection = CSM_Files::selection($selection); CSM_Database::validate($selection['tables'] ?? []);
                 $built = CSM_Package::build($path, $kind, $selection);
                 if (!empty($built['continue'])) { return $built; }
-                $info = $built + ['credential'=>CSM_Access::owner(),'selection'=>$digest,'created'=>time()];
+                $info = $built + ['download_windows'=>1,'credential'=>CSM_Access::owner(),'selection'=>$digest,'created'=>time()];
                 CSM_Support::atomic_json($meta, $info); return $info;
             } catch (Throwable $error) {
                 if ($kind === 'database') { @unlink($path . '.part'); }
@@ -95,12 +96,17 @@ final class CSM_Segments {
             $fp = fopen($path, 'c+b');
             if (!$fp || fseek($fp, $state['offset']) !== 0) { throw new RuntimeException('Cannot resume destination stream.'); }
             chmod($path, 0600);
-            // Partial bytes survive a failed request; the complete snapshot digest is checked before parsing.
-            try { CSM_Transport::request($peer, 'bundle_stream', ['id'=>$job['id'], 'kind'=>$kind, 'offset'=>$state['offset'], 'bundle'=>$bundle], null, $fp, 50, $bundle['size'] - $state['offset']); }
+            // Older sources ignore length; time windows still checkpoint their partial downloads.
+            $length = !empty($bundle['download_windows']) ? min(self::DOWNLOAD_SIZE, $bundle['size'] - $state['offset']) : $bundle['size'] - $state['offset'];
+            $data = ['id'=>$job['id'], 'kind'=>$kind, 'offset'=>$state['offset'], 'bundle'=>$bundle];
+            if (!empty($bundle['download_windows'])) { $data['length']=$length; }
+            try { $download = CSM_Transport::request($peer, 'bundle_stream', $data, null, $fp, 20, $length); }
             finally { fflush($fp); fclose($fp); }
+            clearstatcache(true, $path);
+            if (filesize($path) !== $state['offset'] + $length && empty($download['continue'])) { throw new CSM_Network_Error('Connection failed: Incomplete snapshot window. Resume from the saved offset.'); }
         }
         clearstatcache(true, $path); $next = is_file($path) ? filesize($path) : 0;
-        if ($next !== $bundle['size']) { throw new CSM_Network_Error('Connection failed: Incomplete snapshot stream. Resume from the saved offset.'); }
+        if ($next < $bundle['size']) { return self::receive($job,$kind,$bundle,$next,'',hash('sha256',''),true,true); }
         return self::receive($job,$kind,$bundle,$next,'',hash('sha256',''),false,true);
     }
 
@@ -224,7 +230,7 @@ final class CSM_Segments {
                 try {
                     clearstatcache(true,$owner);
                     if (is_file($owner) && filemtime($owner)<=time()-DAY_IN_SECONDS) {
-                        foreach (['','.json','.part','.owner','.build'] as $suffix) { CSM_Support::remove_tree(substr($owner,0,-6).$suffix); }
+                        foreach (['','.json','.part','.owner','.build','.live'] as $suffix) { CSM_Support::remove_tree(substr($owner,0,-6).$suffix); }
                         CSM_Log::write('info','Expired source package removed',['transfer_id'=>$m[1]]);
                     }
                 } finally { flock($lock,LOCK_UN); }
@@ -244,6 +250,7 @@ final class CSM_Segments {
             $sources[$id]['kinds'][]=$m[2];
             $sources[$id]['snapshot']=$sources[$id]['snapshot'] || isset($owner['selection']);
             $sources[$id]['bytes']+=is_file($base)?filesize($base):(is_file($base.'.part')?filesize($base.'.part'):0);
+            foreach (['/window','/window.part'] as $suffix) { if (is_file($base.'.live'.$suffix)) { $sources[$id]['bytes']+=filesize($base.'.live'.$suffix); } }
             $sources[$id]['can_discard']=(get_option('_csm_control')['id'] ?? '')!==$id && get_option('_csm_active_job')!==$id && !get_option('_csm_job_'.$id);
         }
         return array_values($sources);
@@ -282,7 +289,7 @@ final class CSM_Segments {
             if (get_option('_csm_job_'.$id) || (get_option('_csm_control')['id'] ?? '')===$id) { return false; }
             foreach (['database','files'] as $kind) {
                 $path=self::path($id,$kind,'.source');
-                foreach (['','.json','.part','.build'] as $suffix) { if (file_exists($path.$suffix)) { return false; } }
+                foreach (['','.json','.part','.build','.live'] as $suffix) { if (file_exists($path.$suffix)) { return false; } }
                 if (is_file($path.'.owner')) {
                     $owner=json_decode(file_get_contents($path.'.owner'),true,32,JSON_THROW_ON_ERROR);
                     CSM_Access::assert_owner($owner);
@@ -307,7 +314,7 @@ final class CSM_Segments {
             try {
                 if (is_file($path . '.owner')) { $owner=json_decode(file_get_contents($path . '.owner'),true,32,JSON_THROW_ON_ERROR); CSM_Access::assert_owner($owner); }
                 elseif (is_file($path . '.json')) { CSM_Access::assert_owner(json_decode(file_get_contents($path . '.json'), true, 32, JSON_THROW_ON_ERROR)); }
-                foreach (['', '.json', '.part', '.owner', '.build'] as $suffix) { CSM_Support::remove_tree($path . $suffix); }
+                foreach (['', '.json', '.part', '.owner', '.build', '.live'] as $suffix) { CSM_Support::remove_tree($path . $suffix); }
             } finally { flock($lock, LOCK_UN); fclose($lock); }
         }
     }

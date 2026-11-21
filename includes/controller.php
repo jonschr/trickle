@@ -1,5 +1,6 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__ . '/timing.php';
 
 final class CSM_Controller {
     public static function fingerprint(): string {
@@ -188,23 +189,26 @@ final class CSM_Controller {
     }
 
     private static function finish(array $control): array {
-        $id = $control['id']; $pull = $control['direction'] === 'pull';
-        $summary = $pull ? CSM_Plugin::summary(CSM_Jobs::get($id)) : CSM_Transport::request($control['peer'], 'status', ['id' => $id]);
-        if (!in_array($summary['status'], ['applied', 'restored'], true)) { throw new RuntimeException('Finish or cancel the active transfer before starting another.'); }
-        if ($pull && $summary['status'] === 'applied' && !in_array($id, get_option('_csm_backups', []), true)) { CSM_Backups::retain(CSM_Jobs::get($id)); }
+        $timing=hrtime(true);
         try {
-            if (!empty($control['segmented'])) {
-                if ($pull) { CSM_Transport::request($control['peer'], 'bundle_discard', ['id' => $id]); }
-                else { CSM_Segments::cleanup($id); }
+            $id = $control['id']; $pull = $control['direction'] === 'pull';
+            $summary = $pull ? CSM_Plugin::summary(CSM_Jobs::get($id)) : CSM_Transport::request($control['peer'], 'status', ['id' => $id]);
+            if (!in_array($summary['status'], ['applied', 'restored'], true)) { throw new RuntimeException('Finish or cancel the active transfer before starting another.'); }
+            if ($pull && $summary['status'] === 'applied' && !in_array($id, get_option('_csm_backups', []), true)) { CSM_Backups::retain(CSM_Jobs::get($id)); }
+            try {
+                if (!empty($control['segmented'])) {
+                    if ($pull) { CSM_Transport::request($control['peer'], 'bundle_discard', ['id' => $id]); }
+                    else { CSM_Segments::cleanup($id); }
+                }
+            } catch (Throwable $e) { if ($pull) { self::defer_source_cleanup($control['peer'], $id); } $summary['cleanup_warning'] = 'Transfer complete; source stream cleanup needs attention. ' . $e->getMessage(); CSM_Log::write('error', 'Source stream cleanup failed', ['transfer_id' => $id, 'error' => $e->getMessage()]); }
+            if ($summary['status'] === 'restored') {
+                if ($pull) { CSM_Plugin::discard(CSM_Jobs::get($id)); }
+                else { CSM_Transport::request($control['peer'], 'discard', ['id' => $id]); }
             }
-        } catch (Throwable $e) { if ($pull) { self::defer_source_cleanup($control['peer'], $id); } $summary['cleanup_warning'] = 'Transfer complete; source stream cleanup needs attention. ' . $e->getMessage(); CSM_Log::write('error', 'Source stream cleanup failed', ['transfer_id' => $id, 'error' => $e->getMessage()]); }
-        if ($summary['status'] === 'restored') {
-            if ($pull) { CSM_Plugin::discard(CSM_Jobs::get($id)); }
-            else { CSM_Transport::request($control['peer'], 'discard', ['id' => $id]); }
-        }
-        self::remember($control, $summary);
-        delete_option('_csm_control');
-        return $summary + ['state' => self::state()];
+            self::remember($control, $summary);
+            delete_option('_csm_control');
+            return $summary + ['state' => self::state()];
+        } finally { CSM_Timing::add('cleanup.controller',$timing,0); }
     }
 
     public static function execute(string $action, array $data = []): array {
@@ -213,6 +217,7 @@ final class CSM_Controller {
     }
 
     private static function attempt(string $action, array $data): array {
+        CSM_Timing::begin($data['id'] ?? '',$action);
         CSM_Plugin::supported(); CSM_Support::long_request();
         if (in_array($action, ['commit', 'rollback', 'recover', 'recover_destination', 'restore_backup'], true)) { ignore_user_abort(true); }
         if (in_array($action,['recover','rollback','restore_backup'],true) && !empty($data['id'])) { CSM_Support::work($data['id'],false); }
@@ -224,6 +229,7 @@ final class CSM_Controller {
         if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation started', $context); }
         try {
             $result = self::operate($action, $data);
+            CSM_Timing::begin($result['id'] ?? '',$action);
             if ($record) { CSM_Log::write('info', 'Dashboard/CLI operation completed', ['transfer_id'=>$result['id'] ?? $context['transfer_id'], 'duration_ms'=>(int)((microtime(true)-$started)*1000)] + $context); }
             return $result;
         }
@@ -250,6 +256,7 @@ final class CSM_Controller {
                 try { if (CSM_Support::is_cancelled($data['id'])) { self::retry_cancel($data['id']); } }
                 catch (Throwable $cleanup) { CSM_Log::write('error','Cancellation cleanup deferred',['transfer_id'=>$data['id'],'error'=>$cleanup->getMessage()]); }
             }
+            CSM_Timing::flush();
         }
     }
 
@@ -292,25 +299,63 @@ final class CSM_Controller {
         return !empty($remote['component']) ? $remote : $local;
     }
 
+    private static function export_selection(array &$control, string $kind): array {
+        $peer=$control['peer']; $pull=$control['direction']==='pull'; $id=$control['id'];
+        $selection = $control['exports'][$kind] ?? null;
+        if (!$selection) {
+            $selection = $control['selection']; $selection['comparison_id']=$id; unset($selection['replacements']);
+            if ($kind === 'files' && CSM_Files::compare_media($selection)) {
+                $comparison = CSM_Media::compare($peer, $pull, !empty($selection['media_verify']), $selection);
+                $selection['media'] = 'compare';
+                $selection['media_delta'] = $comparison['delta']; $control['media_comparison'] = $comparison['stats'];
+            }
+            if ($kind === 'files' && (!empty($selection['plugins']) || !empty($selection['themes']))) {
+                $comparison = CSM_Components::compare($peer, $pull, $selection); $selection = CSM_Components::selection($selection, $comparison);
+            }
+            $control['exports'][$kind] = $selection; update_option('_csm_control', $control, false);
+        }
+        return $selection;
+    }
+
+    private static function live_step(array $control, bool $preflight): array {
+        $id=$control['id']; $peer=$control['peer']; $pull=$control['direction']==='pull';
+        $selection=self::export_selection($control,'files');
+        $control['bundles']['files'] ??= ['format'=>3,'size'=>null,'continue'=>true];
+        update_option('_csm_control',$control,false);
+        if ($preflight) {
+            return ($pull?CSM_Plugin::summary(CSM_Jobs::get($id)):CSM_Transport::request($peer,'status',['id'=>$id]))+['timeline'=>self::timeline($control)];
+        }
+        if ($pull) { $summary=CSM_Live_Stream::pull($peer,CSM_Jobs::get($id),$selection); }
+        else {
+            // Discover the receiver's committed sequence after any lost HTTP response.
+            $state=CSM_Transport::request($peer,'live_state',['id'=>$id]);
+            $input=empty($state['done'])?CSM_Live_Stream::source($id,$selection,$state['seq'],$state['offset'] ?? 0):(static function(){ yield ''; })();
+            try {
+                $summary=CSM_Transport::request($peer,'live_receive',['id'=>$id,'seq'=>$state['seq'],'offset'=>$state['offset'] ?? 0,'selection_hash'=>hash('sha256',CSM_Support::json($selection)),'progress_run'=>CSM_Progress::run()],$input,null,40);
+            } catch (CSM_Network_Error $error) {
+                // A lost response may still have committed frames. Confirm progress before retrying.
+                try { $after=CSM_Transport::request($peer,'live_state',['id'=>$id],null,null,5); }
+                catch (Throwable $probe) { throw $error; }
+                if ($after['seq']<$state['seq'] || ($after['seq']===$state['seq'] && ($after['offset'] ?? 0)<=($state['offset'] ?? 0))) { throw $error; }
+                $summary=CSM_Transport::request($peer,'status',['id'=>$id],null,null,5)+['continue'=>true,'checkpoint'=>['offset'=>$after['bytes'],'size'=>!empty($after['done'])?$after['bytes']:null],'live_files'=>$after];
+            }
+        }
+        $state=$summary['live_files'];
+        $control['bundles']['files']=['format'=>3,'size'=>!empty($state['done'])?$state['bytes']:null,'continue'=>empty($state['done']),'components'=>$state['components'] ?? []];
+        $control['checkpoints']['files']=$summary['checkpoint']; update_option('_csm_control',$control,false);
+        $extra=[];
+        if (empty($summary['continue'])) { self::remember($control,$summary); $extra=['state'=>self::state()]; }
+        return $summary+['timeline'=>self::timeline($control)]+$extra;
+    }
+
     private static function segment_step(array $control, string $kind, bool $preflight = false): array {
         if (!in_array($kind, CSM_Plugin::kinds($control['selection']), true)) { throw new RuntimeException('Invalid stream kind.'); }
         $peer = $control['peer']; $pull = $control['direction'] === 'pull'; $id = $control['id'];
         CSM_Support::step();
         CSM_Progress::start($id, (empty($control['bundles'][$kind]) ? 'Preparing ' : 'Transferring ') . $kind . ' stream');
+        if ($kind==='files' && !empty($control['live_files']) && ($control['selection']['transport'] ?? 'stream')==='stream') { return self::live_step($control,$preflight); }
         if (empty($control['bundles'][$kind])) {
-            $selection = $control['exports'][$kind] ?? null;
-            if (!$selection) {
-                $selection = $control['selection']; $selection['comparison_id']=$id; unset($selection['replacements']);
-                if ($kind === 'files' && CSM_Files::compare_media($selection)) {
-                    $comparison = CSM_Media::compare($peer, $pull, !empty($selection['media_verify']), $selection);
-                    $selection['media'] = 'compare';
-                    $selection['media_delta'] = $comparison['delta']; $control['media_comparison'] = $comparison['stats'];
-                }
-                if ($kind === 'files' && (!empty($selection['plugins']) || !empty($selection['themes']))) {
-                    $comparison = CSM_Components::compare($peer, $pull, $selection); $selection = CSM_Components::selection($selection, $comparison);
-                }
-                $control['exports'][$kind] = $selection; update_option('_csm_control', $control, false);
-            }
+            $selection = self::export_selection($control,$kind);
             try {
                 $control['bundles'][$kind] = $pull ? CSM_Transport::request($peer, 'bundle', ['id' => $id, 'kind' => $kind, 'format'=>2, 'selection' => $selection, 'progress_run' => CSM_Progress::run()]) : CSM_Segments::bundle($id, $kind, $selection);
             } catch (Throwable $error) {
@@ -324,6 +369,10 @@ final class CSM_Controller {
             }
             if (!empty($control['bundles'][$kind]['continue'])) { unset($control['bundles'][$kind]); return ['id'=>$id,'continue'=>true,'progress'=>self::progress($control),'timeline'=>self::timeline($control)]; }
             update_option('_csm_control', $control, false);
+            // Start large downloads in a fresh request with their own time window.
+            if ($pull && !$preflight && ($control['bundles'][$kind]['size'] > CSM_Segments::DOWNLOAD_SIZE || CSM_Support::due())) {
+                return ['id'=>$id,'continue'=>true,'progress'=>self::progress($control),'timeline'=>self::timeline($control)];
+            }
         }
         if ($preflight) {
             $summary = $pull ? CSM_Plugin::summary(CSM_Jobs::get($id)) : CSM_Transport::request($peer, 'status', ['id' => $id]);
@@ -404,7 +453,7 @@ final class CSM_Controller {
         $summary = $direction === 'pull' ? CSM_Plugin::prepare($selection, $context) : CSM_Transport::request($peer, 'prepare', ['selection' => $destination_selection, 'context' => $context]);
         $source_inventory=$direction==='pull'?$remote:CSM_Files::inventory(false,false); $scope=[];
         foreach (['plugins','themes'] as $kind) { $lookup=array_column($source_inventory[$kind] ?? [],null,'id'); foreach ($selection[$kind] as $component) { $scope[$kind][]=['id'=>$component,'name'=>$lookup[$component]['name'] ?? $component,'version'=>$lookup[$component]['version'] ?? '']; } }
-        $control = ['scope'=>$scope,'estimates'=>$estimates,'destination_home' => $remote['home'] ?? $peer['url'], 'automatic' => !empty($data['automatic']), 'plugin_version' => CSM_VERSION, 'segmented' => !empty($remote['segments']), 'direction' => $direction, 'selection' => $selection, 'id' => $summary['id'], 'peer' => $peer, 'created' => time(), 'previous_history' => get_option('_csm_history', [])];
+        $control = ['scope'=>$scope,'estimates'=>$estimates,'destination_home' => $remote['home'] ?? $peer['url'], 'automatic' => !empty($data['automatic']), 'plugin_version' => CSM_VERSION, 'segmented' => !empty($remote['segments']), 'live_files'=>!empty($remote['live_files']), 'direction' => $direction, 'selection' => $selection, 'id' => $summary['id'], 'peer' => $peer, 'created' => time(), 'previous_history' => get_option('_csm_history', [])];
         update_option('_csm_peer', $peer, false); update_option('_csm_control', $control, false);
         self::remember($control, $summary);
         CSM_Log::write('info', 'Transfer selection prepared', ['transfer_id'=>$summary['id'], 'direction'=>$direction, 'site'=>$peer['url'], 'transport'=>$selection['transport'], 'tables'=>count($selection['tables']), 'plugins'=>count($selection['plugins']), 'themes'=>count($selection['themes']), 'media_mode'=>$selection['media'], 'plugins_force'=>!empty($selection['plugins_force']) || !empty($selection['file_force']), 'themes_force'=>!empty($selection['themes_force']) || !empty($selection['file_force']), 'media_force'=>!empty($selection['media_force'])]);

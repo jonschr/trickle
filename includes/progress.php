@@ -1,9 +1,11 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__ . '/timing.php';
 
 final class CSM_Progress {
     private static ?array $current = null;
     private static float $written = 0;
+    private static float $cancel_checked = 0;
 
     private static function path(string $id): string {
         if (!preg_match('/^[a-f0-9]{32}$/D', $id)) { throw new RuntimeException('Invalid transfer ID.'); }
@@ -13,11 +15,15 @@ final class CSM_Progress {
     public static function run(): ?string { return self::$current['run'] ?? null; }
 
     public static function read(string $id): array {
-        $path = self::path($id);
-        return is_file($path) ? (json_decode(file_get_contents($path), true) ?: []) : [];
+        $timing=hrtime(true);
+        try {
+            $path = self::path($id);
+            return is_file($path) ? (json_decode(file_get_contents($path), true) ?: []) : [];
+        } finally { CSM_Timing::add('progress.read',$timing,0); }
     }
 
     public static function start(string $id, string $phase, ?string $run = null): void {
+        CSM_Timing::begin($id,'worker');
         CSM_Support::work($id,null);
         $run ??= self::$current && self::$current['id'] === $id && self::$current['state'] === 'running' ? self::$current['run'] : bin2hex(random_bytes(8));
         if (!preg_match('/^[a-f0-9]{16}$/D', $run)) { throw new RuntimeException('Invalid progress operation.'); }
@@ -33,24 +39,34 @@ final class CSM_Progress {
     }
 
     public static function update(array $detail, bool $force = false): void {
-        if (($detail['state'] ?? '') !== 'failed') { CSM_Support::check_source_budget(); }
-        if (!self::$current) { return; }
-        $changed = false;
-        foreach (['phase', 'component', 'state'] as $key) { if (isset($detail[$key]) && $detail[$key] !== self::$current[$key]) { $changed = true; } }
-        self::$current = array_replace(self::$current, $detail, ['updated' => microtime(true)]);
-        if ($changed || (!self::$current['events'] && $force)) {
-            $event = array_intersect_key(self::$current, array_flip(['updated', 'phase', 'component', 'state', 'failure']));
-            self::activity($event);
-        }
-        if (!$force && microtime(true) - self::$written < .25) { return; }
-        // A separate atomic file stays readable while the transfer owns the mutation lock or swaps wp_options.
-        $path = self::path(self::$current['id']);
-        $temp = $path . '.' . bin2hex(random_bytes(4));
-        // Reporting must not interrupt an apply or prevent rollback when storage is full.
-        if (@file_put_contents($temp, CSM_Support::json(self::$current), LOCK_EX) === false) { @unlink($temp); return; }
-        @chmod($temp, 0600);
-        if (!@rename($temp, $path)) { @unlink($temp); return; }
-        self::$written = microtime(true);
+        $timing=hrtime(true);
+        try {
+            if (($detail['state'] ?? '') !== 'failed') {
+                // Work loops also check cancellation; progress-only loops stay responsive within 50 ms.
+                $now=hrtime(true)/1e9; $check_cancel=$force || $now-self::$cancel_checked>=.05;
+                CSM_Support::check_source_budget($check_cancel);
+                if ($check_cancel) { self::$cancel_checked=$now; }
+            }
+            if (!self::$current) { return; }
+            $changed = false;
+            foreach (['phase', 'component', 'state'] as $key) { if (isset($detail[$key]) && $detail[$key] !== self::$current[$key]) { $changed = true; } }
+            self::$current = array_replace(self::$current, $detail, ['updated' => microtime(true)]);
+            if ($changed || (!self::$current['events'] && $force)) {
+                $event = array_intersect_key(self::$current, array_flip(['updated', 'phase', 'component', 'state', 'failure']));
+                self::activity($event);
+            }
+            if (!$force && microtime(true) - self::$written < .25) { return; }
+            // A separate atomic file stays readable while the transfer owns the mutation lock or swaps wp_options.
+            $path = self::path(self::$current['id']);
+            $temp = $path . '.' . bin2hex(random_bytes(4));
+            // Reporting must not interrupt an apply or prevent rollback when storage is full.
+            $write_timing=hrtime(true); $json=CSM_Support::json(self::$current);
+            if (@file_put_contents($temp, $json, LOCK_EX) === false) { @unlink($temp); return; }
+            @chmod($temp, 0600);
+            if (!@rename($temp, $path)) { @unlink($temp); return; }
+            CSM_Timing::add($force?'progress.write_forced':'progress.write',$write_timing,strlen($json));
+            self::$written = microtime(true);
+        } finally { CSM_Timing::add('progress.update',$timing,0); }
     }
 
     private static function important(array $event): bool {

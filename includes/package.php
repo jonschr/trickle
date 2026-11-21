@@ -4,12 +4,17 @@ defined('ABSPATH') || exit;
 /** Small, independently verified gzip frames; saved cursors never depend on a PHP process surviving. */
 final class CSM_Package {
     public static function chain(string $hash, string $record): string { return hash('sha256', $hash . $record); }
+    public static function frame(string $part, bool $control = false): string {
+        if ($part==='' || strlen($part)>262144) { throw new RuntimeException('Invalid frame payload size.'); }
+        CSM_Support::check_source_budget();
+        $sample=substr($part,max(0,intdiv(strlen($part)-8192,2)),8192);
+        $level=strlen($sample)===8192 && strlen(gzdeflate($sample,1))>=strlen($sample)*.98?0:3;
+        $gzip=gzencode($part,$level);
+        return pack('N',strlen($gzip) | ($control?0x80000000:0)).hash('sha256',$gzip,true).$gzip;
+    }
+
     public static function put($fp, string $bytes): void {
-        foreach (str_split($bytes, 262144) as $part) {
-            CSM_Support::check_source_budget();
-            $gzip = gzencode($part, 3);
-            CSM_Support::write($fp, pack('N', strlen($gzip)) . hash('sha256', $gzip, true) . $gzip);
-        }
+        foreach (str_split($bytes,262144) as $part) { CSM_Support::write($fp,self::frame($part)); }
     }
 
     public static function build(string $path, string $kind, array $selection): array {

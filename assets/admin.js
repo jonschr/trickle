@@ -160,7 +160,7 @@
                 if (!stopped) renderActivity(detail);
                 if (!stopped && Date.now() - lastLogRead > 5000) {
                     lastLogRead = Date.now();
-                    api('logs').then(logs => { if (!stopped) transferMeter.ingestLogs?.(logs.entries); }).catch(() => {});
+                    api('logs', {id:data.id}).then(logs => { if (!stopped) transferMeter.ingestLogs?.(logs.entries); }).catch(() => {});
                 }
             } catch (error) {
                 pollNotBefore=Math.max(pollNotBefore,Date.now()+1000*(error.retryAfter || 0));
@@ -194,7 +194,7 @@
                 if (result.continue) summary = result;
             } while (result.continue);
             if (generation !== cancellation) throw cancelled();
-            if (['commit','recover','rollback'].includes(op)) api('logs').then(logs => transferMeter.ingestLogs?.(logs.entries)).catch(() => {});
+            if (['commit','recover','rollback'].includes(op)) api('logs', {id:data.id}).then(logs => transferMeter.ingestLogs?.(logs.entries)).catch(() => {});
             return result;
         }
         catch (error) {
@@ -703,7 +703,7 @@
                 let task=null;
                 for(const kind of ['plugins','themes']) {
                     if(!comparisonRelevant(kind))continue;
-                    const item=src[kind].find(item=>!item.protected && !item.follow_symlinks && !item.content_hash && !state.done.has(kind+'/'+item.id) && !state.failed.has(kind+'/'+item.id));
+                    const item=src[kind].find(item=>!item.protected && !item.follow_symlinks && dst[kind].some(target=>target.id===item.id) && !item.content_hash && !state.done.has(kind+'/'+item.id) && !state.failed.has(kind+'/'+item.id));
                     if(item){task={kind,item,key:kind+'/'+item.id};break;}
                 }
                 if(!task && comparisonRelevant('media') && !state.done.has('media') && !state.failed.has('media') && src.media_compare && dst.media_compare)task={kind:'media',key:'media'};

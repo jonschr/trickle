@@ -10,6 +10,7 @@ foreach(['plugins','themes']as$kind){
  file_put_contents($fixture.'/'.$kind.'/example/.gitignore','excluded');file_put_contents($fixture.'/'.$kind.'/example/.env','excluded');
 }
 class CSM_Support {
+ static function save_hash($h){return base64_encode(serialize($h));}static function restore_hash($s){return unserialize(base64_decode($s),['allowed_classes'=>['HashContext']]);}
  static function private_dir(){return $GLOBALS['fixture'].'/cache';}
  static function json($value){return json_encode($value,JSON_UNESCAPED_SLASHES)."\n";}
  static function atomic_json($path,$value){file_put_contents($path,self::json($value));}

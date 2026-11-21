@@ -1,5 +1,6 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__ . '/timing.php';
 
 /** Owns job persistence; transfer phases never choose an inline or file-backed representation. */
 final class CSM_Jobs {
@@ -7,15 +8,18 @@ final class CSM_Jobs {
     private const MAX_RECORD_BYTES = 268435456;
 
     public static function get(string $id): array {
-        self::require_id($id);
-        $record = get_option('_csm_job_' . $id);
-        if (!$record) { throw new RuntimeException('Transfer not found.'); }
-        $job = isset($record['_csm_blob']) ? self::read_state($id, $record) : $record;
-        if (in_array($job['status'], ['staging', 'backup_copy'], true)) {
-            $cursor = self::read_cursor($id);
-            if (($cursor['status'] ?? '') === $job['status']) { $job = array_replace($job, $cursor); }
-        }
-        return $job;
+        $timing=hrtime(true);
+        try {
+            self::require_id($id);
+            $record = get_option('_csm_job_' . $id);
+            if (!$record) { throw new RuntimeException('Transfer not found.'); }
+            $job = isset($record['_csm_blob']) ? self::read_state($id, $record) : $record;
+            if (in_array($job['status'], ['staging', 'backup_copy'], true)) {
+                $cursor = self::read_cursor($id);
+                if (($cursor['status'] ?? '') === $job['status']) { $job = array_replace($job, $cursor); }
+            }
+            return $job;
+        } finally { CSM_Timing::add('checkpoint.load',$timing,0); }
     }
 
     private static function require_id(string $id): void {
@@ -60,17 +64,20 @@ final class CSM_Jobs {
     }
 
     public static function save(array $job): void {
-        self::require_id($job['id'] ?? '');
-        @touch(CSM_Support::private_dir() . '/' . $job['id'] . '-heartbeat');
-        $record = self::encode_record($job);
-        $key = '_csm_job_' . $job['id'];
-        if (!update_option($key, $record, false)) {
-            wp_cache_delete($key, 'options');
-            if (get_option($key) !== $record) {
-                throw new RuntimeException('Could not persist transfer checkpoint. Check database storage and packet limits.');
+        $timing=hrtime(true);
+        try {
+            self::require_id($job['id'] ?? '');
+            @touch(CSM_Support::private_dir() . '/' . $job['id'] . '-heartbeat');
+            $record = self::encode_record($job);
+            $key = '_csm_job_' . $job['id'];
+            if (!update_option($key, $record, false)) {
+                wp_cache_delete($key, 'options');
+                if (get_option($key) !== $record) {
+                    throw new RuntimeException('Could not persist transfer checkpoint. Check database storage and packet limits.');
+                }
             }
-        }
-        delete_option('_csm_cursor_' . $job['id']);
+            delete_option('_csm_cursor_' . $job['id']);
+        } finally { CSM_Timing::add('checkpoint.save',$timing,0); }
     }
 
     private static function encode_record(array $job): array {

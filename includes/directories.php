@@ -28,6 +28,7 @@ final class CSM_Directories {
 
     public static function prepare(array &$job): bool {
         $work = &$job['apply_work'];
+        $prepared = false;
         if (!isset($work['directories'])) {
             $roots = [];
             foreach ($job['file_plan']['paths'] as $relative => $target) {
@@ -35,23 +36,26 @@ final class CSM_Directories {
                 if (in_array($kind, ['plugins', 'themes'], true)) { $roots[$kind . '/' . $component] = true; }
             }
             $work['directories'] = ['roots'=>array_keys($roots), 'ops'=>[], 'index'=>0];
-            CSM_Jobs::save($job);
         }
         $state = &$work['directories'];
         while ($state['index'] < count($state['roots'])) {
+            $prepared = true;
             $relative = $state['roots'][$state['index']];
             $target = CSM_Files::destination($relative, $job['selection']);
             // Single-file plugins use the same whole-component rename protocol.
             if (!isset($state['building'])) {
                 $dir = $job['backup_dir'] . '/component-' . $state['index'];
                 $copy_backend = self::storage($dir, $target);
-                $state['building'] = ['path'=>$relative, 'directory'=>true, 'backup'=>$dir.'/original', 'stage'=>$dir.'/incoming', 'journal'=>$dir.'/swap.json', 'existed'=>file_exists($target), 'copy_backend'=>$copy_backend, 'manifest'=>[], 'incoming'=>[]];
+                $stage = $job['component_staging'][$relative] ?? null;
+                // Keep the existing copy path when private staging and backup storage span devices.
+                $staged = $stage ? @stat($stage) : false;
+                if (!$staged || $staged['dev'] !== stat($dir)['dev']) { $stage=$dir.'/incoming'; }
+                $state['building'] = ['path'=>$relative, 'directory'=>true, 'backup'=>$dir.'/original', 'stage'=>$stage, 'journal'=>$dir.'/swap.json', 'existed'=>file_exists($target), 'copy_backend'=>$copy_backend, 'manifest'=>[], 'incoming'=>[]];
                 $expected = [];
                 foreach ($job['file_plan']['signature'] ?? [] as $file=>$signature) {
                     if ($file===$relative || str_starts_with($file,$relative.'/')) { $expected[$file]=$signature[1]; }
                 }
                 $state['building']['expected']=$expected;
-                CSM_Jobs::save($job);
             }
             $op = &$state['building'];
             if (!self::build($op, $target, $job['file_plan']['new'], $job['selection'], $state['build'])) { CSM_Jobs::save($job); return false; }
@@ -59,9 +63,10 @@ final class CSM_Directories {
             $state['ops'][] = $op;
             unset($state['building'], $state['build'], $state['snapshot']);
             $state['index']++;
-            CSM_Jobs::save($job);
-            if (CSM_Support::due()) { return false; }
+            // Only private trees changed; an interrupted request can safely rebuild them.
+            if (CSM_Support::due()) { CSM_Jobs::save($job); return false; }
         }
+        if ($prepared) { CSM_Jobs::save($job); }
         return true;
     }
 
@@ -132,8 +137,12 @@ final class CSM_Directories {
 
     private static function copy(string $source, string $target, array $file, ?array &$state): bool {
         if (!is_dir(dirname($target)) && !wp_mkdir_p(dirname($target))) { throw new RuntimeException('Cannot create staged component directory.'); }
-        if (!CSM_Plugin::copy_step($source, $target, $state)) { return false; }
-        if (!hash_equals($file['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('Component copy checksum failed: '.basename($source)); }
+        // New imports already occupy the private replacement tree; older jobs still copy.
+        if ($source !== $target && !CSM_Plugin::copy_step($source, $target, $state)) { return false; }
+        $verified=$source===$target && !empty($file['verification_receipt'])
+            ? CSM_Support::verify_file($target,$file['sha256'],$file['verification_receipt'])
+            : hash_equals($file['sha256'],CSM_Support::hash_file($target));
+        if (!$verified) { throw new RuntimeException('Component copy checksum failed: '.basename($source)); }
         if (!chmod($target, $file['mode'] & 0777) || !touch($target, $file['mtime'])) { throw new RuntimeException('Cannot set staged component metadata.'); }
         $state = null;
         return true;

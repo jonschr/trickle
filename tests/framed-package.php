@@ -12,6 +12,11 @@ $checks=0;function check($ok,$label){if(!$ok)throw new RuntimeException($label);
 $dir=CSM_Support::private_dir(); $path=$dir.'/incoming'; $bytes=random_bytes(4*1024*1024);
 try {
  $fp=fopen($path,'wb');CSM_Package::put($fp,$bytes);fclose($fp);
+ $frame=fopen($path,'rb');$header=fread($frame,36);$gzip=fread($frame,unpack('N',substr($header,0,4))[1]);fclose($frame);
+ check(strlen($gzip)>262144 && gzdecode($gzip)===substr($bytes,0,262144),'Incompressible frames use stored gzip blocks and retain exact wire compatibility');
+ $text=$dir.'/text';$fp=fopen($text,'wb');CSM_Package::put($fp,str_repeat('compressible fixture ',20000));fclose($fp);
+ check(filesize($text)<5000,'Text still receives compression');
+
  check(CSM_Support::hash_file($path)===hash_file('sha256',$path),'Cancellable checksum reader preserves ordinary SHA-256 compatibility');
  $bundle=['size'=>filesize($path),'sha256'=>hash_file('sha256',$path),'format'=>2];
  $first=CSM_Package::unpack($path,$bundle); check(!$first,'Frame verification yields with a durable cursor');

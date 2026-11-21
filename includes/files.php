@@ -439,7 +439,7 @@ final class CSM_Files {
         $cursor['component'] = null;
         if (!$cursor['header']) {
             $parents = []; foreach ($selection['themes'] as $theme) { $parents[$theme] = wp_get_theme($theme)->get('Template'); }
-            $cursor['started'] = time(); $cursor['header'] = true;
+            $cursor['started'] ??= time(); $cursor['header'] = true;
             yield CSM_Support::json(['type'=>'header','version'=>2,'kind'=>'files','started'=>$cursor['started'],'theme_parents'=>$parents,'active_plugins'=>CSM_Activation::current(),'trickle_plugin'=>plugin_basename(CSM_FILE)]);
         }
         $same = CSM_Components::unchanged($selection);
@@ -465,7 +465,7 @@ final class CSM_Files {
             }
             if ($cursor['stamp'] !== [$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']]) { throw new RuntimeException('Source file changed during packaging: '.$relative); }
             $fp = fopen($path,'rb'); $offset = max(0,$cursor['offset']);
-            $filehash = $offset === 0 ? hash_init('sha256') : null;
+            $filehash = $offset === 0 ? hash_init('sha256') : (isset($cursor['file_hash']) ? CSM_Support::restore_hash($cursor['file_hash']) : null);
             if (!$fp || fseek($fp,$offset)!==0) { throw new RuntimeException('Cannot resume source file: '.$relative); }
             try {
                 while ($offset < $stat['size']) {
@@ -473,7 +473,7 @@ final class CSM_Files {
                     $bytes = fread($fp,min(262144,$stat['size']-$offset));
                     if ($bytes === false || $bytes === '') { throw new RuntimeException('Source file is truncated: '.$relative); }
                     $offset += strlen($bytes); $cursor['offset'] = $offset;
-                    if ($filehash !== null) { hash_update($filehash,$bytes); }
+                    if ($filehash !== null) { hash_update($filehash,$bytes); $cursor['file_hash']=CSM_Support::save_hash($filehash); }
                     $component = str_starts_with($relative,'uploads/')?'media':explode('/',$relative)[0];
                     $sizes[$component] += strlen($bytes);
                     CSM_Progress::update(['phase'=>'Packaging file','component'=>$relative,'count'=>$index,'bytes'=>$offset]);
@@ -484,7 +484,7 @@ final class CSM_Files {
             clearstatcache(true,$path); $after = stat($path);
             if ($cursor['stamp'] !== [$after['size'],$after['mtime'],$after['ctime'],$after['ino']]) { throw new RuntimeException('Source file changed during packaging: '.$relative); }
             $digest = $cursor['digest'] ?? ($filehash !== null ? hash_final($filehash) : ($expected_hash ?? CSM_Support::hash_file($path)));
-            unset($cursor['digest']);
+            unset($cursor['digest'],$cursor['file_hash']);
             if ($expected_hash!==null && !hash_equals($expected_hash,$digest)) { throw new RuntimeException('Media changed after comparison: '.$relative); }
             $line = CSM_Support::json(['type'=>'file-end','sha256'=>$digest]);
             $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line); $cursor['index']++; $cursor['offset']=0; yield $line;
@@ -494,7 +494,7 @@ final class CSM_Files {
         yield CSM_Support::json(['type'=>'end','files'=>$cursor['index'],'started'=>$cursor['started'],'sha256'=>$cursor['hash']]);
     }
 
-    public static function stage_step($fp, array &$job, bool $continuing = false): bool {
+    public static function stage_step($fp, array &$job, bool $continuing = false, bool $incremental = false): bool {
         $state = $job['imports']['files'] ?? null;
         if (!$state) {
             $header = CSM_Support::line($fp);
@@ -509,9 +509,11 @@ final class CSM_Files {
         $dir=CSM_Support::private_dir().'/'.$job['id'];
         if (!is_dir($dir) && !mkdir($dir,0700)) { throw new RuntimeException('Cannot create transfer staging directory.'); }
         if (fseek($fp,$state['offset'])!==0) { throw new RuntimeException('Cannot resume file import.'); }
-        CSM_Support::step(8, $continuing);
+        if (!$incremental) { CSM_Support::step(8, $continuing); }
+        $available=$incremental?fstat($fp)['size']:null;
         do {
             CSM_Support::check_cancel();
+            if ($incremental && ftell($fp)===$available) { $state['offset']=0; $job['imports']['files']=$state; return false; }
             if (!$state['current']) {
                 $record=CSM_Support::line($fp); $type=$record['type'] ?? '';
                 if ($type==='end') {
@@ -529,34 +531,45 @@ final class CSM_Files {
                     $job['files'][]=['path'=>$record['path'],'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true,'verification_receipt'=>$receipt];
                 } else {
                     if (!is_int($record['size'] ?? null) || $record['size']<0) { throw new RuntimeException('Invalid file size.'); }
-                    $state['current']=['record'=>$record,'written'=>0,'stage'=>$dir.'/'.count($job['files'])];
+                    $stage=$dir.'/'.count($job['files']);
+                    if (in_array($parts[0],['plugins','themes'],true)) {
+                        $component=$parts[0].'/'.$parts[1];
+                        $job['component_staging'][$component]=$dir.'/components/'.$component;
+                        $stage=$dir.'/components/'.$record['path'];
+                        if (!is_dir(dirname($stage)) && !wp_mkdir_p(dirname($stage))) { throw new RuntimeException('Cannot create component staging directory.'); }
+                    }
+                    $state['current']=['record'=>$record,'written'=>0,'stage'=>$stage,'hash'=>CSM_Support::save_hash(hash_init('sha256'))];
                 }
             }
             if ($current=$state['current']) {
                 $record=$current['record']; if ($current['written']>0 && (!is_file($current['stage']) || filesize($current['stage'])<$current['written'])) { throw new RuntimeException('Staged file checkpoint is missing or truncated.'); } $out=fopen($current['stage'],'c+b');
                 if (!$out || !ftruncate($out,$current['written']) || fseek($out,$current['written'])!==0) { throw new RuntimeException('Cannot resume staged file.'); }
+                $hash=isset($current['hash'])?CSM_Support::restore_hash($current['hash']):null;
                 try {
                     do {
                         $remaining=$record['size']-$current['written'];
+                        if ($incremental) { $remaining=min($remaining,$available-ftell($fp)); }
                         if ($remaining<=0) { break; }
                         $bytes=fread($fp,min(262144,$remaining));
                         if ($bytes===false || $bytes==='') { throw new RuntimeException('Truncated file stream.'); }
                         CSM_Support::write($out,$bytes); $current['written']+=strlen($bytes);
+                        if ($hash!==null) { hash_update($hash,$bytes); }
                         CSM_Progress::update(['phase'=>'Staging file','component'=>$record['path'],'count'=>count($job['files']),'bytes'=>$current['written']]);
-                    } while (!CSM_Support::due());
+                    } while ($incremental || !CSM_Support::due());
+                    if ($hash!==null) { $current['hash']=CSM_Support::save_hash($hash); }
                     fflush($out);
                 } finally { fclose($out); }
                 $state['current']=$current;
-                if ($current['written']===$record['size']) {
+                if ($current['written']===$record['size'] && (!$incremental || ftell($fp)<$available)) {
                     $end=CSM_Support::line($fp);
-                    if (($end['type'] ?? '')!=='file-end' || !hash_equals(CSM_Support::hash_file($current['stage']),$end['sha256'] ?? '')) { throw new RuntimeException('File checksum mismatch.'); }
+                    if (($end['type'] ?? '')!=='file-end' || !hash_equals($hash!==null?hash_final($hash):CSM_Support::hash_file($current['stage']),$end['sha256'] ?? '')) { throw new RuntimeException('File checksum mismatch.'); }
                     $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($end));
                     $job['files'][]=['path'=>$record['path'],'mtime'=>(int)$record['mtime'],'size'=>$record['size'],'mode'=>!str_starts_with($record['path'],'uploads/') && (($record['mode'] ?? 0644)&0111)?0755:0644,'stage'=>$current['stage'],'sha256'=>$end['sha256']];
                     $state['current']=null;
                 }
             }
             $state['offset']=ftell($fp);
-        } while (!CSM_Support::due());
+        } while ($incremental || !CSM_Support::due());
         $job['imports']['files']=$state; CSM_Jobs::save($job); return false;
     }
 

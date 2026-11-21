@@ -3,13 +3,15 @@
 define('ABSPATH','/fixture/');
 $options=[];$calls=[];$offset=0;$fail=false;
 function update_option($key,$value,...$args){$GLOBALS['options'][$key]=$value;}
-class CSM_Support {static function step(...$args){}}
+class CSM_Support {static function step(...$args){}static function due(){return false;}}
 class CSM_Plugin {static function kinds($selection){return ['files'];}}
-class CSM_Progress {static function start(...$args){}static function update(...$args){}static function run(){return '';}}
-class CSM_Segments {const UPLOAD_SIZE=16;static function source(...$args){yield 'fixture';}}
+class CSM_Progress {static function start(...$args){}static function update(...$args){}static function run(){return '';}static function read($id){return [];}}
+class CSM_Jobs {static function get($id){return ['id'=>$id];}}
+class CSM_Segments {const UPLOAD_SIZE=16;const DOWNLOAD_SIZE=32;static function received_bytes(...$args){return 0;}static function state($job,$kind,$bundle){return ['offset'=>0,'size'=>$bundle['size']];}static function pull($peer,$job,$kind,$bundle){$GLOBALS['calls'][]='download';return ['continue'=>true,'checkpoint'=>['offset'=>16,'size'=>$bundle['size']]];}static function source(...$args){yield 'fixture';}}
 class CSM_Transport {
     static function request($peer,$operation,$data,...$args){
         $GLOBALS['calls'][]=$operation;
+        if($operation==='bundle')return ['size'=>40,'sha256'=>str_repeat('a',64)];
         if($operation==='segment_state')return ['offset'=>$GLOBALS['offset'],'size'=>$data['bundle']['size']];
         if($data['offset']!==$GLOBALS['offset'])throw new RuntimeException('Unexpected offset');
         $GLOBALS['offset']+=$data['length'];
@@ -38,3 +40,7 @@ foreach(['sha256'=>str_repeat('c',64),'offset'=>41,'size'=>41]as$key=>$value){
     $bad=$control;$bad['checkpoints']['files'][$key]=$value;$calls=[];advance($bad);
     check($calls[0]==='segment_state','Mismatched or invalid cached '.$key.' requires discovery');
 }
+
+$control=['id'=>str_repeat('d',32),'created'=>microtime(true),'direction'=>'pull','selection'=>['media'=>'all','transport'=>'stream'],'peer'=>['url'=>'https://remote.fixture'],'exports'=>['files'=>['media'=>'all']]];
+$calls=[];$r=advance($control);check($calls===['bundle']&&$r['continue']===true,'Large source packaging completes without starting a download in the same request');
+$control=$options['_csm_control'];$calls=[];advance($control);check($calls===['download'],'The next request downloads the saved bundle instead of rebuilding it');

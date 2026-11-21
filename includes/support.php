@@ -1,5 +1,6 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__ . '/timing.php';
 
 final class CSM_Cancelled_Error extends RuntimeException {}
 final class CSM_Yield extends RuntimeException {}
@@ -71,8 +72,8 @@ final class CSM_Support {
         self::$source_deadline = hrtime(true) / 1e9 + self::$source_seconds;
     }
 
-    public static function check_source_budget(): void {
-        self::check_cancel();
+    public static function check_source_budget(bool $check_cancel = true): void {
+        if ($check_cancel) { self::check_cancel(); }
         if (self::$source_deadline !== null && hrtime(true) / 1e9 >= self::$source_deadline) {
             throw new RuntimeException('Source packaging exceeded the ' . self::$source_seconds . '-second limit. Select fewer components or a smaller media date range.');
         }
@@ -81,17 +82,28 @@ final class CSM_Support {
     public static function end_source_budget(): void { self::$source_deadline = null; }
 
     public static function hash_file(string $path, ?callable $progress = null): string {
+        $timing=hrtime(true);
         $fp=fopen($path,'rb'); if (!$fp) { throw new RuntimeException('Cannot read checksum file: '.basename($path)); }
         $seconds=max(1,min(15,(int)apply_filters('csm_hash_seconds',15))); $deadline=hrtime(true)/1e9+$seconds; $hash=hash_init('sha256'); $read=0;
         try {
             while (!feof($fp)) {
-                self::check_cancel(); self::check_source_budget();
+                self::check_source_budget();
                 if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('Checksum exceeded the '.$seconds.'-second limit: '.basename($path)); }
                 $bytes=fread($fp,262144); if ($bytes===false || ($bytes==='' && !feof($fp))) { throw new RuntimeException('Checksum read failed: '.basename($path)); }
                 hash_update($hash,$bytes); $read+=strlen($bytes); if ($progress) { $progress($read); }
             }
             return hash_final($hash);
-        } finally { fclose($fp); }
+        } finally { fclose($fp); CSM_Timing::add('checksum.read',$timing,$read); }
+    }
+
+    /** Hash contexts stay in private checkpoints, never in requests or peer responses. */
+    public static function save_hash(HashContext $hash): string { return base64_encode(serialize($hash)); }
+
+    public static function restore_hash(string $saved): HashContext {
+        if (strlen($saved)>2048 || ($raw=base64_decode($saved,true))===false) { throw new RuntimeException('Invalid checksum checkpoint.'); }
+        $hash=unserialize($raw,['allowed_classes'=>[HashContext::class]]);
+        if (!$hash instanceof HashContext) { throw new RuntimeException('Invalid checksum checkpoint.'); }
+        return $hash;
     }
 
     public static function verify_file(string $path, string $expected, ?array &$receipt): bool {

@@ -1,5 +1,22 @@
 # Changes
 
+## 0.1.33 — 2026-11-21
+
+- Batch full-job persistence during private component preparation and journaled directory replacements. Persist the immutable recovery plan once before mutation, and batch already-installed component counters instead of writing a cursor for every file. Keep individual media install checkpoints, directory journals, checksums and rollback.
+- Coalesce progress and repeated cURL callback cancellation-marker reads to 50 ms while checking forced updates immediately, responses before acknowledgement, and source deadlines on every progress update. Remove a duplicate cancellation check in checksum loops without reducing their check frequency.
+- Add per-request performance samples to private diagnostics: local apply phases, PHP checks, checksum bytes, checkpoint persistence, progress updates/writes/polls, logging, HTTP calls and live-stream receive callbacks. Include explicitly process-wide CPU deltas and pre-handler elapsed time when available, with explicit overlap and retention limits. Keep transfer behavior and polling cadence unchanged.
+- Stream selected file frames while reading source files, decode directly into private destination staging, and retain only the current replay window. Eliminate the complete file snapshot and decompressed intermediate archive for negotiated streaming transfers.
+- Resume at verified frame boundaries after timeouts, lost replies and interrupted producers. Persist incremental SHA-256 contexts privately so large files do not reread their prefixes. Keep per-file and manifest checks, staged-file validation, final installed-file verification, exclusions and rollback.
+- Reuse still-valid on-disk verification receipts when directly staged components are prepared for installation. Keep fresh checks after copies and final installation.
+- Avoid recompressing incompressible file frames while preserving gzip framing, checksums and compression for text.
+- Stage imported plugin and theme files directly into their private replacement trees; retain unchanged files, exclusions, complete backups and rollback.
+- Skip background checksum comparisons for components absent from the destination.
+- Download large pull snapshots in byte/time windows with durable offsets. A time window that receives data continues normally; stalls, broken connections and cancellation retain their failure handling. Separate large downloads from source packaging requests, and retain full-snapshot verification before staging.
+
+- Remove the connection-code button outline, align its spacing and invert its colors on hover while preserving keyboard focus.
+
+Validation: 75 isolated checks passed, including core authorization/session fixtures. Real HTTP tests covered more than 1 GiB of bounded downloads, interruptions, stalls, truncation and cancellation. Disposable WordPress tests passed apply, two backup restores, corruption-triggered rollback and hard-exit recovery. Matched local pulls took 101.95 and 103.58 seconds versus a 153.26-second baseline. A subsequent staging pull verified 20,473 files and 54 tables in 153.54 seconds including preparation and cleanup, versus 202.33 seconds before persistence/progress optimization. Site database rows changed between hosted runs; timings are observations, not a bandwidth guarantee. PHP 8.1/default PHP and JavaScript syntax, archive integrity and packaged runtime equality passed.
+
 ## 0.1.32 — 2026-11-20
 
 - Replace component inclusion, matching visibility and hash checkboxes with accessible toggles; show matching plugins and themes by default.

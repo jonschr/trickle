@@ -15,8 +15,8 @@ PHP_FIXTURES = """
 activation-missing activation-redirect ajax-diagnostics change-backups
 commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
 deferred-cleanup diagnostic-report directory-replacement force-retransfer
-framed-package installed-verification loader-maintenance loader-refresh
-performance progress-activity recent-records replacement-copy replacement-progress runtime-lock
+framed-package live-access live-stream installed-verification loader-maintenance loader-refresh
+performance performance-timing progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
 setup-hash-reuse site-names source-budget source-symlinks symlink-inventory
 timeline-estimates transfer-checkpoints transfer-fast-path transfer-settings
 ui-presets update-access verification-progress

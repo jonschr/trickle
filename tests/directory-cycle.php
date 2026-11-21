@@ -3,7 +3,7 @@
  * wp --path=/.../trickle-directory-qa-<suffix>.localhost/public eval-file tests/directory-cycle.php
  */
 $requested=$args[0] ?? 'run';
-if (!preg_match('#/Cove/Sites/trickle-directory-qa-[^/]+\.localhost/public/$#', ABSPATH) || get_option('_csm_control') || ($requested!=='recover' && get_option('_csm_active_job')) || get_option('_csm_backup_restore') || get_option('_csm_backups')) { throw new RuntimeException('Requires an idle disposable trickle-directory-qa-* site without backups.'); }
+if (!preg_match('#/Cove/Sites/trickle-(?:directory-qa-[^/]+|perf-dest-20261121)\.localhost/public/$#', ABSPATH) || get_option('_csm_control') || ($requested!=='recover' && get_option('_csm_active_job')) || get_option('_csm_backup_restore') || get_option('_csm_backups')) { throw new RuntimeException('Requires an idle disposable directory QA or local performance destination without backups.'); }
 $root=WP_PLUGIN_DIR.'/directory-fixture';$theme=WP_CONTENT_DIR.'/themes/directory-fixture';$single=WP_PLUGIN_DIR.'/directory-single.php';$media=wp_upload_dir()['basedir'].'/directory-fixture.txt';
 if($requested!=='recover' && (file_exists($root)||file_exists($theme)||file_exists($single)||file_exists($media)))throw new RuntimeException('Fixture already exists');
 function dir_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
@@ -23,7 +23,21 @@ try{
   $inode=fileinode($root);$themeInode=fileinode($theme);
   $r=CSM_Plugin::prepare(['plugins'=>['directory-fixture','directory-single.php'],'themes'=>['directory-fixture'],'tables'=>[],'media'=>'all','sync_active_plugins'=>false]);$id=$r['id'];$job=CSM_Jobs::get($id);$stage=CSM_Support::private_dir().'/'.$id;wp_mkdir_p($stage);
   $incoming=['plugins/directory-fixture/fixture.php'=>"<?php\n/* Plugin Name: Directory fixture */\n",'plugins/directory-fixture/same.txt'=>'same','plugins/directory-fixture/new.php'=>str_repeat("<?php /* fixture */ ?>\n",65536),'plugins/directory-single.php'=>"<?php\n/* Plugin Name: Directory single */\n// replaced\n",'themes/directory-fixture/style.css'=>"/* Theme Name: Directory fixture */\n",'themes/directory-fixture/index.php'=>'new theme','uploads/directory-fixture.txt'=>'new media'];
+  if(in_array($mode,['success','crash'],true)){
+   $raw=fopen('php://temp','w+b');$hash='';$count=0;
+   fwrite($raw,CSM_Support::json(['type'=>'header','version'=>2,'kind'=>'files','started'=>time(),'theme_parents'=>[]]));
+   foreach($incoming as$relative=>$bytes){
+    $same=str_ends_with($relative,'same.txt');$record=$same?['type'=>'file-same','path'=>$relative,'sha256'=>hash('sha256',$bytes)]:['type'=>'file','path'=>$relative,'size'=>strlen($bytes),'mtime'=>1700000000,'mode'=>0644];
+    $line=CSM_Support::json($record);$hash=CSM_Package::chain($hash,$line);fwrite($raw,$line);
+    if(!$same){fwrite($raw,$bytes);$line=CSM_Support::json(['type'=>'file-end','sha256'=>hash('sha256',$bytes)]);$hash=CSM_Package::chain($hash,$line);fwrite($raw,$line);}$count++;
+   }
+   fwrite($raw,CSM_Support::json(['type'=>'end','files'=>$count,'sha256'=>$hash]));rewind($raw);
+   $loops=0;do{$done=CSM_Files::stage_step($raw,$job);if(++$loops>1000)throw new RuntimeException('Staging did not finish');}while(!$done);fclose($raw);
+   $direct=$job['files'][0]['stage'];$directInode=fileinode($direct);
+   dir_check(str_contains($direct,'/components/plugins/directory-fixture/'),'Real bounded import stages plugin files directly into the replacement tree');
+  }else{
   foreach($incoming as$relative=>$bytes){$p=$stage.'/'.count($job['files']);file_put_contents($p,$bytes);$file=['path'=>$relative,'stage'=>$p,'size'=>strlen($bytes),'mtime'=>1700000000,'mode'=>0644,'sha256'=>hash('sha256',$bytes)];if(str_ends_with($relative,'same.txt'))$file['unchanged']=true;$job['files'][]=$file;}
+  }
   $job['received']['files']=true;CSM_Jobs::save($job);
   if($mode==='crash'){add_action('csm_checkpoint',static function($id,$phase){if($phase==='apply'){echo "INTENTIONAL HARD EXIT after component swaps\n";exit(77);}},10,2);}
   if($mode==='corrupt'){$tamper=static function($jobId,$phase)use($root){if($phase==='apply')file_put_contents($root.'/same.txt','corrupted unchanged file');};add_action('csm_checkpoint',$tamper,10,2);}
@@ -33,6 +47,7 @@ try{
    clearstatcache();dir_check($failure===''&&$r['status']==='applied'&&$r['verification']['verified'],'Real bounded apply finishes with installed verification');
    dir_check(fileinode($root)!==$inode&&fileinode($theme)!==$themeInode&&!file_exists($root.'/obsolete.php')&&!file_exists($root.'/obsolete-empty')&&!file_exists($theme.'/obsolete.php'),'Plugins and themes replace whole directories');
    dir_check(file_get_contents($root.'/same.txt')==='same'&&file_get_contents($root.'/.env')==='private'&&str_contains(file_get_contents($single),'replaced')&&file_get_contents($media)==='new media','Unchanged files, exclusions, single-file plugins and media survive the full apply path');
+   dir_check(fileinode($root.'/fixture.php')===$directInode,'Full apply installs the imported inode without another copy');
    $listing=CSM_Backups::listing()['backups'][0];dir_check($listing['plugins']===['directory-fixture','directory-single.php']&&$listing['themes']===['directory-fixture']&&$listing['media'],'Saved backup listing records complete changed components and media');
    foreach([1,2]as$round){dir_put($root.'/later.php','later');$r=dir_complete(static fn()=>CSM_Backups::restore($id));dir_check(!file_exists($root.'/later.php')&&!file_exists($root.'/new.php')&&file_get_contents($root.'/obsolete.php')==='old plugin'&&file_get_contents($theme.'/index.php')==='old theme'&&file_get_contents($media)==='old media','Independent saved backup restore '.$round.' restores full components and media');}
   }else{
