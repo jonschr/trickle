@@ -82,6 +82,13 @@
         <header><h2 id="csm-add-site-title">Add a site</h2><button type="button" class="button-link" id="csm-close-connection" aria-label="Close connection form"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></header>
         <label for="csm-remote-name">Name (optional)</label><input type="text" id="csm-remote-name" placeholder="Staging or Production" autocomplete="off">
         <label for="csm-remote-code">Connection code</label><textarea id="csm-remote-code" rows="3" autocomplete="off" spellcheck="false" aria-describedby="csm-connect-status" autofocus></textarea>
+        <details id="csm-site-protection"><summary>Site protection (HTTP Basic Auth)</summary>
+            <p class="csm-connection-help" id="csm-auth-help">Use the hosting provider’s site-protection credentials.</p>
+            <label for="csm-auth-username">Username</label><input type="text" id="csm-auth-username" autocomplete="off" spellcheck="false" aria-describedby="csm-auth-help">
+            <label for="csm-auth-password">Password</label><input type="password" id="csm-auth-password" autocomplete="new-password" aria-describedby="csm-auth-help">
+            <label id="csm-auth-remove-label" hidden><input type="checkbox" id="csm-auth-remove"> Remove saved site-protection credentials</label>
+        </details>
+        <button type="button" class="button button-primary" id="csm-connect-site">Connect</button>
         <p id="csm-connect-status" class="csm-inline-status" role="status" aria-live="polite">Paste a code to connect.</p><p class="csm-connection-help">Copy from the remote site’s Trickle page. Check its URL first.</p>
     </dialog>
     <dialog id="csm-transfer-dialog" class="csm-transfer-dialog" aria-labelledby="csm-action-title">

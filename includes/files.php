@@ -281,7 +281,7 @@ final class CSM_Files {
         $cursor += ['pending'=>array_reverse($roots), 'active'=>null];
         while ($cursor['pending'] || $cursor['active']) {
             if (CSM_Support::due()) { return; }
-            CSM_Support::check_cancel(); CSM_Support::check_source_budget();
+            CSM_Support::check_source_budget();
             if ($cursor['active']) {
                 $active = &$cursor['active'];
                 if ($active['index'] >= count($active['names'])) { $cursor['active'] = null; continue; }

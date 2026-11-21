@@ -15,8 +15,8 @@ PHP_FIXTURES = """
 activation-missing activation-redirect ajax-diagnostics change-backups
 commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
 deferred-cleanup diagnostic-report directory-replacement force-retransfer
-framed-package live-access live-stream installed-verification loader-maintenance loader-refresh
-performance performance-timing progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
+framed-package http-auth http-auth-connections live-access live-stream installed-verification loader-maintenance loader-refresh
+performance performance-timing prepare-policy private-storage progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
 setup-hash-reuse site-names source-budget source-symlinks symlink-inventory
 timeline-estimates transfer-checkpoints transfer-fast-path transfer-settings
 ui-presets update-access verification-progress
@@ -31,6 +31,9 @@ def main():
     commands += [["php", "tests/" + name + ".php"] for name in PHP_FIXTURES]
     commands.append(["php", "-d", "opcache.enable_cli=1", "-d", "opcache.enable_file_override=1",
                      "-d", "opcache.file_update_protection=0", "tests/directory-replacement.php", "opcache"])
+    commands.append(["php", "-d", "disable_functions=disk_free_space,set_time_limit", "tests/change-backups.php"])
+    commands.append(["php", "-d", "disable_functions=disk_free_space,set_time_limit", "tests/host-functions.php"])
+    commands.append(["php", "-d", "disable_functions=disk_free_space,set_time_limit", "tests/source-budget.php"])
     if args.wordpress_core:
         core = args.wordpress_core.resolve()
         if not (core / "wp-includes/pluggable.php").is_file():

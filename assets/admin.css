@@ -415,3 +415,10 @@
     .csm-list-tools > select { max-width:100%; }
     .csm-list-tools .csm-summary { width:100%; margin-left:0; }
 }
+
+.csm #csm-site-protection { margin: var(--csm-space-4) 0; }
+.csm #csm-site-protection summary { cursor: pointer; }
+.csm #csm-auth-remove-label { display: flex; align-items: center; gap: var(--csm-space-2); }
+.csm #csm-auth-remove-label[hidden] { display: none; }
+
+.csm #csm-auth-remove { width:auto; min-height:0; margin:0; flex-shrink:0; }

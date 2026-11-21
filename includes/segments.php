@@ -43,7 +43,7 @@ final class CSM_Segments {
             ignore_user_abort(true);
             CSM_Support::begin_source_budget();
             $previous_limit = (int)ini_get('max_execution_time');
-            @set_time_limit(50);
+            if (function_exists('set_time_limit')) { @set_time_limit(50); }
             try {
                 $selection = CSM_Files::selection($selection); CSM_Database::validate($selection['tables'] ?? []);
                 $built = CSM_Package::build($path, $kind, $selection);
@@ -55,7 +55,7 @@ final class CSM_Segments {
                 throw $error;
             } finally {
                 CSM_Support::end_source_budget();
-                @set_time_limit($previous_limit);
+                if (function_exists('set_time_limit')) { @set_time_limit($previous_limit); }
             }
         } finally { flock($lock, LOCK_UN); fclose($lock); }
     }

@@ -1,7 +1,7 @@
 <?php
-// wp --path=<idle Trickle Main Dev> --skip-plugins --skip-themes eval-file <this file>
+// wp --path=<idle Main Dev or dual-benchmark receiver> --skip-plugins --skip-themes eval-file <this file>
 require_once WP_PLUGIN_DIR . '/trickle/trickle.php';
-if (realpath(ABSPATH) !== realpath(getenv('HOME').'/Cove/Sites/trickle-main-dev.localhost/public') || get_option('_csm_control') || get_option('_csm_active_job') || get_option('_csm_backup_restore')) { throw new RuntimeException('Idle Trickle Main Dev required.'); }
+if (!in_array(realpath(ABSPATH),array_map('realpath',[getenv('HOME').'/Cove/Sites/trickle-main-dev.localhost/public',getenv('HOME').'/Cove/Sites/trickle-dual-dest-20261121.localhost/public']),true) || get_option('_csm_control') || get_option('_csm_active_job') || get_option('_csm_backup_restore')) { throw new RuntimeException('Idle Main Dev or disposable dual-benchmark receiver required.'); }
 global $wpdb;
 $tables = array_map(fn($n)=>$wpdb->prefix.'csm_engine_fixture_'.$n, ['innodb','memory','myisam']);
 foreach ($tables as $table) if (CSM_Database::table_exists($table)) throw new RuntimeException('Fixture already exists.');

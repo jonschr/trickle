@@ -327,7 +327,17 @@ final class CSM_Database {
         $prefix=$state['header']['prefix']; $pairs=self::replacement_pairs($state['header'],self::identity(),$job['selection']);
         if (fseek($fp,$state['offset'])!==0) { throw new RuntimeException('Cannot resume table import.'); }
         CSM_Support::step(8, $continuing); $transaction=false;
-        $checkpoint=static function() use (&$job,&$state,&$transaction,$fp):void {
+        $pending=[]; $pending_bytes=0; $insert='';
+        $packet=(int)self::rows('SELECT @@max_allowed_packet AS packet')[0]['packet'];
+        $batch_limit=max(1,min(262144,$packet-1024));
+        $flush=static function() use (&$pending,&$pending_bytes,&$insert):void {
+            if (!$pending) { return; }
+            CSM_Timing::measure('database.insert',static fn()=>CSM_Support::query($insert.implode(',',$pending)));
+            $pending=[]; $pending_bytes=0;
+        };
+        $checkpoint=static function() use (&$job,&$state,&$transaction,$fp,$flush,&$insert):void {
+            // Rows and their cursor commit together, including a partial final batch.
+            $flush(); $insert='';
             $state['offset']=ftell($fp); $job['imports']['database']=$state; $job['rows']=$state['rows']; if ($transaction) { CSM_Jobs::save_transactional($job); CSM_Support::query('COMMIT'); wp_cache_delete('_csm_job_'.$job['id'],'options'); $transaction=false; } else { CSM_Jobs::save($job); }
         };
         try {
@@ -363,7 +373,11 @@ final class CSM_Database {
                         if ($prefix!==$wpdb->prefix && in_array($state['columns'][$i],['meta_key','option_name'],true) && str_starts_with($decoded,$prefix)) { $decoded=$wpdb->prefix.substr($decoded,strlen($prefix)); }
                         $values[]="X'".bin2hex($decoded)."'";
                     }
-                    CSM_Support::query('INSERT INTO '.CSM_Support::ident($state['current']).' ('.implode(',',array_map([CSM_Support::class,'ident'],$state['columns'])).') VALUES ('.implode(',',$values).')');
+                    if ($insert==='') { $insert='INSERT INTO '.CSM_Support::ident($state['current']).' ('.implode(',',array_map([CSM_Support::class,'ident'],$state['columns'])).') VALUES '; }
+                    $row='('.implode(',',$values).')';
+                    if ($pending && strlen($insert)+$pending_bytes+strlen($row)+1>$batch_limit) { $flush(); }
+                    $pending[]=$row; $pending_bytes+=strlen($row)+1;
+                    if (count($pending)>=250 || strlen($insert)+$pending_bytes>=$batch_limit) { $flush(); }
                     $state['rows']++;
                     CSM_Progress::update(['phase'=>'Staging table','component'=>end($state['seen']),'count'=>$state['rows'],'total'=>null,'unit'=>'rows']);
                     if ($state['rows']%250===0) { $checkpoint(); }

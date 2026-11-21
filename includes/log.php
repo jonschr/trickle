@@ -62,7 +62,7 @@ final class CSM_Log {
             if (!is_array($value)) { return $value; }
             $result = [];
             foreach ($value as $key=>$item) {
-                if (is_string($key) && preg_match('/key|password|secret|token|signature|nonce|cookie|authorization|pairing/i', $key)) { continue; }
+                if (is_string($key) && preg_match('/key|password|secret|token|signature|nonce|cookie|authorization|pairing|http_auth/i', $key)) { continue; }
                 $result[$key] = $clean($item);
             }
             return $result;

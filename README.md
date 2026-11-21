@@ -20,6 +20,7 @@ Treat connection codes like passwords. Selected items replace their destination 
 - Interrupted transfers retain checkpoints for resuming. Failed replacements attempt rollback; three destination backups are retained for manual restoration.
 - Private component preparation and completed-component counters checkpoint in batches. Live replacements retain their durable journals; the complete recovery plan is persisted and checked before replacement begins. Replaying an unacknowledged batch is safe.
 - Database imports use private staging tables before replacement. InnoDB, MyISAM, and MEMORY source tables are supported. Nontransactional source tables require read locks and `LOCK TABLES` permission; writes may wait during export. Related foreign-key tables must be selected together.
+- Staged database inserts batch up to 250 rows and 256 KiB, reduced to fit the server packet allowance. Buffered rows and their cursor commit in the same transaction; individual larger rows keep the existing single-row path.
 - Ordinary destination web requests pause during replacement and verification. Trickle control and recovery requests remain available.
 - Installed-file verification checks changed media and rebuilt components. It verifies migration integrity, not application behavior.
 
@@ -55,4 +56,8 @@ Progress retains current counters and the existing dashboard cadence while coale
 
 Run `python3 tests/run-offline.py` for isolated checks. `tests/live-stream-cycle.py` exercises real interrupted push/pull streams only on its named disposable Cove peers; `tests/download-windows.py` exercises the snapshot compatibility transport over temporary local HTTP. Optional core API checks use `--wordpress-core /path/to/wordpress` without loading a site or its database. Integration scripts require their named disposable sites and are not part of this runner.
 
+`tests/database-batches.php` exercises SQL failure, hard-exit recovery, small packet allowances and binary/null row preservation on the named disposable dual-benchmark receiver. `tests/scoped-manifest.php` checks attachment-query avoidance and unchanged dashboard fields on its matching source. Both require explicitly prepared fixtures.
+
 Run `phpcs` with WordPress Coding Standards installed to audit first-party PHP using `.phpcs.xml.dist`. Existing standards findings are not suppressed. Shared design tokens are defined at the beginning of `assets/admin.css`.
+
+Sites behind hosting-provider HTTP Basic Auth can enter the site-protection username and password under **Add a site → Site protection**. Saved credentials stay on the controlling site and are sent only to that connection’s URL; redirects are not followed. **Update connection** preserves saved credentials when both fields are blank, or removes them with the explicit removal checkbox.

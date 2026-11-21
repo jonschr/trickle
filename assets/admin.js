@@ -1051,6 +1051,9 @@
         const peer=update?connectionState.connections.find(site=>site.id===connectionState.selected):null;
         $('add-site-title').textContent=update?'Update connection':'Add a site';
         $('remote-name').value=peer?.name || '';$('remote-code').value='';
+        $('auth-username').value='';$('auth-password').value='';$('auth-remove').checked=false;
+        $('auth-remove-label').hidden=!peer?.has_http_auth;$('site-protection').open=!!peer?.has_http_auth;
+        $('auth-help').textContent=peer?.has_http_auth?'Site-protection credentials are saved. Leave both fields blank to keep them.':'Use the hosting provider’s site-protection credentials.';
         $('connect-status').textContent='Paste a code to connect.';$('connect-status').dataset.tone='';
         $('connection-dialog').showModal();$('remote-code').focus();
     }
@@ -1119,7 +1122,7 @@
     $('close-connection').addEventListener('click',()=>$('connection-dialog').close());
     $('connection-dialog').addEventListener('cancel',()=>{clearTimeout(connectTimer);$('remote-code').value='';});
     $('connection-dialog').addEventListener('close',()=>{
-        clearTimeout(connectTimer);$('remote-code').value='';
+        clearTimeout(connectTimer);$('remote-code').value='';$('auth-username').value='';$('auth-password').value='';
         if(connectionTrigger?.isConnected && connectionTrigger.getClientRects().length)connectionTrigger.focus();else if(connectionState.selected)$('site-menu-toggle').focus();
     });
     function connectFromCode() {
@@ -1136,7 +1139,10 @@
         run(async()=>{
             $('connect-status').textContent='Connecting…';
             try{
-                const result=await api('connect',{pairing:code,name:$('remote-name').value});
+                const data={pairing:code,name:$('remote-name').value};
+                if($('auth-remove').checked)data.http_auth={};
+                else if($('auth-username').value || $('auth-password').value)data.http_auth={username:$('auth-username').value,password:$('auth-password').value};
+                const result=await api('connect',data);
                 $('remote-code').value='';$('remote-name').value='';
                 renderConnections(result.state);clearInventory();startInventoryLoad();
                 $('connection-dialog').close();feedback('');
@@ -1149,8 +1155,10 @@
     $('remote-code').addEventListener('input',()=>{
         clearTimeout(connectTimer);$('connect-status').dataset.tone='';
         $('connect-status').textContent=$('remote-code').value.trim()?'Checking code…':'Paste a code to connect.';
-        connectTimer=setTimeout(connectFromCode,600);
+        if(!$('site-protection').open)connectTimer=setTimeout(connectFromCode,600);
     });
+    $('site-protection').addEventListener('toggle',()=>{if($('site-protection').open)clearTimeout(connectTimer);});
+    $('connect-site').addEventListener('click',()=>{clearTimeout(connectTimer);connectFromCode();});
     $('check-remote-update').addEventListener('click', () => run(async () => {
         remoteUpdate = await api('remote_update_info', {site:$('remote-site').value}); renderVersionStatus();
     }));

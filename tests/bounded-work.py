@@ -56,7 +56,7 @@ try:
  until('preflight',{'kind':'database'})
  interrupted=None
  for _ in range(10):
-  interrupted=op('transfer',{'kind':'database'},False,"$n=0;add_filter('query',static function($sql)use(&$n){if(str_starts_with($sql,'INSERT INTO `_csm_')&&++$n===321){echo wp_json_encode(['interrupted'=>true]);exit;}return $sql;});")
+  interrupted=op('transfer',{'kind':'database'},False,"$n=0;add_filter('query',static function($sql)use(&$n){if(str_starts_with($sql,'INSERT INTO `_csm_')&&++$n===1){echo wp_json_encode(['interrupted'=>true]);exit;}return $sql;});")
   if interrupted.get('interrupted'):break
  check(interrupted.get('interrupted'),'Worker interrupted partway through an uncommitted database import batch')
  done,records=until('transfer',{'kind':'database'})

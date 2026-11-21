@@ -105,10 +105,10 @@ final class CSM_Plugin {
         if (PHP_INT_SIZE < 8) { throw new RuntimeException('64-bit PHP is required.'); }
     }
 
-    public static function manifest(bool $refresh = false): array {
+    public static function manifest(bool $refresh = false, bool $media = true): array {
         global $wpdb;
         self::supported();
-        $inventory = CSM_Files::inventory($refresh);
+        $inventory = CSM_Files::inventory($refresh, $media);
         try { $estimates=CSM_Estimates::read(true); }
         catch (Throwable $error) { $estimates=null; CSM_Log::write('error','Size estimate unavailable',['error'=>$error->getMessage()]); }
         return array_merge($inventory, CSM_Database::identity(), CSM_Updates::capabilities(), ['file_modifications' => wp_is_file_mod_allowed('trickle'), 'active_plugins' => CSM_Activation::current(), 'installed_plugins' => array_keys(get_plugins()), 'trickle_plugin' => plugin_basename(CSM_FILE), 'can_receive' => !empty(CSM_Access::settings()['push']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write'])), 'bounded_work'=>2, 'live_files'=>1, 'segments' => 1, 'resumable_stream' => 1, 'component_compare' => 1, 'file_policy' => 1, 'canonical_url' => (string)get_option('siteurl'), 'instance_fingerprint' => CSM_Controller::fingerprint(), 'media_manifest'=>1, 'media_compare' => 1, 'media_browsing' => 1, 'media_dates' => 1, 'replacement_rules' => 1, 'protocol' => 1, 'plugin_version' => CSM_VERSION, 'estimates'=>$estimates, 'name' => get_bloginfo('name'), 'icon' => get_site_icon_url(64), 'prefix' => $wpdb->prefix,
@@ -130,7 +130,7 @@ final class CSM_Plugin {
                 CSM_Progress::start($work_id,'Comparing file checksums',$data['progress_run'] ?? null);
             }
             if (!empty($data['id']) && preg_match('/^[a-f0-9]{32}$/D',$data['id'])) { CSM_Support::work($data['id'],!in_array($action,['cancel','rollback','discard','bundle_discard','status','progress'],true)); }
-            if (in_array($action,['component_hashes','media_hashes','file_policy','export','receive'],true)) { CSM_Support::begin_source_budget(); @set_time_limit(50); }
+            if (in_array($action,['component_hashes','media_hashes','file_policy','export','receive'],true)) { CSM_Support::begin_source_budget(); if (function_exists('set_time_limit')) { @set_time_limit(50); } }
             // Native upgrades may leave the previous MU loader until an administrator visits Trickle.
             if (!self::loader_ready() && wp_is_file_mod_allowed('trickle')) {
                 try { self::install_loader(); }
@@ -148,7 +148,11 @@ final class CSM_Plugin {
             if ($action === 'backups') { self::respond(CSM_Backups::listing()); }
             if ($action === 'restore_backup') { CSM_Support::lock(); CSM_Progress::start($data['id'] ?? '', 'Restoring saved backup', $data['progress_run'] ?? null); self::respond(CSM_Backups::restore($data['id'] ?? '')); }
             if ($action === 'estimates') { self::respond(CSM_Estimates::read(true)); }
-            if ($action === 'manifest') { self::respond(self::manifest(!empty($data['refresh']))); }
+            if ($action === 'manifest') {
+                $manifest=self::manifest(!empty($data['refresh']), !isset($data['selection']));
+                if (isset($data['selection'])) { $manifest['git_folders']=CSM_Files::git_folders($data['selection'],!empty($data['source'])); }
+                self::respond($manifest);
+            }
             if ($action === 'media') { self::respond(CSM_Files::media((int)($data['page'] ?? 1), $data['ids'] ?? [])); }
             if ($action==='live_state') { self::respond(CSM_Live_Stream::state(CSM_Jobs::get($data['id'] ?? ''))); }
             if ($action==='live_receive') {
@@ -479,7 +483,7 @@ final class CSM_Plugin {
             $backup_bytes=CSM_Directories::backup_bytes($state['paths'],$job['selection'],$state['backup_work']);
             if ($backup_bytes===null) { $job['preview_work']=$state; CSM_Jobs::save($job); return null; }
             $state['backup']=$backup_bytes;
-            $free=disk_free_space(CSM_Support::private_dir());
+            $free=(function_exists('disk_free_space') ? disk_free_space(CSM_Support::private_dir()) : false);
             if ($free!==false && $free<$state['backup']+16777216) { throw new RuntimeException('Insufficient private storage for the destination rollback backup.'); }
             ksort($state['signature'],SORT_STRING);
             usort($state['items'],static fn($a,$b)=>(['delete'=>0,'replace'=>1,'add'=>2][$a['action']]<=>['delete'=>0,'replace'=>1,'add'=>2][$b['action']])?:strcmp($a['path'],$b['path']));
@@ -508,7 +512,7 @@ final class CSM_Plugin {
         foreach ($job['files'] as $file) { self::check_compatibility($job,$file); $compat_checked++; }
         if ($compat_checked) { CSM_Progress::update(['phase'=>'Checking PHP compatibility','component'=>'','count'=>$compat_checked,'total'=>count($job['files']),'unit'=>'files','bytes'=>0]); }
         $backup_work=null; $backup=CSM_Directories::backup_bytes($plan['paths'],$job['selection'],$backup_work,false);
-        $free = disk_free_space(CSM_Support::private_dir());
+        $free = (function_exists('disk_free_space') ? disk_free_space(CSM_Support::private_dir()) : false);
         if ($free !== false && $free < $backup + 16 * 1024 * 1024) { throw new RuntimeException('Insufficient private storage for the destination rollback backup.'); }
         usort($items, static fn($a, $b) => (['delete' => 0, 'replace' => 1, 'add' => 2][$a['action']] <=> ['delete' => 0, 'replace' => 1, 'add' => 2][$b['action']]) ?: strcmp($a['path'], $b['path']));
         ksort($signature, SORT_STRING);

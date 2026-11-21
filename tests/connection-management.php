@@ -19,7 +19,7 @@ require __DIR__.'/../includes/controller.php';
 $operate=new ReflectionMethod(CSM_Controller::class,'operate');
 $call=static fn($op,$data)=>$operate->invoke(null,$op,$data);
 $check=static function($ok,$message){if(!$ok)throw new LogicException($message);};
-$a=['url'=>'https://a.test','key'=>'fixture-private-a','name'=>'A','icon'=>'','instance_fingerprint'=>''];
+$a=['url'=>'https://a.test','http_auth'=>['username'=>'fixture-private-user','password'=>'fixture-private-password'],'key'=>'fixture-private-a','name'=>'A','icon'=>'','instance_fingerprint'=>''];
 $b=['url'=>'https://b.test','key'=>'fixture-private-b','name'=>'B','icon'=>'','instance_fingerprint'=>''];
 $aid=CSM_Controller::site_id($a['url']);$bid=CSM_Controller::site_id($b['url']);$a['id']=$aid;$b['id']=$bid;
 $options['_csm_peers']=[$aid=>$a,$bid=>$b];$options['_csm_peer']=$a;

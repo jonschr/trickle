@@ -82,7 +82,7 @@ final class CSM_Controller {
         if (!$session && !isset($peers[$id])) { $id = count($peers) === 1 ? array_key_first($peers) : ''; }
         $active = get_option('_csm_active_job');
         $recovering = $active && in_array(get_option('_csm_job_' . $active, [])['status'] ?? '', ['applying', 'backup_copy', 'restoring'], true);
-        return ['recovery_error'=>$active?get_option('_csm_recovery_blocked_'.$active,''):'', 'destination_recovery' => $recovering ? $active : null, 'connections' => array_values(array_map(static fn($peer) => ['name' => html_entity_decode($peer['name'] ?? $peer['url'], ENT_QUOTES | ENT_HTML5, 'UTF-8')] + array_intersect_key($peer, array_flip(['id', 'url', 'name', 'icon'])), $peers)),
+        return ['recovery_error'=>$active?get_option('_csm_recovery_blocked_'.$active,''):'', 'destination_recovery' => $recovering ? $active : null, 'connections' => array_values(array_map(static fn($peer) => ['name' => html_entity_decode($peer['name'] ?? $peer['url'], ENT_QUOTES | ENT_HTML5, 'UTF-8'), 'has_http_auth' => !empty($peer['http_auth'])] + array_intersect_key($peer, array_flip(['id', 'url', 'name', 'icon'])), $peers)),
             'selected' => $id, 'recents' => array_values(array_map(static fn($recent) => ['remote_name' => html_entity_decode($recent['remote_name'] ?? $recent['remote_url'] ?? '', ENT_QUOTES | ENT_HTML5, 'UTF-8')] + $recent, array_filter(get_option('_csm_recents', []), static fn($recent) => !self::is_self($recent['remote_url'] ?? '')))), 'session' => $session];
     }
 
@@ -136,8 +136,8 @@ final class CSM_Controller {
         update_option('_csm_recents', array_slice($recent, 0, 20, true), false);
     }
 
-    private static function review(array $peer, bool $pull, array $selection, array $confirmed = []): array {
-        $remote = CSM_Transport::request($peer, 'file_policy', ['selection' => $selection, 'source' => $pull]);
+    private static function review(array $peer, bool $pull, array $selection, array $confirmed = [], ?array $remote = null): array {
+        $remote ??= CSM_Transport::request($peer, 'file_policy', ['selection' => $selection, 'source' => $pull]);
         $local = CSM_Files::git_folders($selection, !$pull);
         $folders = $pull ? array_values(array_unique(array_merge($local, $remote['git_folders']))) : $remote['git_folders'];
         foreach ($confirmed as $folder) { if (!is_string($folder) || !in_array($folder, $folders, true)) { throw new RuntimeException('Git confirmation no longer matches the selected folders. Review the transfer again.'); } }
@@ -420,10 +420,12 @@ final class CSM_Controller {
         $direction = $data['direction'] ?? '';
         if (!in_array($direction, ['pull', 'push'], true)) { throw new RuntimeException('Choose push or pull.'); }
         self::assert_remote($peer);
-        $remote = CSM_Transport::request($peer, 'manifest');
+        $selection = CSM_Activation::selection(CSM_Files::media_selection(CSM_Database::replacement_selection($data['selection'] ?? [])));
+        // Never replay an old approval from recent settings or trust client-provided exclusions.
+        unset($selection['git_overrides'], $selection['skip_paths'], $selection['protect_source_git']);
+        $remote = CSM_Transport::request($peer, 'manifest', ['selection'=>$selection, 'source'=>$direction==='pull']);
         self::assert_remote($peer, $remote); CSM_Updates::assert_version($remote['plugin_version'] ?? null); CSM_Updates::assert_build($remote);
         if (($remote['bounded_work'] ?? 0)!==2) { throw new RuntimeException('Install this Trickle build on both sites before transferring.'); }
-        $selection = CSM_Activation::selection(CSM_Files::media_selection(CSM_Database::replacement_selection($data['selection'] ?? [])));
         unset($selection['comparison_only']);
         $selection += ['tables'=>[], 'plugins'=>[], 'themes'=>[]];
         // Saved comparison selections now use the all-media scope; the wire format stays compatible.
@@ -431,12 +433,11 @@ final class CSM_Controller {
         $selection['transport'] = $selection['transport'] ?? 'stream';
         if (!in_array($selection['transport'], ['stream','chunks'], true)) { throw new RuntimeException('Choose streaming or chunked transport.'); }
         if ($selection['transport'] === 'stream' && empty($remote['resumable_stream'])) { throw new RuntimeException('Update Trickle on both sites before using resumable streaming.'); }
-        // Never replay an old approval from recent settings or trust client-provided exclusions.
-        unset($selection['git_overrides'], $selection['skip_paths'], $selection['protect_source_git']);
         if (CSM_Plugin::kinds($selection) !== ['database']) {
             if (empty($remote['file_policy']) || empty($remote['component_compare'])) { throw new RuntimeException('Update Trickle on both sites before transferring files with mandatory exclusions and Git protection.'); }
             $selection['file_policy'] = 1;
-            $selection = array_merge($selection, self::review($peer, $direction === 'pull', $selection, $data['git_confirmed'] ?? []));
+            // The authenticated manifest already contains the same fresh folder-policy scan.
+            $selection = array_merge($selection, self::review($peer, $direction === 'pull', $selection, $data['git_confirmed'] ?? [], isset($remote['git_folders']) ? $remote : null));
             unset($selection['git_folders']);
         }
         if (CSM_Files::compare_media($selection) && empty($remote['media_manifest'])) { throw new RuntimeException('Install this Trickle build on both sites before comparing media.'); }
@@ -671,10 +672,14 @@ final class CSM_Controller {
         }
         if ($action === 'connect') {
             $peer = CSM_Plugin::parse_pairing($data['pairing'] ?? '');
+            $id = self::site_id($peer['url']); $peers = self::peers();
+            $auth = array_key_exists('http_auth', $data) ? $data['http_auth'] : ($peers[$id]['http_auth'] ?? []);
+            if (!is_array($auth)) { throw new RuntimeException('Invalid HTTP Basic Auth settings.'); }
+            CSM_Transport::http_auth($auth);
+            if ($auth) { $peer['http_auth'] = array_intersect_key($auth, array_flip(['username', 'password'])); }
             self::assert_remote($peer);
             $remote = CSM_Transport::request($peer, 'manifest');
             self::assert_remote($peer, $remote);
-            $id = self::site_id($peer['url']); $peers = self::peers();
             $name = sanitize_text_field($data['name'] ?? '');
             $peer += ['id' => $id, 'name' => $name ?: ($peers[$id]['name'] ?? (($remote['name'] ?? '') ?: $peer['url'])), 'icon' => esc_url_raw($remote['icon'] ?? '', ['http', 'https']), 'instance_fingerprint' => $remote['instance_fingerprint'] ?? ''];
             $peers[$id] = $peer; update_option('_csm_peers', $peers, false);

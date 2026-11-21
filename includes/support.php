@@ -175,11 +175,13 @@ final class CSM_Support {
     public static function private_dir(): string {
         $base = rtrim(sys_get_temp_dir(), '/\\');
         $path = $base . '/trickle-' . substr(hash_hmac('sha256', ABSPATH, wp_salt('auth')), 0, 24);
+        clearstatcache(true, $path);
         if (!is_dir($path) && !mkdir($path, 0700, true)) {
             throw new RuntimeException('Cannot create private staging storage.');
         }
         if (is_link($path) || !is_writable($path)) { throw new RuntimeException('Unsafe staging directory.'); }
-        chmod($path, 0700);
+        // Hash and cancellation loops revisit this directory; do not rewrite its metadata each time.
+        if ((fileperms($path) & 07777) !== 0700 && !chmod($path, 0700)) { throw new RuntimeException('Cannot secure staging directory.'); }
         if (self::public_path($path)) { throw new RuntimeException('Staging storage must be outside the public web directory.'); }
         return $path;
     }
@@ -237,7 +239,7 @@ final class CSM_Support {
     }
 
     public static function long_request(): void {
-        @set_time_limit(50);
+        if (function_exists('set_time_limit')) { @set_time_limit(50); }
         global $wpdb;
         if (isset($wpdb) && method_exists($wpdb,'db_server_info')) {
             $previous=$wpdb->suppress_errors(true);

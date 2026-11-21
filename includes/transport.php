@@ -85,12 +85,23 @@ final class CSM_Transport {
         return json_decode($body, true, 64, JSON_THROW_ON_ERROR);
     }
 
-    public static function health(string $url, string $probe = '', string $transfer_id = ''): array {
+    public static function http_auth(array $auth): array {
+        if (!$auth) { return []; }
+        $user = $auth['username'] ?? null; $password = $auth['password'] ?? null;
+        if (!is_string($user) || !is_string($password) || $user === '' || $password === '' || strlen($user) > 255 || strlen($password) > 4096 || str_contains($user, ':') || preg_match('/[\x00-\x1f\x7f]/', $user . $password)) {
+            throw new RuntimeException('Enter a valid HTTP Basic Auth username and password.');
+        }
+        CSM_Log::secret($password); CSM_Log::secret(base64_encode($user . ':' . $password));
+        return [CURLOPT_HTTPAUTH => CURLAUTH_BASIC, CURLOPT_USERNAME => $user, CURLOPT_PASSWORD => $password];
+    }
+
+    public static function health(string $url, string $probe = '', string $transfer_id = '', array $http_auth = []): array {
         $url = add_query_arg('trickle_health', bin2hex(random_bytes(8)), self::url($url));
         $ch = curl_init($url); $ca = self::ca_bundle($url);
         $options = [CURLOPT_NOBODY => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
             CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 15, CURLOPT_SSL_VERIFYPEER => true, CURLOPT_SSL_VERIFYHOST => 2,
             CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS, CURLOPT_HTTPHEADER => ['Cache-Control: no-cache', 'User-Agent: ' . (string)apply_filters('csm_user_agent', 'Trickle/' . CSM_VERSION . ' (+https://github.com/jonschr/trickle)')]];
+        $options += self::http_auth($http_auth);
         if ($ca) { $options[CURLOPT_CAINFO] = $ca; }
         if ($probe !== '') { $options[CURLOPT_HTTPHEADER][] = 'X-Trickle-Health: ' . $probe; }
         curl_setopt_array($ch, $options); $ok = curl_exec($ch); $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
@@ -115,7 +126,8 @@ final class CSM_Transport {
         CSM_Log::secret($peer['key']);
         $url = add_query_arg('trickle', $action, self::url($peer['url']));
         $cooldown = '_csm_cooldown_' . substr(hash('sha256', wp_parse_url($peer['url'], PHP_URL_HOST)), 0, 20);
-        $remaining = (int)get_option($cooldown, 0) - time();
+        $operation_cooldown = $cooldown . '_' . $action;
+        $remaining = max((int)get_option($cooldown, 0), (int)get_option($operation_cooldown, 0)) - time();
         if ($remaining > 0) { $e = new CSM_Network_Error('Remote server requested a pause. Retry in ' . $remaining . ' seconds.'); $e->retry_after = $remaining; throw $e; }
         $ch = curl_init($url); $response = ''; $status = 0; $bytes = 0; $retry_after = 0;
         $download_offset = $download && !is_callable($download) ? ftell($download) : 0;
@@ -141,6 +153,7 @@ final class CSM_Transport {
                 return strlen($chunk);
             },
         ];
+        $options += self::http_auth($peer['http_auth'] ?? []);
         $options[CURLOPT_NOPROGRESS] = false;
         $cancel_checked=0.0; $cancellable=!in_array($action,['cancel','bundle_discard','rollback','status','progress'],true);
         $options[CURLOPT_XFERINFOFUNCTION] = static function () use ($cancellable,&$cancel_checked) {
@@ -212,13 +225,13 @@ final class CSM_Transport {
         $parsed = json_decode($response, true);
         if ($status !== 200 || !is_array($parsed) || empty($parsed['ok'])) {
             CSM_Log::write('error', 'Remote request rejected', $context + ['error' => $parsed['error'] ?? 'Unexpected or non-JSON response; response body omitted.']);
-            $message = $parsed['error'] ?? ('Endpoint returned HTTP ' . $status . '. Check firewall rules, redirects and upload/time limits.');
+            $message = $status === 401 ? 'The remote site requires HTTP Basic Auth. Check its site-protection username and password in Update connection.' : ($parsed['error'] ?? ('Endpoint returned HTTP ' . $status . '. Check firewall rules, redirects and upload/time limits.'));
             // Older sources returned an unclassified lock error while a disconnected build kept running.
             $busy = $status !== 429 && (!empty($parsed['busy']) || ($action === 'bundle' && in_array($message, ['Another transfer is running on this site.', 'Source stream is still being built. Retry preparation shortly.'], true)));
             if ($busy || !empty($parsed['retryable']) || in_array($status, [429,502,503,504], true)) {
                 $e = $busy ? new CSM_Busy_Error($message) : new CSM_Network_Error($message);
                 $e->retry_after = max($e->retry_after, $retry_after, (int)($parsed['retry_after'] ?? 0), $status === 429 ? 30 : 0);
-                if ($retry_after > 0 || (!$busy && $e->retry_after > 0)) { update_option($cooldown, time() + $e->retry_after, false); }
+                if ($retry_after > 0 || (!$busy && $e->retry_after > 0)) { update_option($status === 429 ? $cooldown : $operation_cooldown, time() + $e->retry_after, false); }
                 throw $e;
             }
             throw new RuntimeException($message);
