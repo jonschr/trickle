@@ -18,4 +18,14 @@ try {
  do {$args=[$source,$target,time(),0644,&$state,$callback];$result=$method->invokeArgs(null,$args);}while(!$result);
  clearstatcache(true,$target);$check(file_get_contents($target)===$payload && (fileperms($target)&0777)===0644 && !file_exists($state['temp']),'Completed file is renamed into place with its intended permissions and exact bytes');
  $check(count($recorded)===1,'Initial temp location is journalled once before the first copy block');
+ $failed=null;$streams=count(get_resources('stream'));$caught=false;
+ try{CSM_Plugin::install_file_step($source,$dir.'/never-published',time(),0644,$failed,static function(){throw new RuntimeException('Lost checkpoint acknowledgement');});}
+ catch(RuntimeException $e){$caught=$e->getMessage()==='Lost checkpoint acknowledgement';}
+ clearstatcache(true,$failed['temp']);
+ $check($caught&&count(get_resources('stream'))===$streams&&!file_exists($dir.'/never-published')&&(fileperms($failed['temp'])&0777)===0,'Checkpoint failure closes the held descriptor and leaves unpublished data sealed');
+ $missing=null;$caught=false;
+ try{CSM_Plugin::install_file_step($dir.'/missing-source',$dir.'/missing-target',time(),0644,$missing);}
+ catch(RuntimeException $e){$caught=str_contains($e->getMessage(),'Copy source is missing');}
+ $check($caught&&count(get_resources('stream'))===$streams&&!file_exists($dir.'/missing-target'),'Source failure cannot leak an opened replacement descriptor or publish a file');
+
 } finally {foreach(glob($dir.'/{*,.*}',GLOB_BRACE) as $file){if(is_file($file)){chmod($file,0600);unlink($file);}}rmdir($dir);}

@@ -806,7 +806,7 @@ final class CSM_Plugin {
         delete_option('_csm_recovery_attempts_'.$id); delete_option('_csm_recovery_blocked_'.$id);
     }
 
-    public static function copy_step(string $source, string $target, ?array &$state, bool $sealed = false): bool {
+    public static function copy_step(string $source, string $target, ?array &$state, bool $sealed = false, $target_handle = null): bool {
         $timing=hrtime(true); $copied=0;
         clearstatcache(true,$source); $stat=@stat($source);
         if (!$stat || !is_file($source)) { throw new RuntimeException('Copy source is missing: '.basename($source)); }
@@ -814,16 +814,16 @@ final class CSM_Plugin {
         $state ??= ['offset'=>0,'stamp'=>$stamp];
         if ($stamp!==$state['stamp']) { throw new RuntimeException('File changed during copy: '.basename($source)); }
         if ($state['offset']>0 && (!is_file($target) || filesize($target)<$state['offset'])) { throw new RuntimeException('Copy checkpoint is missing or truncated.'); }
-        if ($sealed && is_file($target)) { chmod($target,0600); }
-        $in=fopen($source,'rb'); $out=fopen($target,'c+b');
-        if ($sealed && is_file($target)) { chmod($target,0000); }
+        if ($sealed && !is_resource($target_handle) && is_file($target)) { chmod($target,0600); }
+        $in=fopen($source,'rb'); $out=$target_handle ?? fopen($target,'c+b');
+        if ($sealed && !is_resource($target_handle) && is_file($target)) { chmod($target,0000); }
         if (!$in || !$out || !ftruncate($out,$state['offset']) || fseek($in,$state['offset'])!==0 || fseek($out,$state['offset'])!==0) { throw new RuntimeException('Cannot resume file copy.'); }
         try {
             while ($state['offset']<$stat['size']) {
                 CSM_Support::check_cancel();
-                $bytes=fread($in,min(262144,$stat['size']-$state['offset']));
-                if ($bytes===false || $bytes==='') { throw new RuntimeException('File copy was truncated.'); }
-                CSM_Support::write($out,$bytes); $state['offset']+=strlen($bytes); $copied+=strlen($bytes);
+                $bytes=stream_copy_to_stream($in,$out,min(262144,$stat['size']-$state['offset']));
+                if ($bytes===false || $bytes===0) { throw new RuntimeException('File copy was truncated.'); }
+                $state['offset']+=$bytes; $copied+=$bytes;
                 if (CSM_Support::due()) { break; }
             }
             fflush($out); return $state['offset']===$stat['size'];
@@ -832,19 +832,28 @@ final class CSM_Plugin {
 
     public static function install_file_step(string $source,string $target,int $mtime,int $mode,?array &$state,?callable $checkpoint = null): bool {
         if (!is_dir(dirname($target)) && !wp_mkdir_p(dirname($target))) { throw new RuntimeException('Cannot create destination directory.'); }
-        if (!$state) {
-            $temp=tempnam(dirname($target),'.csm-');
-            if (!$temp) { throw new RuntimeException('Cannot create replacement file.'); }
-            chmod($temp,0000); $state=['temp'=>$temp,'copy'=>null];
-            if ($checkpoint) { $checkpoint($state); }
-        }
-        if (!is_file($state['temp'])) { $state=null; return self::install_file_step($source,$target,$mtime,$mode,$state,$checkpoint); }
-        if (!self::copy_step($source,$state['temp'],$state['copy'],true)) { return false; }
-        touch($state['temp'],$mtime);
-        if (!rename($state['temp'],$target)) { throw new RuntimeException('Could not replace destination file.'); }
-        if (!chmod($target,$mode)) { throw new RuntimeException('Could not set destination file permissions.'); }
-        if (function_exists('opcache_invalidate')) { opcache_invalidate($target,true); }
-        return true;
+        $setup=hrtime(true); $handle=null;
+        try {
+            if (!$state) {
+                $temp=tempnam(dirname($target),'.csm-');
+                if (!$temp) { throw new RuntimeException('Cannot create replacement file.'); }
+                // Keep the descriptor open so copying need not unseal and reseal the new file.
+                $handle=fopen($temp,'c+b');
+                if (!$handle || !chmod($temp,0000)) { if (is_resource($handle)) { fclose($handle); } @unlink($temp); throw new RuntimeException('Cannot seal replacement file.'); }
+                $state=['temp'=>$temp,'copy'=>null];
+                if ($checkpoint) { $checkpoint($state); }
+            }
+            if (!is_file($state['temp'])) { $state=null; return self::install_file_step($source,$target,$mtime,$mode,$state,$checkpoint); }
+            CSM_Timing::add('install.setup',$setup);
+            if (!self::copy_step($source,$state['temp'],$state['copy'],true,$handle)) { return false; }
+            $publish=hrtime(true);
+            touch($state['temp'],$mtime);
+            if (!rename($state['temp'],$target)) { throw new RuntimeException('Could not replace destination file.'); }
+            if (!chmod($target,$mode)) { throw new RuntimeException('Could not set destination file permissions.'); }
+            if (function_exists('opcache_invalidate')) { opcache_invalidate($target,true); }
+            CSM_Timing::add('install.publish',$publish);
+            return true;
+        } finally { if (is_resource($handle)) { fclose($handle); } }
     }
 
     public static function recovery_operations(array $job): array {

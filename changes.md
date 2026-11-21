@@ -1,5 +1,11 @@
 # Changes
 
+## Unreleased
+- Keep newly created replacement-file descriptors open while their files are sealed, avoiding an unseal/reseal permission cycle during copying. Preserve bounded copy/resume, durable checkpoints, installed verification and rollback; use native stream copying with the existing 256 KiB work boundaries.
+- Separate filesystem timing counters for actual cross-device rename probes, atomic cursor/journal publications and install setup/publication.
+
+Validation: nine verified medium Flywheel pushes, three per build, with native backup restoration between runs. On the 205.77 MB selected-file fixture plus database, median receiver apply fell from 18.34s to 16.15s; CLI start-to-finish medians were 54.79s and 51.36s, with overlapping ranges. Native copying alone showed no repeatable apply improvement. All 820 selected files and nine content tables passed independent checks each run. 83 isolated checks and the disposable local small/full fixtures passed; targeted sealed-copy and timing tests also passed on PHP 8.1. The optimized full 1 GB push has not been timed yet.
+
 ## 0.1.35 — 2026-11-21
 - Decode staged database values as byte strings before inserting them. Prevent MySQL numeric columns from interpreting hex literals as integers, preserving IDs, zeroes, signed and unsigned limits, decimals, binary data and NULL in both bounded and legacy imports.
 - Recognize authenticated migration requests by the configured endpoint URL, including hosts that keep WordPress core outside the public front controller. Retain signature verification and exclude login, admin, REST and unrelated routes from migration isolation.

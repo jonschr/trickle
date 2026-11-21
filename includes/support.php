@@ -58,10 +58,13 @@ final class CSM_Support {
     }
 
     public static function atomic_bytes(string $path,string $raw,int $mode = 0600): void {
-        $tmp = $path . '.' . bin2hex(random_bytes(6));
-        if (file_put_contents($tmp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
-        if (!chmod($tmp, $mode)) { @unlink($tmp); throw new RuntimeException('Could not set transfer checkpoint permissions.'); }
-        if (!rename($tmp, $path)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
+        $timing=hrtime(true);
+        try {
+            $tmp = $path . '.' . bin2hex(random_bytes(6));
+            if (file_put_contents($tmp, $raw, LOCK_EX) !== strlen($raw)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
+            if (!chmod($tmp, $mode)) { @unlink($tmp); throw new RuntimeException('Could not set transfer checkpoint permissions.'); }
+            if (!rename($tmp, $path)) { @unlink($tmp); throw new RuntimeException('Could not save transfer checkpoint.'); }
+        } finally { CSM_Timing::add(str_ends_with($path,'-apply.json')?'filesystem.atomic_cursor':(str_ends_with($path,'/swap.json')?'filesystem.atomic_journal':'filesystem.atomic_other'),$timing,strlen($raw)); }
     }
 
     private static ?float $source_deadline = null;

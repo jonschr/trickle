@@ -76,14 +76,17 @@ final class CSM_Directories {
         $parent = dirname($target);
         if (!is_dir($parent) || !is_writable($parent)) { throw new RuntimeException('Component parent directory is not writable.'); }
         // Bind mounts can report the same device while still rejecting directory renames.
+        $timing=hrtime(true);
         $probe=$dir.'/probe-'.bin2hex(random_bytes(8)); $outside=$parent.'/.trickle-probe-'.bin2hex(random_bytes(8));
         if (!mkdir($probe,0700)) { throw new RuntimeException('Cannot test component replacement storage.'); }
         if (@rename($probe,$outside)) {
             if (!rmdir($outside)) { throw new RuntimeException('Cannot clean up empty component storage probe.'); }
+            CSM_Timing::add('filesystem.rename_supported',$timing);
             return false;
         }
         $error=error_get_last(); rmdir($probe);
         if (!str_contains(strtolower($error['message'] ?? ''),'cross-device')) { throw new RuntimeException('Cannot prepare component replacement: '.($error['message'] ?? 'Directory rename failed.')); }
+        CSM_Timing::add('filesystem.rename_cross_device',$timing);
         return true;
     }
 

@@ -24,6 +24,9 @@ try {
     $job=['file_plan'=>['paths'=>['uploads/copied'=>$dir.'/copied'],'new'=>['uploads/copied'=>['sha256'=>hash('sha256',$data)]]],'database'=>[],'selection'=>[]];
     $verify=new ReflectionMethod(CSM_Plugin::class,'verify_installed_step');
     check($verify->invokeArgs(null,[&$job]) && $job['verification']['verified'],'Real final verification records its phase and verifies installed bytes');
+    $cursor=$dir.'/'.$id.'-apply.json';$install=null;
+    check(CSM_Plugin::install_file_step($path,$dir.'/installed',1700000000,0644,$install,static function($state)use($cursor){CSM_Support::atomic_json($cursor,['install'=>$state]);}), 'Timed installation preserves data and publishes normally');
+    CSM_Support::atomic_json($cursor,['install'=>null]);
     CSM_Progress::finish('Checks complete');
     try { CSM_Timing::measure('apply.components',static function(){throw new RuntimeException('original failure');}); }
     catch (RuntimeException $error) { check($error->getMessage()==='original failure','Timers preserve errors and record failed work'); }
@@ -34,7 +37,8 @@ try {
     check($metrics['progress.update']['calls']===20004 && $metrics['progress.write_forced']['calls']===3,'Throttled and forced progress writes counted separately');
     check(($metrics['progress.write']['calls']??0)<100,'Thousands of updates retain bounded progress writes');
     check($metrics['checksum.read']['bytes']===strlen($data) && $metrics['apply.components']['calls']===1,'Read volume and exceptional phases survive diagnostics export');
-    check($metrics['files.copy']['bytes']===strlen($data) && $metrics['apply.verify_installed']['calls']===1,'Real apply timers distinguish file copies and final checksum verification');
+    check($metrics['files.copy']['bytes']===2*strlen($data) && $metrics['apply.verify_installed']['calls']===1,'Real apply timers distinguish file copies and final checksum verification');
+    check($metrics['filesystem.atomic_cursor']['calls']===2 && $metrics['install.setup']['calls']===1 && $metrics['install.publish']['calls']===1,'Filesystem counters distinguish cursor publications from setup and publish metadata');
     check($perf['operations']['commit']['bootstrap_samples']===0,'CLI requests do not misreport process age as WordPress bootstrap');
     check(isset($perf['operations']['commit']['process_cpu_samples']) && !isset($perf['operations']['commit']['cpu_ms']) && str_contains($perf['scope'],'process-wide'),'CPU counters explicitly describe process scope on threaded PHP');
     CSM_Timing::begin($id,'progress'); CSM_Progress::read($id); CSM_Timing::flush();
