@@ -1,5 +1,11 @@
 # Changes
 
+## 0.1.35 — 2026-11-21
+- Decode staged database values as byte strings before inserting them. Prevent MySQL numeric columns from interpreting hex literals as integers, preserving IDs, zeroes, signed and unsigned limits, decimals, binary data and NULL in both bounded and legacy imports.
+- Recognize authenticated migration requests by the configured endpoint URL, including hosts that keep WordPress core outside the public front controller. Retain signature verification and exclude login, admin, REST and unrelated routes from migration isolation.
+
+Validation: 83 isolated checks and nine real cURL checks passed. Real SQL batching, interrupted-import recovery and legacy import preserved numeric limits, decimals, binary bytes and NULL. Flywheel MySQL 8.4.10-google reproduced the old coercion and validated byte decoding. A full native-dashboard push completed in 152s; a separate forced pull verified all 1,552 fixture file hashes and nine normalized content-table hashes. A prior dashboard fetch interruption rolled back; a route-only run exposed the numeric bug before release. Flywheel page-cache flush was needed separately to refresh old HTML; automatic host page-cache purging is not included.
+
 ## 0.1.34 — 2026-11-21
 - Scope temporary 503 retry delays to their affected endpoint, so an unavailable progress poll does not delay successful transfer cleanup. Keep HTTP 429 cooldowns host-wide.
 - Allow hosts that disable PHP disk-space queries or request-time-limit changes. Keep capacity checks where available and retain write-failure handling on all hosts.

@@ -12,7 +12,11 @@ if (in_array($csm_plugin, $csm_active, true) && !$csm_request) {
     $csm_request = (static function () use ($csm_plugin): bool {
         $script = realpath($_SERVER['SCRIPT_FILENAME'] ?? '');
         $post = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
-        if ($post && $script === realpath(ABSPATH . 'index.php') && is_string($_GET['trickle'] ?? null) && $_GET['trickle'] !== 'manifest') {
+        // Managed hosts may keep WordPress core outside their public front controller.
+        $path = parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+        $base_path = rtrim((string)parse_url((string)get_option('siteurl'), PHP_URL_PATH), '/');
+        $endpoint = is_string($path) && str_starts_with($path, '/') && in_array(rtrim($path, '/'), [$base_path, $base_path . '/index.php'], true);
+        if ($post && $endpoint && is_string($_GET['trickle'] ?? null) && $_GET['trickle'] !== 'manifest') {
             $base = WP_PLUGIN_DIR . '/' . dirname($csm_plugin) . '/includes/';
             foreach (['support', 'access', 'transport'] as $part) { require_once $base . $part . '.php'; }
             try { CSM_Transport::signed_credential($_GET['trickle']); return true; }

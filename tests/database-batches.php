@@ -1,8 +1,8 @@
 <?php
-// Real SQL batching and lost-request recovery on the disposable dual-benchmark receiver only.
+// Real SQL batching and lost-request recovery on the named disposable import receivers only.
 require_once WP_PLUGIN_DIR.'/trickle/trickle.php';
 $mode=$args[0]??'run';
-if(realpath(ABSPATH)!==realpath(getenv('HOME').'/Cove/Sites/trickle-dual-dest-20261121.localhost/public')||get_option('_csm_control')||get_option('_csm_backup_restore')||($mode!=='recover'&&get_option('_csm_active_job')))throw new RuntimeException('Idle dual-benchmark receiver required');
+if(!in_array(realpath(ABSPATH),array_map(static fn($site)=>realpath(getenv('HOME').'/Cove/Sites/'.$site.'.localhost/public'),['trickle-dual-dest-20261121','trickle-flywheel-push-check']),true)||get_option('_csm_control')||get_option('_csm_backup_restore')||($mode!=='recover'&&get_option('_csm_active_job')))throw new RuntimeException('Idle disposable import receiver required');
 global $wpdb;
 $table=$wpdb->prefix.'csm_batch_fixture';$base=CSM_Support::private_dir().'/database-batch-fixture';$id=null;$fp=null;$inject=null;$short=null;
 function batch_check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
@@ -12,8 +12,8 @@ try{
   $id=json_decode(file_get_contents($base.'.json'),true)['id'];$job=CSM_Jobs::get($id);
  }else{
   if(CSM_Database::table_exists($table)||is_file($base.'.json'))throw new RuntimeException('Fixture exists');
-  CSM_Support::query('CREATE TABLE '.CSM_Support::ident($table).' (id int PRIMARY KEY,label text,payload longblob,optional_value text NULL) ENGINE=InnoDB');
-  for($i=0;$i<1103;++$i){$value=$i===1102?str_repeat('big',140000):str_repeat("\0\xffbinary-",48);$wpdb->insert($table,['id'=>$i,'label'=>serialize(['url'=>site_url().'/fixture','id'=>$i]),'payload'=>$value,'optional_value'=>$i%2?null:'value']);}
+  CSM_Support::query('CREATE TABLE '.CSM_Support::ident($table).' (id int PRIMARY KEY,signed_value bigint,unsigned_value bigint unsigned,decimal_value decimal(20,5),label text,payload longblob,optional_value text NULL) ENGINE=InnoDB');
+  for($i=0;$i<1103;++$i){$value=$i===1102?str_repeat('big',140000):str_repeat("\0\xffbinary-",48);$wpdb->insert($table,['id'=>$i,'signed_value'=>-123,'unsigned_value'=>'18446744073709551615','decimal_value'=>'1234567890123.45678','label'=>serialize(['url'=>site_url().'/fixture','id'=>$i]),'payload'=>$value,'optional_value'=>$i%2?null:'value']);}
   $selection=['tables'=>[$table],'plugins'=>[],'themes'=>[],'media'=>'none','replace'=>false,'sync_active_plugins'=>false];
   $fp=fopen($base.'.stream','w+b');chmod($base.'.stream',0600);foreach(CSM_Database::stream($selection,true)as$bytes)CSM_Support::write($fp,$bytes);fclose($fp);$fp=null;
   $r=CSM_Plugin::prepare($selection);$id=$r['id'];$job=CSM_Jobs::get($id);CSM_Support::atomic_json($base.'.json',['id'=>$id]);
@@ -32,6 +32,10 @@ try{
  fclose($fp);$fp=null;remove_filter('query',$inject);$inject=null;remove_filter('csm_step_seconds',$short);$short=null;
  batch_check($job['rows']===1103&&batch_digest($table)===batch_digest($job['database'][0]['stage']),'Resume preserves every row, binary value, null and final partial batch without duplicates');
  batch_check($steps>1&&$queries>1&&$large_single,'Bounded continuations respect a small packet allowance and retain oversized single-row compatibility');
+ $selection=$job['selection'];CSM_Plugin::discard(CSM_Jobs::get($id));$id=null;
+ $fp=fopen($base.'.stream','w+b');foreach(CSM_Database::stream($selection)as$bytes)CSM_Support::write($fp,$bytes);rewind($fp);
+ $r=CSM_Plugin::prepare($selection);$id=$r['id'];$job=CSM_Jobs::get($id);CSM_Database::stage($fp,$job);fclose($fp);$fp=null;
+ batch_check(batch_digest($table)===batch_digest($job['database'][0]['stage']),'Legacy and bounded import preserve numeric limits, decimals, binary bytes and NULL exactly');
 }finally{
  if($inject)remove_filter('query',$inject);if($short)remove_filter('csm_step_seconds',$short);if(is_resource($fp))fclose($fp);
  if($id)CSM_Plugin::discard(CSM_Jobs::get($id));CSM_Support::query('DROP TABLE IF EXISTS '.CSM_Support::ident($table));

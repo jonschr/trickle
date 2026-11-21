@@ -303,7 +303,8 @@ final class CSM_Database {
                     if ($prefix !== $wpdb->prefix && in_array($columns[$index], ['meta_key', 'option_name'], true) && str_starts_with($decoded, $prefix)) {
                         $decoded = $wpdb->prefix . substr($decoded, strlen($prefix));
                     }
-                    $values[] = "X'" . bin2hex($decoded) . "'";
+                    // Hex literals become numbers in MySQL numeric columns; UNHEX returns the original bytes.
+                    $values[] = "UNHEX('" . bin2hex($decoded) . "')";
                 }
                 CSM_Support::query('INSERT INTO ' . CSM_Support::ident($current) . ' (' . implode(',', array_map([CSM_Support::class, 'ident'], $columns)) . ') VALUES (' . implode(',', $values) . ')');
                 $rows++;
@@ -371,7 +372,7 @@ final class CSM_Database {
                         $decoded=base64_decode($value,true); if ($decoded===false) { throw new RuntimeException('Invalid row encoding.'); }
                         if (in_array($state['columns'][$i],$state['text_columns'],true)) { $decoded=CSM_Support::replace($decoded,$pairs); }
                         if ($prefix!==$wpdb->prefix && in_array($state['columns'][$i],['meta_key','option_name'],true) && str_starts_with($decoded,$prefix)) { $decoded=$wpdb->prefix.substr($decoded,strlen($prefix)); }
-                        $values[]="X'".bin2hex($decoded)."'";
+                        $values[]="UNHEX('".bin2hex($decoded)."')";
                     }
                     if ($insert==='') { $insert='INSERT INTO '.CSM_Support::ident($state['current']).' ('.implode(',',array_map([CSM_Support::class,'ident'],$state['columns'])).') VALUES '; }
                     $row='('.implode(',',$values).')';
