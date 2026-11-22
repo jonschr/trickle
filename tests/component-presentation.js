@@ -54,3 +54,8 @@ for(const isPull of [false,true]){
  }
 }
 console.log('PASS Plugin and theme columns keep this site first and remote second for push and pull.');
+
+local.plugins[0].metadata_signature=remote.plugins[0].metadata_signature='same-size-and-mtime';
+context.components('plugins');assert.match(controls.plugins.innerHTML,/Size and timestamps match/);
+assert(!controls.plugins.innerHTML.includes('Source hash'));
+console.log('PASS Metadata matches do not require equal version labels or expose content-hash controls.');

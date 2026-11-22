@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+- Compare plugins, themes and media by file size and modification time, including cold inventories. Remove pre-transfer content hashing and rehash preferences.
+- Keep stream checksums, private staging, recovery and installed-file verification. Establish skipped component recovery checksums after receipt.
+
 ## 0.1.36 — 2026-11-21
 - Cache the validated cancellation-marker path within a request while checking marker existence and ownership at every existing cancellation boundary.
 - Reuse confirmed stream receipts; persist upload uncertainty before sending and rediscover receiver state after a lost reply. Use serial HTTP/1.1 uploads and retain numeric upload-phase timings.

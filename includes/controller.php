@@ -305,7 +305,7 @@ final class CSM_Controller {
         if (!$selection) {
             $selection = $control['selection']; $selection['comparison_id']=$id; unset($selection['replacements']);
             if ($kind === 'files' && CSM_Files::compare_media($selection)) {
-                $comparison = CSM_Media::compare($peer, $pull, !empty($selection['media_verify']), $selection);
+                $comparison = CSM_Media::compare($peer, $pull, false, $selection);
                 $selection['media'] = 'compare';
                 $selection['media_delta'] = $comparison['delta']; $control['media_comparison'] = $comparison['stats'];
             }
@@ -431,7 +431,7 @@ final class CSM_Controller {
         unset($selection['git_overrides'], $selection['skip_paths'], $selection['protect_source_git']);
         $remote = CSM_Transport::request($peer, 'manifest', ['selection'=>$selection, 'source'=>$direction==='pull']);
         self::assert_remote($peer, $remote); CSM_Updates::assert_version($remote['plugin_version'] ?? null); CSM_Updates::assert_build($remote);
-        if (($remote['bounded_work'] ?? 0)!==2) { throw new RuntimeException('Install this Trickle build on both sites before transferring.'); }
+        if (($remote['bounded_work'] ?? 0)!==2 || empty($remote['metadata_compare'])) { throw new RuntimeException('Install this Trickle build on both sites before transferring.'); }
         unset($selection['comparison_only']);
         $selection += ['tables'=>[], 'plugins'=>[], 'themes'=>[]];
         // Saved comparison selections now use the all-media scope; the wire format stays compatible.
@@ -447,7 +447,7 @@ final class CSM_Controller {
             unset($selection['git_folders']);
         }
         if (CSM_Files::compare_media($selection) && empty($remote['media_manifest'])) { throw new RuntimeException('Install this Trickle build on both sites before comparing media.'); }
-        if (CSM_Files::compare_media($selection) && empty($remote['media_compare'])) { throw new RuntimeException('Update Trickle on both sites before comparing media checksums.'); }
+        if (CSM_Files::compare_media($selection) && empty($remote['media_compare'])) { throw new RuntimeException('Update Trickle on both sites before comparing media metadata.'); }
         if ($direction === 'push' && !empty($selection['tables']) && array_key_exists('replacements', $selection)) {
             if (($remote['replacement_rules'] ?? 0) !== 1) { throw new RuntimeException('Update Trickle on the destination before transferring a database with explicit replacement rules.'); }
         }
@@ -483,7 +483,7 @@ final class CSM_Controller {
         $offset=max(0,(int)($data['offset'] ?? 0)); $batch=array_slice($ids,$offset,2); $cleared=0;
         foreach ($batch as $id) {
             $progress=CSM_Transport::request($peer,'progress',['id'=>$id],null,null,8);
-            if (($progress['id'] ?? '')!==$id || ($progress['state'] ?? '')!=='complete' || !in_array($progress['phase'] ?? '',['Plugin and theme checksums ready','Media checksums ready'],true)) { continue; }
+            if (($progress['id'] ?? '')!==$id || ($progress['state'] ?? '')!=='complete' || !in_array($progress['phase'] ?? '',['Plugin and theme metadata ready','Media metadata ready','Plugin and theme checksums ready','Media checksums ready'],true)) { continue; }
             // A checksum result is not permission to discard a migration's source snapshot.
             $phases=array_column($progress['events'] ?? [],'phase');
             if (preg_grep('/snapshot|source stream|export|packaging|staging|replacing|restor|backup|apply/i',$phases)) { continue; }
@@ -545,7 +545,7 @@ final class CSM_Controller {
         $export_selection = $control['selection'];
         if ($kind === 'files' && CSM_Files::compare_media($export_selection)) {
             CSM_Progress::start($id, 'Comparing media years, then differing months and files');
-            $comparison = CSM_Media::compare($peer, $pull, !empty($export_selection['media_verify']), $export_selection);
+            $comparison = CSM_Media::compare($peer, $pull, false, $export_selection);
             $export_selection['media'] = 'compare';
             $export_selection['media_delta'] = $comparison['delta'];
             $control['media_comparison'] = $comparison['stats'];
@@ -667,7 +667,7 @@ final class CSM_Controller {
         if ($action === 'transfer_settings') {
             if (get_option('_csm_control')) { throw new RuntimeException('Finish the current transfer before changing transfer preferences.'); }
             if (!in_array($data['transport'] ?? '', ['stream', 'chunks'], true)) { throw new RuntimeException('Choose automatic or chunked transport.'); }
-            $defaults = ['transport' => $data['transport'], 'file_verify' => !empty($data['file_verify'])];
+            $defaults = ['transport' => $data['transport']];
             update_option('_csm_transfer_defaults', $defaults, false);
             return $defaults;
         }

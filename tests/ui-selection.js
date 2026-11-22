@@ -37,8 +37,8 @@ console.log('Route checks passed: current site first, arrow follows push/pull, r
 
 // Matching is never inferred from a version alone.
 $('filter-plugins').value='all';$('search-plugins').value='';$('show-matching-plugins').checked=false;
-source.plugins[0].content_hash='one';target.plugins[0].content_hash='two';c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,false,'Same version but different files remains visible');
-target.plugins[0].content_hash='one';c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,true,'Only a verified version+hash match is hidden');
+source.plugins[0].metadata_signature='one';target.plugins[0].metadata_signature='two';c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,false,'Same version but different files remains visible');
+target.plugins[0].metadata_signature='one';c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,true,'Only a size/timestamp metadata match is hidden');
 $('show-matching-plugins').checked=true;c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,false);
-delete source.plugins[0].content_hash;$('show-matching-plugins').checked=false;c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,false,'Unknown hash remains visible');
+delete source.plugins[0].metadata_signature;$('show-matching-plugins').checked=false;c.filterComponents('plugins');assert.equal(rows.plugins[0].row.hidden,false,'Unknown hash remains visible');
 console.log('PASS Matching visibility requires version and nonempty hash equality.');

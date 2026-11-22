@@ -54,4 +54,14 @@ try{
     check($result['continue']&&!$result['ready']&&$stepStarts===0,'An exhausted shared budget yields without starting an import');
     $fp=fopen('php://temp','w+b');$result=CSM_Segments::receive_stream($saved[$job['id']]??$job,'files',$bundle,$bundle['size'],$fp,0);fclose($fp);
     check($result['ready']&&!$result['continue'],'Next request resumes the saved unpack checkpoint and completes');
+    $live=WP_PLUGIN_DIR.'/demo/data.bin';$original=file_get_contents($live);$mtime=filemtime($live);
+    $same=['type'=>'file-same','path'=>'plugins/demo/data.bin','metadata_only'=>true,'size'=>strlen($original),'mtime'=>$mtime];
+    $header=['type'=>'header','version'=>1,'kind'=>'files','started'=>time()];
+    $end=['type'=>'end','files'=>1,'sha256'=>hash('sha256',CSM_Support::json($same))];
+    $fp=fopen('php://temp','w+b');foreach([$header,$same,$end]as$line)fwrite($fp,CSM_Support::json($line));rewind($fp);
+    $legacy=['id'=>str_repeat('e',32),'selection'=>$selection,'database'=>[]];CSM_Files::stage($fp,$legacy);fclose($fp);
+    check($legacy['files'][0]['sha256']===hash_file('sha256',$live),'Legacy receipt retains the actual skipped-file checksum after the full payload');
+    file_put_contents($live,str_repeat('X',strlen($original)));touch($live,$mtime);$rejected=false;
+    try{CSM_Plugin::changes($legacy);}catch(RuntimeException $e){$rejected=str_contains($e->getMessage(),'unchanged destination');}
+    check($rejected,'Legacy post-receipt mutation cannot silently become a new recovery baseline');
 }finally{CSM_Support::remove_tree($private);CSM_Support::remove_tree($root);}

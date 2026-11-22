@@ -325,14 +325,8 @@ final class CSM_CLI {
      * [--media=<mode>]
      * : none, all, changed, uploaded, selected, or compare (alias for all). Default: none. All skips matching files.
      *
-     * [--rehash-files]
-     * : Recalculate plugin/theme content hashes instead of trusting metadata caches.
-     *
      * [--force-media]
      * : Retransfer matching media files too; requires --media=all.
-     *
-     * [--rehash-media]
-     * : Recalculate media hashes for --media=all instead of reusing cached hashes.
      *
      * [--media-ids=<ids>]
      * : Comma-separated attachment IDs for selected media.
@@ -401,14 +395,8 @@ final class CSM_CLI {
      * [--media=<mode>]
      * : none, all, changed, uploaded, selected, or compare (alias for all). Default: none. All skips matching files.
      *
-     * [--rehash-files]
-     * : Recalculate plugin/theme content hashes instead of trusting metadata caches.
-     *
      * [--force-media]
      * : Retransfer matching media files too; requires --media=all.
-     *
-     * [--rehash-media]
-     * : Recalculate media hashes for --media=all instead of reusing cached hashes.
      *
      * [--media-ids=<ids>]
      * : Comma-separated attachment IDs for selected media.
@@ -472,7 +460,7 @@ final class CSM_CLI {
             if ($automated) { $assoc += CSM_Presets::resolve($assoc['preset'], $inventory); }
             $source = $inventory[$direction === 'push' ? 'local' : 'remote'];
             if (($assoc['media'] ?? '') === 'uploaded' && empty($source['media_dates'])) { throw new RuntimeException('Update Trickle on the source site before transferring by upload date.'); }
-            $selection = ['transport' => $assoc['transport'] ?? 'stream', 'sync_active_plugins' => !isset($assoc['keep-destination-plugins']), 'media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'file_verify' => isset($assoc['rehash-files']), 'media_verify' => isset($assoc['rehash-media']), 'media_force' => isset($assoc['force-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
+            $selection = ['transport' => $assoc['transport'] ?? 'stream', 'sync_active_plugins' => !isset($assoc['keep-destination-plugins']), 'media' => $assoc['media'] ?? (isset($assoc['media-ids']) ? 'selected' : 'none'), 'replace' => !isset($assoc['skip-replace']), 'since' => 0, 'media_ids' => [], 'media_force' => isset($assoc['force-media']), 'media_after' => $assoc['uploaded-after'] ?? '', 'media_before' => $assoc['uploaded-before'] ?? ''];
             if ($selection['media_force'] && !in_array($selection['media'], ['all','compare'], true)) { throw new RuntimeException('--force-media requires --media=all.'); }
             foreach (['plugins', 'themes', 'tables'] as $kind) {
                 $selection[$kind] = ($assoc[$kind] ?? '') === 'all' ? array_column(array_filter($source[$kind], static fn($item) => empty($item['protected']) || (!empty($item['symlinks']) && in_array($kind.'/'.$item['id'], self::csv($assoc['follow-symlinks'] ?? ''),true))), 'id') : self::csv($assoc[$kind] ?? '');

@@ -9,7 +9,7 @@ require __DIR__ . '/../includes/controller.php';
 $operate = new ReflectionMethod(CSM_Controller::class, 'operate');
 $check = static function ($ok) { if (!$ok) throw new RuntimeException('Preference check failed'); };
 $defaults = $operate->invoke(null, 'transfer_settings', ['transport' => 'chunks', 'file_verify' => true]);
-$check($defaults === ['transport' => 'chunks', 'file_verify' => true]);
+$check($defaults === ['transport' => 'chunks']);
 $check(get_option('_csm_transfer_defaults') === $defaults);
 foreach (['invalid', [], null] as $transport) {
     try { $operate->invoke(null, 'transfer_settings', ['transport' => $transport]); throw new LogicException('Accepted invalid transport'); }

@@ -46,6 +46,21 @@ try{
  foreach($job['files']as$file){check(hash_file('sha256',$file['stage'])===$file['sha256'],'Streamed file matches its source checksum');}
  check(!is_file($private.'/segment-'.$job['id'].'-files.source')&&!glob($private.'/*.incoming*'),'Neither end creates a full archive or decompressed intermediate stream');
  check(file_get_contents(WP_PLUGIN_DIR.'/demo/large.bin')===$data,'Streaming never mutates live destination/source files');
+ // Metadata-matching components generate no source or receiver content reads until receipt is complete.
+ $metadataSelection=selection();$inventory=CSM_Components::inventory(['selection'=>$metadataSelection,'source'=>true]);
+ $metadataSelection['component_same']=base64_encode(gzencode(CSM_Support::json(['component_token'=>$inventory['token']])));
+ $matchingJob=newJob();$before=$hashReads;$budgetBefore=$budget;$budget=8;
+ $matchingWindow=window($matchingJob['id'],$metadataSelection,0);deliver($matchingJob,$metadataSelection,$matchingWindow);
+ check($hashReads===$before && count($matchingJob['files'])===3,'Matching files skip source and destination content hashing while transferring metadata');
+ foreach($matchingJob['files'] as &$matchingFile){
+  check(!isset($matchingFile['sha256']) && isset($matchingFile['comparison_stamp']),'Metadata-only skip has no manufactured content checksum');
+  $target=CSM_Files::destination($matchingFile['path'],$matchingJob['selection']);
+  check(CSM_Files::verify_unchanged($target,$matchingFile) && $matchingFile['sha256']===hash_file('sha256',$target),'Post-transfer verification establishes the actual local recovery checksum');
+ }unset($matchingFile);$budget=$budgetBefore;
+ $changedFile=array_values(array_filter($matchingJob['files'],static fn($f)=>$f['size']>0))[0];$target=CSM_Files::destination($changedFile['path'],$matchingJob['selection']);$original=file_get_contents($target);$oldTime=filemtime($target);
+ file_put_contents($target,str_repeat('X',strlen($original)));touch($target,$oldTime);
+ check(!CSM_Files::verify_unchanged($target,$changedFile),'A post-receipt content change is rejected even when size and mtime are preserved');
+ file_put_contents($target,$original);touch($target,$oldTime);
  $oldBudget=$budget;$budget=8;$vector=newJob();$encoded=window($vector['id'],$selection,0);[$h,$end,$expected,$frames]=window_chain($encoded,2);check($h['chain_format']===2&&$frames>10&&$end['chain']===$expected,'New windows commit each frame length, control bit and verified payload digest in their ordered chain');deliver($vector,$selection,$encoded);
  $headLength=36+(unpack('N',substr($encoded,0,4))[1]&0x7fffffff);$h['chain_format']=3;$unsupported=CSM_Package::frame(CSM_Support::json($h),true).substr($encoded,$headLength);$unsupportedJob=newJob();$unsupportedJob['id']=$vector['id'];check(rejects(function()use($unsupportedJob,$selection,$unsupported){$j=$unsupportedJob;deliver($j,$selection,$unsupported);},'Unsupported stream checksum'),'Unknown checksum formats fail before staging data');
  $legacy=newJob();$legacyDir=$private.'/segment-'.$legacy['id'].'-files.source.live';mkdir($legacyDir,0700);$initial=json_decode(file_get_contents($private.'/segment-'.$vector['id'].'-files.source.live/state.json'),true);unset($initial['chain_format']);CSM_Support::atomic_json($legacyDir.'/state.json',$initial);$oldWindow=window($legacy['id'],$selection,0);[$h,$end,$expected,$frames]=window_chain($oldWindow,1);check(!isset($h['chain_format'])&&$end['chain']===$expected,'Older source journals retain their original full-frame checksum format');

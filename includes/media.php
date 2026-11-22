@@ -1,16 +1,10 @@
 <?php
 defined('ABSPATH') || exit;
 
-/** Cached media hashes, compared strictly in year → month → file order. */
+/** Media size/mtime metadata, compared in year → month → file order. */
 final class CSM_Media {
     private static function path(): string {
         return CSM_Support::private_dir() . '/media-hashes-' . substr(hash('sha256', CSM_Files::root('uploads')), 0, 16) . '.json';
-    }
-
-    private static function cached(): array {
-        $raw = @file_get_contents(self::path());
-        $index = $raw === false ? [] : (json_decode($raw, true) ?: []);
-        return isset($index['years'], $index['token']) && is_array($index['years']) && is_string($index['token']) && hash_equals($index['token'], self::digest($index['years'])) ? $index : [];
     }
 
     private static function stamp(array $stat): string {
@@ -23,74 +17,39 @@ final class CSM_Media {
     }
 
     private static function build(bool $verify, array $selection = []): array {
-        $previous = self::cached(); $groups = []; $now = time();
-        $work_id=$selection['comparison_id'] ?? '';
-        $build_path=self::path().'.build-'.(preg_match('/^[a-f0-9]{32}$/D',$work_id)?$work_id:'').($verify?'-verify':''); $build=is_file($build_path)?json_decode(file_get_contents($build_path),true):[]; CSM_Support::step();
-        $stats = ['scanned_files' => 0, 'hashed_files' => 0, 'years_reused' => 0, 'years_rebuilt' => 0, 'months_reused' => 0, 'months_rebuilt' => 0];
-        foreach (CSM_Files::paths(array_intersect_key($selection, array_flip(['skip_paths', 'git_overrides', 'protect_source_git'])) + ['plugins' => [], 'themes' => [], 'media' => 'all']) as [$relative, $path]) {
-            $tail = substr($relative, 8); $parts = explode('/', $tail);
-            $year = count($parts) > 1 ? $parts[0] : ''; $month = count($parts) > 2 ? $parts[1] : '';
-            clearstatcache(true, $path); $stat = lstat($path);
-            if (!$stat || !is_file($path)) { throw new RuntimeException('Cannot inspect media file: ' . $tail); }
-            $groups[$year][$month][$tail] = ['stamp' => self::stamp($stat), 'size' => $stat['size'], 'mtime' => $stat['mtime'], 'ctime' => $stat['ctime']];
+        $groups=[]; $stats=['scanned_files'=>0,'hashed_files'=>0,'years_reused'=>0,'years_rebuilt'=>0,'months_reused'=>0,'months_rebuilt'=>0];
+        CSM_Support::step();
+        foreach (CSM_Files::paths(array_intersect_key($selection,array_flip(['skip_paths','git_overrides','protect_source_git']))+['plugins'=>[],'themes'=>[],'media'=>'all']) as [$relative,$path]) {
+            $tail=substr($relative,8); $parts=explode('/',$tail);
+            $year=count($parts)>1?$parts[0]:''; $month=count($parts)>2?$parts[1]:'';
+            clearstatcache(true,$path); $stat=lstat($path);
+            if (!$stat || !is_file($path)) { throw new RuntimeException('Cannot inspect media file: '.$tail); }
+            $metadata=['size'=>$stat['size'],'mtime'=>$stat['mtime']];
+            $groups[$year][$month][$tail]=['stamp'=>self::stamp($stat),'hash'=>self::digest($metadata)]+$metadata;
             $stats['scanned_files']++;
-            CSM_Progress::update(['phase'=>'Scanning media metadata','component'=>$relative,'count'=>$stats['scanned_files'],'total'=>null,'unit'=>'files']);
+            CSM_Progress::update(['phase'=>'Comparing media metadata','component'=>$relative,'count'=>$stats['scanned_files'],'total'=>null,'unit'=>'files']);
         }
-        ksort($groups, SORT_STRING); $years = [];
-        foreach ($groups as $year => $months) {
-            ksort($months, SORT_STRING); $year_stamps = []; $stable_year = true;
-            foreach ($months as $month => &$files) {
-                ksort($files, SORT_STRING);
-                foreach ($files as $tail => $file) {
-                    $year_stamps[$tail] = $file['stamp'];
-                    if (max($file['mtime'], $file['ctime']) >= $now - 2) { $stable_year = false; }
-                }
+        ksort($groups,SORT_STRING); $years=[];
+        foreach ($groups as $year=>$months) {
+            ksort($months,SORT_STRING); $result=[]; $year_hashes=[];
+            foreach ($months as $month=>$files) {
+                ksort($files,SORT_STRING); $hashes=array_column($files,'hash');
+                // Include names: equal sizes/timestamps at different paths do not match.
+                $hashes=array_combine(array_keys($files),$hashes); $hash=self::digest($hashes);
+                $result[$month]=['hash'=>$hash,'files'=>$files]; $year_hashes[$month]=$hash; $stats['months_rebuilt']++;
             }
-            unset($files);
-            $fingerprint = self::digest($year_stamps); $old = $previous['years'][$year] ?? [];
-            if (!$verify && $stable_year && ($old['fingerprint'] ?? '') === $fingerprint) {
-                $years[$year] = $old; $stats['years_reused']++; continue;
-            }
-            $stats['years_rebuilt']++; $result = []; $year_hashes = [];
-            foreach ($months as $month => $files) {
-                $stamps = array_map(static fn($file) => $file['stamp'], $files);
-                $month_fingerprint = self::digest($stamps); $old_month = $old['months'][$month] ?? [];
-                $stable_month = true;
-                foreach ($files as $file) { if (max($file['mtime'], $file['ctime']) >= $now - 2) { $stable_month = false; break; } }
-                if (!$verify && $stable_month && ($old_month['fingerprint'] ?? '') === $month_fingerprint) {
-                    $result[$month] = $old_month; $year_hashes[$month] = $old_month['hash']; $stats['months_reused']++; continue;
-                }
-                $stats['months_rebuilt']++; $hashes = [];
-                foreach ($files as $tail => &$file) {
-                    $cached = $build[$tail] ?? $old_month['files'][$tail] ?? [];
-                    if ((isset($build[$tail]) || (!$verify && max($file['mtime'], $file['ctime']) < $now - 2)) && ($cached['stamp'] ?? '') === $file['stamp']) {
-                        $file['hash'] = $cached['hash'];
-                    } else {
-                        $path = CSM_Files::root('uploads') . '/' . $tail;
-                        CSM_Progress::update(['phase'=>'Comparing media checksums','component'=>'uploads/'.$tail,'count'=>$stats['hashed_files'],'total'=>null,'unit'=>'files']);
-                        $file['hash'] = CSM_Support::hash_file($path); $stats['hashed_files']++;
-                        clearstatcache(true, $path); $after = lstat($path);
-                        if (!$file['hash'] || !$after || self::stamp($after) !== $file['stamp']) { throw new RuntimeException('Media changed while checksumming: ' . $tail); }
-                    }
-                    $resumed=isset($build[$tail]); $hashes[$tail] = $file['hash']; $build[$tail]=$file;
-                    if (CSM_Support::due() && !$resumed) { CSM_Support::atomic_json($build_path,$build); throw new CSM_Yield('Media checksums checkpointed.'); }
-                }
-                unset($file);
-                $hash = self::digest($hashes);
-                $result[$month] = ['fingerprint' => $month_fingerprint, 'hash' => $hash, 'files' => $files]; $year_hashes[$month] = $hash;
-            }
-            $years[$year] = ['fingerprint' => $fingerprint, 'hash' => self::digest($year_hashes), 'months' => $result];
+            $years[$year]=['hash'=>self::digest($year_hashes),'months'=>$result]; $stats['years_rebuilt']++;
         }
-        $index = ['years' => $years]; $index['token'] = self::digest($years);
-        CSM_Support::atomic_json(self::path(), $index);
-        CSM_Support::atomic_json(CSM_Support::private_dir().'/media-snapshot-'.$index['token'].'.json',$index); @unlink($build_path);
-        return $index + ['stats' => $stats];
+        $index=['comparison'=>'size_mtime','years'=>$years,'token'=>self::digest($years)];
+        CSM_Support::atomic_json(self::path(),$index);
+        CSM_Support::atomic_json(CSM_Support::private_dir().'/media-snapshot-'.$index['token'].'.json',$index);
+        return $index+['stats'=>$stats];
     }
 
     private static function snapshot(string $token): array {
         $snapshot=preg_match('/^[a-f0-9]{64}$/D',$token)?CSM_Support::private_dir().'/media-snapshot-'.$token.'.json':'';
         $index=$snapshot && is_file($snapshot)?json_decode(file_get_contents($snapshot),true):self::cached();
-        if (!preg_match('/^[a-f0-9]{64}$/D', $token) || !is_array($index) || !is_array($index['years'] ?? null) || !hash_equals($index['token'] ?? '', $token) || !hash_equals($token,self::digest($index['years']))) { throw new RuntimeException('Media checksum inventory changed or expired. Retry the file stream to compare again.'); }
+        if (!preg_match('/^[a-f0-9]{64}$/D', $token) || !is_array($index) || !is_array($index['years'] ?? null) || ($index['comparison'] ?? '')!=='size_mtime' || !hash_equals($index['token'] ?? '', $token) || !hash_equals($token,self::digest($index['years']))) { throw new RuntimeException('Media metadata inventory changed or expired. Retry the file stream to compare again.'); }
         return $index;
     }
 
@@ -98,12 +57,12 @@ final class CSM_Media {
         $level = $query['level'] ?? '';
         if ($level === 'years') {
             $id=$query['selection']['comparison_id'] ?? '';
-            if (!is_string($id) || ($id!=='' && !preg_match('/^[a-f0-9]{32}$/D',$id))) { throw new RuntimeException('Invalid media checksum work ID.'); }
+            if (!is_string($id) || ($id!=='' && !preg_match('/^[a-f0-9]{32}$/D',$id))) { throw new RuntimeException('Invalid media metadata work ID.'); }
             $result_path=$id!==''?self::path().'.comparison-'.$id.'.json':'';
-            if ($result_path && is_file($result_path)) { return json_decode(file_get_contents($result_path),true,512,JSON_THROW_ON_ERROR); }
+            if ($result_path && is_file($result_path)) { $saved=json_decode(file_get_contents($result_path),true,512,JSON_THROW_ON_ERROR); if (($saved['comparison'] ?? '')==='size_mtime') { return $saved; } }
             $index = self::build(!empty($query['verify']), $query['selection'] ?? []); $items = [];
             foreach ($index['years'] as $year => $item) { $items[] = ['name' => (string)$year, 'hash' => $item['hash']]; }
-            $result=['token' => $index['token'], 'items' => $items, 'stats' => $index['stats']];
+            $result=['comparison'=>'size_mtime','token' => $index['token'], 'items' => $items, 'stats' => $index['stats']];
             if ($result_path) { CSM_Support::atomic_json($result_path,$result); }
             return $result;
         }
@@ -115,7 +74,7 @@ final class CSM_Media {
             foreach ($years as $year) { foreach ($index['years'][$year]['months'] as $month => $item) { $items[] = ['year' => $year, 'month' => (string)$month, 'hash' => $item['hash'], 'files' => count($item['files'])]; } }
             return ['items' => $items];
         }
-        if ($level !== 'files' || !is_string($query['year'] ?? null) || !is_string($query['month'] ?? null)) { throw new RuntimeException('Invalid media checksum query.'); }
+        if ($level !== 'files' || !is_string($query['year'] ?? null) || !is_string($query['month'] ?? null)) { throw new RuntimeException('Invalid media metadata query.'); }
         $files = $index['years'][$query['year']]['months'][$query['month']]['files'] ?? null;
         $offset = $query['offset'] ?? 0;
         if ($files === null || !is_int($offset) || $offset < 0) { throw new RuntimeException('Unknown media month or invalid page.'); }
@@ -137,13 +96,14 @@ final class CSM_Media {
         if (isset($work['result'])) { return $work['result']; }
         $remote=static function($query) use ($peer,$selection) {
             $result=CSM_Transport::request($peer,'media_hashes',$query+['selection'=>$selection,'progress_run'=>CSM_Progress::run()],null,null,15);
-            if (!empty($result['continue'])) { throw new CSM_Yield('Remote media checksums checkpointed.'); } return $result;
+            if (!empty($result['continue'])) { throw new CSM_Yield('Remote media metadata checkpointed.'); } return $result;
         };
         $local=static fn($query)=>self::inventory($query+['selection'=>$selection]);
         $source=$pull?$remote:$local; $destination=$pull?$local:$remote;
         CSM_Support::step();
         if (!$work) {
-            $src=$source(['level'=>'years','verify'=>$verify]); $dst=$destination(['level'=>'years','verify'=>$verify]);
+            $src=$source(['level'=>'years']); $dst=$destination(['level'=>'years']);
+            if (($src['comparison'] ?? '')!=='size_mtime' || ($dst['comparison'] ?? '')!=='size_mtime') { throw new RuntimeException('Update Trickle on both sites before comparing media metadata.'); }
             $stats=['years_compared'=>0,'years_skipped'=>0,'months_compared'=>0,'months_skipped'=>0,'files_compared'=>0,'files_selected'=>0,'source_hashing'=>$src['stats'],'destination_hashing'=>$dst['stats']];
             $dst_years=array_column($dst['items'],'hash','name'); $different=[];
             foreach ($src['items'] as $year) { $stats['years_compared']++; if (($dst_years[$year['name']] ?? null)===$year['hash']) { $stats['years_skipped']++; } else { $different[]=$year['name']; } }
@@ -161,7 +121,7 @@ final class CSM_Media {
             try {
                 CSM_Transport::request($peer,'media_manifest',$query,null,$fp,15,32*1024*1024); rewind($fp);
                 $raw=gzdecode(stream_get_contents($fp),32*1024*1024); $data=$raw===false?null:json_decode($raw,true,512,JSON_THROW_ON_ERROR);
-                if (!is_array($data) || ($data['token'] ?? '')!==$query['token'] || !is_array($data['files'] ?? null)) { throw new RuntimeException('Invalid media checksum manifest.'); }
+                if (!is_array($data) || ($data['token'] ?? '')!==$query['token'] || !is_array($data['files'] ?? null)) { throw new RuntimeException('Invalid media metadata manifest.'); }
                 return $data['files'];
             } finally { fclose($fp); }
         };
@@ -211,7 +171,7 @@ final class CSM_Media {
             $relative = 'uploads/' . $tail; $path = CSM_Files::destination($relative, $selection + ['media' => 'compare'], !empty($selection['protect_source_git']));
             clearstatcache(true, $path); $stat = @lstat($path);
             if (!$stat || self::stamp($stat) !== $file['stamp']) { throw new RuntimeException('Media changed after comparison: ' . $tail . '. Retry the file stream.'); }
-            yield [$relative, $path, $file['hash']];
+            yield [$relative, $path];
         }
     }
 }

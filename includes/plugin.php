@@ -111,7 +111,7 @@ final class CSM_Plugin {
         $inventory = CSM_Files::inventory($refresh, $media);
         try { $estimates=CSM_Estimates::read(true); }
         catch (Throwable $error) { $estimates=null; CSM_Log::write('error','Size estimate unavailable',['error'=>$error->getMessage()]); }
-        return array_merge($inventory, CSM_Database::identity(), CSM_Updates::capabilities(), ['file_modifications' => wp_is_file_mod_allowed('trickle'), 'active_plugins' => CSM_Activation::current(), 'installed_plugins' => array_keys(get_plugins()), 'trickle_plugin' => plugin_basename(CSM_FILE), 'can_receive' => !empty(CSM_Access::settings()['push']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write'])), 'bounded_work'=>2, 'live_files'=>1, 'segments' => 1, 'resumable_stream' => 1, 'component_compare' => 1, 'file_policy' => 1, 'canonical_url' => (string)get_option('siteurl'), 'instance_fingerprint' => CSM_Controller::fingerprint(), 'media_manifest'=>1, 'media_compare' => 1, 'media_browsing' => 1, 'media_dates' => 1, 'replacement_rules' => 1, 'protocol' => 1, 'plugin_version' => CSM_VERSION, 'estimates'=>$estimates, 'name' => get_bloginfo('name'), 'icon' => get_site_icon_url(64), 'prefix' => $wpdb->prefix,
+        return array_merge($inventory, CSM_Database::identity(), CSM_Updates::capabilities(), ['file_modifications' => wp_is_file_mod_allowed('trickle'), 'active_plugins' => CSM_Activation::current(), 'installed_plugins' => array_keys(get_plugins()), 'trickle_plugin' => plugin_basename(CSM_FILE), 'can_receive' => !empty(CSM_Access::settings()['push']) && (!isset($GLOBALS['_csm_credential']) || !empty($GLOBALS['_csm_credential']['write'])), 'bounded_work'=>2, 'live_files'=>1, 'segments' => 1, 'resumable_stream' => 1, 'component_compare' => 1, 'metadata_compare'=>1, 'file_policy' => 1, 'canonical_url' => (string)get_option('siteurl'), 'instance_fingerprint' => CSM_Controller::fingerprint(), 'media_manifest'=>1, 'media_compare' => 1, 'media_browsing' => 1, 'media_dates' => 1, 'replacement_rules' => 1, 'protocol' => 1, 'plugin_version' => CSM_VERSION, 'estimates'=>$estimates, 'name' => get_bloginfo('name'), 'icon' => get_site_icon_url(64), 'prefix' => $wpdb->prefix,
             'wordpress' => get_bloginfo('version'), 'php' => PHP_VERSION, 'tables' => CSM_Database::inventory(), 'isolation' => self::loader_ready(), 'incoming_writes' => !empty(CSM_Access::settings()['push'])]);
     }
 
@@ -127,7 +127,7 @@ final class CSM_Plugin {
             if (is_string($work_id)) { CSM_Timing::begin($work_id,$action); }
             if (is_string($work_id) && preg_match('/^[a-f0-9]{32}$/D',$work_id) && in_array($action,['component_hashes','media_hashes'],true)) {
                 $data['id']=$work_id; CSM_Segments::lease($work_id); CSM_Support::work($work_id);
-                CSM_Progress::start($work_id,'Comparing file checksums',$data['progress_run'] ?? null);
+                CSM_Progress::start($work_id,'Comparing file metadata',$data['progress_run'] ?? null);
             }
             if (!empty($data['id']) && preg_match('/^[a-f0-9]{32}$/D',$data['id'])) { CSM_Support::work($data['id'],!in_array($action,['cancel','rollback','discard','bundle_discard','status','progress'],true)); }
             if (in_array($action,['component_hashes','media_hashes','file_policy','export','receive'],true)) { CSM_Support::begin_source_budget(); if (function_exists('set_time_limit')) { @set_time_limit(50); } }
@@ -209,9 +209,9 @@ final class CSM_Plugin {
                 while (ob_get_level()) { ob_end_clean(); }
                 nocache_headers(); header('Content-Type: application/octet-stream'); header('Content-Length: ' . strlen($bytes)); echo $bytes; exit;
             }
-            if ($action === 'component_hashes') { $result=CSM_Components::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Plugin and theme checksums ready'); if (!empty($data['selection']['comparison_only'])) { CSM_Segments::release_comparison($work_id); } self::respond($result); }
+            if ($action === 'component_hashes') { $result=CSM_Components::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Plugin and theme metadata ready'); if (!empty($data['selection']['comparison_only'])) { CSM_Segments::release_comparison($work_id); } self::respond($result); }
             if ($action === 'file_policy') { self::respond(['git_folders' => CSM_Files::git_folders($data['selection'] ?? [], !empty($data['source']))]); }
-            if ($action === 'media_hashes') { $result=CSM_Media::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Media checksums ready'); if (!empty($data['selection']['comparison_only'])) { CSM_Segments::release_comparison($work_id); } self::respond($result); }
+            if ($action === 'media_hashes') { $result=CSM_Media::inventory($data); CSM_Progress::update(['component'=>'']); CSM_Progress::finish('Media metadata ready'); if (!empty($data['selection']['comparison_only'])) { CSM_Segments::release_comparison($work_id); } self::respond($result); }
             if ($action === 'progress') { CSM_Segments::assert_progress_owner($data['id'] ?? ''); self::respond(CSM_Progress::read($data['id'] ?? '')); }
             if ($action === 'preview') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::preview_page($job, (int)($data['offset'] ?? 0))); }
             if ($action === 'status') { $job = CSM_Jobs::get($data['id'] ?? ''); CSM_Access::assert_owner($job); self::respond(self::summary($job)); }
@@ -369,7 +369,7 @@ final class CSM_Plugin {
             CSM_Progress::update(['phase' => 'Verifying staged file', 'component' => $file['path'], 'count' => $checked++, 'total' => count($job['files']), 'unit' => 'files', 'bytes' => 0]);
             $target = CSM_Files::destination($file['path'], $job['selection']);
             if (!empty($file['unchanged'])) {
-                if (!is_file($target) || !hash_equals($file['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('An unchanged destination file changed after staging: ' . $file['path'] . '. Discard and prepare again.'); }
+                if (!(isset($file['sha256'])?CSM_Support::verify_file($target,$file['sha256'],$file['verification_receipt']):CSM_Files::verify_unchanged($target,$file))) { throw new RuntimeException('An unchanged destination file changed after staging: ' . $file['path'] . '. Discard and prepare again.'); }
                 $new[$file['path']] = $file; continue;
             }
             if (!is_file($file['stage']) || !hash_equals($file['sha256'], CSM_Support::hash_file($file['stage']))) { throw new RuntimeException('A staged file is missing or changed.'); }
@@ -446,7 +446,7 @@ final class CSM_Plugin {
                     $file=$job['files'][$state['index']]; $target=CSM_Files::destination($file['path'],$job['selection']);
                     $check=!empty($file['unchanged'])?$target:$file['stage'];
                     CSM_Progress::update(['phase'=>'Verifying staged file','component'=>$file['path'],'count'=>$state['index'],'total'=>count($job['files']),'unit'=>'files']);
-                    if (!CSM_Support::verify_file($check,$file['sha256'],$file['verification_receipt'])) { throw new RuntimeException('A staged or unchanged file is missing or changed: '.$file['path']); }
+                    if (!(!empty($file['unchanged']) && !isset($file['sha256'])?CSM_Files::verify_unchanged($check,$file):CSM_Support::verify_file($check,$file['sha256'],$file['verification_receipt']))) { throw new RuntimeException('A staged or unchanged file is missing or changed: '.$file['path']); }
                     self::check_compatibility($job,$file); $job['files'][$state['index']]=$file; $state['new'][$file['path']]=$file;
                     if (!empty($file['unchanged'])) { $state['counts']['unchanged']++; }
                     else { $state['paths'][$file['path']]=$target; }
@@ -1013,7 +1013,7 @@ final class CSM_Plugin {
             try { self::install_loader(); }
             catch (Throwable $e) { $loader_error = $e->getMessage(); CSM_Log::write('error', 'Recovery loader update failed', ['error' => $loader_error]); }
         }
-        $transfer_defaults = get_option('_csm_transfer_defaults', []) + ['transport' => 'stream', 'file_verify' => false];
+        $transfer_defaults = get_option('_csm_transfer_defaults', []) + ['transport' => 'stream'];
         $settings = CSM_Access::settings();
         require __DIR__ . (($_GET['view'] ?? '') === 'backups' ? '/backup-page.php' : '/admin.php');
     }

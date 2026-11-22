@@ -179,7 +179,7 @@ final class CSM_Files {
         foreach (['file_force','plugins_force','themes_force'] as $flag) { if (isset($selection[$flag]) && !is_bool($selection[$flag])) { throw new RuntimeException('Force file retransfer must be true or false.'); } }
         if (isset($selection['media_force']) && !is_bool($selection['media_force'])) { throw new RuntimeException('Force media retransfer must be true or false.'); }
         $selection['media_force'] = in_array($mode, ['all', 'compare'], true) && !empty($selection['media_force']);
-        $selection['media_verify'] = self::compare_media($selection) && !empty($selection['media_verify']);
+        unset($selection['media_verify'], $selection['file_verify']);
         $selection['since'] = max(0, (int)($selection['since'] ?? 0));
         if ($mode === 'changed' && !$selection['since']) { throw new RuntimeException('Choose a starting date or complete an initial media transfer first.'); }
         $selection['media_ids'] = array_values(array_unique(array_map('intval', $selection['media_ids'] ?? [])));
@@ -382,6 +382,32 @@ final class CSM_Files {
         }
     }
 
+    private static function file_stamp(string $path): ?array {
+        clearstatcache(true,$path); $stat=@stat($path);
+        return $stat && is_file($path) ? array_intersect_key($stat,array_flip(['size','mtime','ctime','ino','dev','mode'])) : null;
+    }
+
+    private static function unchanged_record(string $target,array $record): array {
+        $stamp=self::file_stamp($target);
+        if (!is_int($record['size'] ?? null) || $record['size']<0 || !is_int($record['mtime'] ?? null) || !$stamp || $stamp['size']!==$record['size'] || $stamp['mtime']!==$record['mtime']) {
+            throw new RuntimeException('Unchanged destination metadata changed: '.$record['path']);
+        }
+        return ['path'=>$record['path'],'size'=>$record['size'],'mtime'=>$record['mtime'],'unchanged'=>true,'comparison_stamp'=>$stamp];
+    }
+
+    /** After receipt, establish the local recovery baseline for files skipped by size/mtime. */
+    public static function verify_unchanged(string $target,array &$file): bool {
+        if (isset($file['sha256'])) { return CSM_Support::verify_file($target,$file['sha256'],$file['verification_receipt']); }
+        $stamp=self::file_stamp($target);
+        if (!$stamp || $stamp!==($file['comparison_stamp'] ?? null)) { return false; }
+        $hash=CSM_Support::hash_file($target);
+        if ($stamp!==self::file_stamp($target)) { return false; }
+        $file['sha256']=$hash;
+        unset($file['comparison_stamp']);
+        if (max($stamp['mtime'],$stamp['ctime'])<time()-2) { $file['verification_receipt']=['stamp'=>$stamp,'hash'=>$hash]; }
+        return true;
+    }
+
     public static function stream(array $selection, ?array &$component_sizes = null): Generator {
         $selection = self::selection($selection);
         $component_sizes = ['plugins' => 0, 'themes' => 0, 'media' => 0];
@@ -394,7 +420,7 @@ final class CSM_Files {
             [$relative, $path] = $entry;
             if (isset($same[$relative])) {
                 if (!CSM_Components::verify($path, $same[$relative])) { throw new RuntimeException('Source file changed after comparison: ' . $relative . '. Retry preparation.'); }
-                $line = CSM_Support::json(['type' => 'file-same', 'path' => $relative, 'sha256' => $same[$relative]['hash'], 'size' => filesize($path), 'mtime' => filemtime($path)]);
+                $line = CSM_Support::json(['type' => 'file-same', 'path' => $relative, 'metadata_only' => true, 'size' => filesize($path), 'mtime' => filemtime($path)]);
                 hash_update($hash, $line); yield $line; $count++; continue;
             }
             CSM_Progress::update(['phase' => 'Exporting file', 'component' => $relative, 'count' => $count, 'total' => null, 'unit' => 'files', 'bytes' => 0]);
@@ -455,7 +481,7 @@ final class CSM_Files {
                 $cursor['stamp'] = [$stat['size'],$stat['mtime'],$stat['ctime'],$stat['ino']];
                 if (isset($same[$relative])) {
                     if (!CSM_Components::verify($path,$same[$relative])) { throw new RuntimeException('Source file changed after comparison: '.$relative); }
-                    $line = CSM_Support::json(['type'=>'file-same','path'=>$relative,'sha256'=>$same[$relative]['hash'],'size'=>$stat['size'],'mtime'=>$stat['mtime']]);
+                    $line = CSM_Support::json(['type'=>'file-same','path'=>$relative,'metadata_only'=>true,'size'=>$stat['size'],'mtime'=>$stat['mtime']]);
                     $cursor['hash'] = CSM_Package::chain($cursor['hash'],$line); $cursor['index']++; yield $line; continue;
                 }
                 $line = CSM_Support::json(['type'=>'file','path'=>$relative,'size'=>$stat['size'],'mtime'=>$stat['mtime'],'mode'=>($stat['mode']&0111)?0755:0644]);
@@ -527,8 +553,11 @@ final class CSM_Files {
                 $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($record));
                 if ($type==='file-same') {
                     $receipt=null;
-                    if (!is_string($record['sha256'] ?? null) || !CSM_Support::verify_file($target,$record['sha256'],$receipt)) { throw new RuntimeException('Unchanged destination file failed verification: '.$record['path']); }
-                    $job['files'][]=['path'=>$record['path'],'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true,'verification_receipt'=>$receipt];
+                    if (($record['metadata_only'] ?? false)===true) { $job['files'][]=self::unchanged_record($target,$record); }
+                    else {
+                        if (!is_string($record['sha256'] ?? null) || !CSM_Support::verify_file($target,$record['sha256'],$receipt)) { throw new RuntimeException('Unchanged destination file failed verification: '.$record['path']); }
+                        $job['files'][]=['path'=>$record['path'],'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true,'verification_receipt'=>$receipt];
+                    }
                 } else {
                     if (!is_int($record['size'] ?? null) || $record['size']<0) { throw new RuntimeException('Invalid file size.'); }
                     $stage=$dir.'/'.count($job['files']);
@@ -593,14 +622,23 @@ final class CSM_Files {
                 foreach (['plugins', 'themes'] as $kind) {
                     foreach ($job['selection'][$kind] as $component) { if (!self::skipped($kind . '/' . $component, $job['selection']) && empty($components[$kind . '/' . $component])) { throw new RuntimeException('Selected component was omitted from the file stream.'); } }
                 }
+                // Legacy receivers also retain their recovery baseline only after the complete payload arrives.
+                foreach ($files as &$file) {
+                    if (!empty($file['unchanged']) && !isset($file['sha256']) && !self::verify_unchanged(self::destination($file['path'],$job['selection']),$file)) { throw new RuntimeException('Unchanged destination changed after receipt: '.$file['path']); }
+                }
+                unset($file);
                 $job['files'] = $files; $job['media_watermark'] = $header['started']; return;
             }
             if (($record['type'] ?? '') === 'file-same') {
                 $path = $record['path'] ?? ''; $target = self::destination($path, $job['selection']);
-                if (isset($seen[$path]) || !is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('Unchanged destination file failed verification: ' . $path); }
-                $parts = explode('/', $path); $components[$parts[0] . '/' . $parts[1]] = true; $seen[$path] = true;
-                hash_update($hash, CSM_Support::json($record));
-                $files[] = ['path' => $path, 'sha256' => $record['sha256'], 'size' => filesize($target), 'unchanged' => true]; continue;
+                if (isset($seen[$path])) { throw new RuntimeException('Duplicate unchanged file: '.$path); }
+                if (($record['metadata_only'] ?? false)===true) { $file=self::unchanged_record($target,$record); }
+                else {
+                    if (!is_string($record['sha256'] ?? null) || !is_file($target) || !hash_equals($record['sha256'], CSM_Support::hash_file($target))) { throw new RuntimeException('Unchanged destination file failed verification: '.$path); }
+                    $file=['path'=>$path,'sha256'=>$record['sha256'],'size'=>filesize($target),'unchanged'=>true];
+                }
+                $parts=explode('/',$path); $components[$parts[0].'/'.$parts[1]]=true; $seen[$path]=true;
+                hash_update($hash,CSM_Support::json($record)); $files[]=$file; continue;
             }
             if (($record['type'] ?? '') !== 'file' || !is_int($record['size']) || $record['size'] < 0 || isset($seen[$record['path']])) { throw new RuntimeException('Invalid file header.'); }
             self::destination($record['path'], $job['selection']);

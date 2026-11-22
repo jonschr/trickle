@@ -61,3 +61,5 @@ Run `python3 tests/run-offline.py` for isolated checks. `tests/live-stream-cycle
 Run `phpcs` with WordPress Coding Standards installed to audit first-party PHP using `.phpcs.xml.dist`. Existing standards findings are not suppressed. Shared design tokens are defined at the beginning of `assets/admin.css`.
 
 Sites behind hosting-provider HTTP Basic Auth can enter the site-protection username and password under **Add a site → Site protection**. Saved credentials stay on the controlling site and are sent only to that connection’s URL; redirects are not followed. **Update connection** preserves saved credentials when both fields are blank, or removes them with the explicit removal checkbox.
+
+File change selection uses size and modification time for plugins, themes and media; it does not read file contents to compare them before transfer. Transferred contents retain stream checksums and installed-file verification. Force retransfer sends matching files as well.

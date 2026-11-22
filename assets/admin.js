@@ -219,7 +219,7 @@
         finally { controls.forEach((control, i) => { control.disabled = previous[i]; }); busy = false; $('transfer-setup').setAttribute('aria-busy', 'false'); lockSelection(); updateSelection(); startComparisons(); if (transferMeter.phase === 'complete' && !$('completion').hidden) $('action-title').textContent = $('completion-title').textContent; }
     }
     function lockSelection() {
-        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-verify, #csm-media-force, #csm-file-verify, #csm-plugins-force, #csm-themes-force, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites || inventoryLoading || !!inventoryError)); });
+        document.querySelectorAll('#csm-transport, #csm-remote-site, #csm-recent, #csm-direction, #csm-media-mode, #csm-media-force, #csm-plugins-force, #csm-themes-force, #csm-since, #csm-media-after, #csm-media-before, #csm-replace, #csm-ignore-active-plugins, input[data-kind], input[data-component], .csm-select-all').forEach(control => { control.disabled = !!session || control.dataset.protected === 'true' || (control.hasAttribute('data-component') && (busy || !sites || inventoryLoading || !!inventoryError)); });
         lockReplacements();
     }
     const direction = () => $('direction').value;
@@ -276,11 +276,11 @@
         for (const entry of src[kind]) {
             const item={...entry}; if(item.symlinks && item.follow_symlinks){item.protected=false;delete item.protected_reason;}
             const target=lookup.get(item.id), change=versionChange(item,target);
-            const matching=!!target && item.version===target.version && !!item.content_hash && item.content_hash===target.content_hash;
-            const label=matching?'Matching skipped':change.kind==='same'?(item.content_hash && target?.content_hash?'Files differ':'Hash not verified'):change.label;
+            const matching=!!target && !!item.metadata_signature && item.metadata_signature===target.metadata_signature;
+            const label=matching?'Size and timestamps match':change.kind==='same'?(item.metadata_signature && target?.metadata_signature?'Files differ':'Metadata not compared'):change.label;
             const tone=matching?'same':change.kind==='same'?'different':change.kind;
-            const sourceCell=`<span class="csm-source-version"><span>${esc(item.version || '?')}</span><span class="csm-component-hash"><small>Source hash</small><code title="${esc(item.content_hash || '')}">${esc(item.content_hash?.slice(0,12) || 'Not verified')}</code></span></span>`;
-            const destinationCell=`<span class="csm-destination-version"><span>${target && target.version!==item.version?`<del>${esc(target.version || '?')}</del> `:!target?'<del>Not installed</del> ':''}<b data-incoming="${esc(item.version || '?')}" data-installed="${esc(target?.version || 'Not installed')}">${esc(item.version || '?')}</b></span><small data-change-label="${esc(label)}">${esc(label)}</small><span class="csm-component-hash"><small>Current hash</small><code title="${esc(target?.content_hash || '')}">${esc(target?.content_hash?.slice(0,12) || (target?'Not verified':'No files'))}</code></span>${item.protected_reason?`<span class="csm-blocked-reason">${esc(item.protected_reason)}${item.symlinks?`<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}">Include linked files</button>`:''}</span>`:''}</span>`;
+            const sourceCell=`<span class="csm-source-version"><span>${esc(item.version || '?')}</span></span>`;
+            const destinationCell=`<span class="csm-destination-version"><span>${target && target.version!==item.version?`<del>${esc(target.version || '?')}</del> `:!target?'<del>Not installed</del> ':''}<b data-incoming="${esc(item.version || '?')}" data-installed="${esc(target?.version || 'Not installed')}">${esc(item.version || '?')}</b></span><small data-change-label="${esc(label)}">${esc(label)}</small>${item.protected_reason?`<span class="csm-blocked-reason">${esc(item.protected_reason)}${item.symlinks?`<button type="button" class="button-link csm-follow-links" data-follow-links="${esc(item.id)}" data-follow-kind="${kind}">Include linked files</button>`:''}</span>`:''}</span>`;
             html+=`<div class="csm-component csm-code-component" data-change="${tone}"><label class="csm-component-identity"><input type="checkbox" data-kind="${kind}" data-protected="${!!item.protected}" aria-label="Transfer ${esc(item.name)}" value="${esc(item.id)}" ${item.protected?'disabled':''}><strong>${esc(item.name)}</strong></label>${pull?destinationCell+sourceCell:sourceCell+destinationCell}</div>`;
         }
         $(kind).innerHTML=html+'</div></div>';
@@ -349,10 +349,10 @@
                 const included=$('enable-'+kind).checked && input.checked;row.dataset.included=String(included);
                 if(value)value.textContent=included?value.dataset.incoming:value.dataset.installed;
                 const old=row.querySelector('del');if(old)old.hidden=!included;
-                if(status)status.textContent=input.dataset.protected==='true'?status.dataset.changeLabel:included?(status.dataset.changeLabel==='Matching skipped' && $(kind+'-force').checked?'Matching · forced':status.dataset.changeLabel):'Not selected';
+                if(status)status.textContent=input.dataset.protected==='true'?status.dataset.changeLabel:included?(status.dataset.changeLabel==='Size and timestamps match' && $(kind+'-force').checked?'Matching · forced':status.dataset.changeLabel):'Not selected';
                 if(included){const key=status?.dataset.changeLabel || '';outcomes[key]=(outcomes[key]||0)+1;}
             });
-            const labels=Object.entries(outcomes).map(([label,n])=>`${n} ${label==='Hash not verified'?'unverified':label==='Matching skipped'?($(kind+'-force').checked?'matching forced':'matching skipped'):label==='Files differ'?(n===1?'file differs':'files differ'):label.toLowerCase()+(n===1?'':'s')}`);
+            const labels=Object.entries(outcomes).map(([label,n])=>`${n} ${label==='Metadata not compared'?'unverified':label==='Size and timestamps match'?($(kind+'-force').checked?'matching forced':'matching skipped'):label==='Files differ'?(n===1?'file differs':'files differ'):label.toLowerCase()+(n===1?'':'s')}`);
             $(kind+'-summary').textContent=$('enable-'+kind).checked?(labels.join(' · ') || 'Empty selection'):'Not included';
         }
         document.querySelectorAll('.csm-sort').forEach(button => { button.disabled = busy || !sites; });
@@ -460,9 +460,9 @@
             const item = inventory.get(input.value), target = lookup.get(kind === 'tables' ? input.value.slice(source().prefix.length) : input.value);
             const row = input.closest(kind === 'tables' ? 'tr' : '.csm-component');
             if (!item || !row) return;
-            const verifiedMatch = kind !== 'tables' && target && item.version === target.version && !!item.content_hash && item.content_hash === target.content_hash;
+            const verifiedMatch = kind !== 'tables' && target && !!item.metadata_signature && item.metadata_signature === target.metadata_signature;
             const showMatching = kind === 'tables' || $(kind+'-force')?.checked || $('show-matching-' + kind)?.checked || mode === 'selected';
-            const matches = (!verifiedMatch || showMatching) && `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || (item.version !== target.version && item.version_order !== 0 || !!item.content_hash && !!target.content_hash && item.content_hash !== target.content_hash)));
+            const matches = (!verifiedMatch || showMatching) && `${item.name} ${item.id}`.toLocaleLowerCase().includes(query) && (mode === 'all' || mode === 'selected' && input.checked || mode === 'updates' && !!(item.update || target?.update) || mode === 'different' && (!target || (item.version !== target.version && item.version_order !== 0 || !!item.metadata_signature && !!target.metadata_signature && item.metadata_signature !== target.metadata_signature)));
             row.hidden = !matches; total++; if (matches) shown++;
         });
         if($('options-summary-'+kind))$('options-summary-'+kind).textContent=query?'Search active':mode!=='all'?'Filter active':kind!=='tables' && $(kind+'-force')?.checked?'Forced retransfer':'';
@@ -680,7 +680,7 @@
     }
     function comparisonRelevant(kind) {
         if(!presetChosen)return kind!=='media';
-        return $('enable-'+kind).checked && (kind==='media'?$('media-mode').value==='all' && !$('media-force').checked:!$(kind+'-force').checked && !$('file-verify').checked);
+        return $('enable-'+kind).checked && (kind==='media'?$('media-mode').value==='all' && !$('media-force').checked:!$(kind+'-force').checked);
     }
     function invalidateComparisons() {
         comparisonGeneration++;comparisonState?.controller?.abort();
@@ -690,7 +690,7 @@
         await comparisonPromise.catch(()=>{});
     }
     function startComparisons() {
-        if(!presetsAvailable() || session || busy || transferView || sites.local.bounded_work!==2 || sites.remote.bounded_work!==2)return;
+        if(!presetsAvailable() || session || busy || transferView || sites.local.bounded_work!==2 || sites.remote.bounded_work!==2 || !sites.local.metadata_compare || !sites.remote.metadata_compare)return;
         if(!comparisonState || comparisonState.generation!==comparisonGeneration || comparisonState.inventory!==sites || comparisonState.direction!==direction()) {
             comparisonState={generation:comparisonGeneration,inventory:sites,direction:direction(),site:$('remote-site').value,id:crypto.randomUUID().replaceAll('-',''),done:new Set(),failed:new Set(),running:false};
         }
@@ -703,13 +703,13 @@
                 let task=null;
                 for(const kind of ['plugins','themes']) {
                     if(!comparisonRelevant(kind))continue;
-                    const item=src[kind].find(item=>!item.protected && !item.follow_symlinks && dst[kind].some(target=>target.id===item.id) && !item.content_hash && !state.done.has(kind+'/'+item.id) && !state.failed.has(kind+'/'+item.id));
+                    const item=src[kind].find(item=>!item.protected && !item.follow_symlinks && dst[kind].some(target=>target.id===item.id) && !item.metadata_signature && !state.done.has(kind+'/'+item.id) && !state.failed.has(kind+'/'+item.id));
                     if(item){task={kind,item,key:kind+'/'+item.id};break;}
                 }
                 if(!task && comparisonRelevant('media') && !state.done.has('media') && !state.failed.has('media') && src.media_compare && dst.media_compare)task={kind:'media',key:'media'};
                 if(!task)break;
                 const status=task.kind==='media'?$('media-comparison-status'):$('hash-status-'+task.kind);
-                status.textContent=task.kind==='media'?'Comparing media in the background…':`Comparing ${task.item.name || task.item.id}…`;
+                status.textContent=task.kind==='media'?'Comparing media metadata in the background…':`Comparing ${task.item.name || task.item.id}…`;
                 try {
                     let result;
                     do {
@@ -730,11 +730,11 @@
                     if(!result || result.continue)continue;
                     state.done.add(task.key);
                     if(task.item) {
-                        task.item.content_hash=result.source;
-                        const target=dst[task.kind].find(item=>item.id===task.item.id);if(target)target.content_hash=result.destination;
+                        task.item.metadata_signature=result.source;
+                        const target=dst[task.kind].find(item=>item.id===task.item.id);if(target)target.metadata_signature=result.destination;
                         const selected=new Set([...document.querySelectorAll(`input[data-kind="${task.kind}"]:checked`)].map(e=>e.value));
                         components(task.kind);document.querySelectorAll(`input[data-kind="${task.kind}"]`).forEach(input=>input.checked=selected.has(input.value));
-                        status.textContent='Versions and content hashes compared. Changes are checked again before transferring.';
+                        status.textContent='File sizes and modification times compared. Changes are checked again before transferring.';
                         lockSelection();updateSelection();
                     } else status.textContent=`${Number(result.stats?.files_selected || 0).toLocaleString()} media files new or different. Checked again before transfer.`;
                 } catch(error) {
@@ -767,7 +767,7 @@
     function clearInventory() {
         inventoryGeneration++;invalidateComparisons();presetRequest++;presetLoading=false;presetChosen=false;activePreset='';presetBaseline=null;presetUndo=null;inventoryError='';
         sites = null; remoteUpdate = null; resetComponents(); $('ignore-active-plugins').checked = false;
-        $('media-mode').value = 'none'; $('media-verify').checked = false; $('media-force').checked = false; $('file-verify').checked = false; for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
+        $('media-mode').value = 'none'; $('media-force').checked = false; for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = false; $('since').value = ''; $('media-after').value = ''; $('media-before').value = ''; $('replace').checked = true; $('recent').value = '';
         renderReplacements([]); renderMedia();
         for (const kind of ['plugins', 'themes', 'tables', 'media-list']) $(kind).replaceChildren();
         renderEndpoints();renderPresetChoices();
@@ -793,9 +793,7 @@
     function currentSelection() {
         const selection = {transport:$('transport').value, enabled_components:componentKinds.filter(kind => $('enable-' + kind).checked), expanded_components:componentKinds.filter(kind => !$(kind + '-body').hidden), media:$('enable-media').checked ? $('media-mode').value : 'none', media_after:$('media-after').value, media_before:$('media-before').value, replace:$('replace').checked, sync_active_plugins:!$('ignore-active-plugins').checked, since:$('since').value ? Math.floor(new Date($('since').value + 'Z').getTime()/1000) : 0};
         for (const kind of ['plugins','themes']) selection[kind + '_force'] = $('enable-' + kind).checked && !!$(kind + '-force')?.checked;
-        selection.file_verify = ($('enable-plugins').checked || $('enable-themes').checked) && !!$('file-verify')?.checked;
         selection.media_force = selection.media === 'all' && !!$('media-force')?.checked;
-        selection.media_verify = selection.media === 'all' && !selection.media_force && !!$('media-verify')?.checked;
         for (const kind of ['plugins','themes','tables','media_ids']) selection[kind] = $('enable-' + (kind === 'media_ids' ? 'media' : kind)).checked ? [...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(input => kind === 'media_ids' ? Number(input.value) : input.value) : [];
         selection.follow_symlinks = !sites ? [] : ['plugins','themes'].flatMap(kind => source()[kind].filter(item => item.follow_symlinks && selection[kind].includes(item.id)).map(item => kind+'/'+item.id));
         if (sites?.replacements) selection.replacements = replacementRules.map(rule => ({...rule}));
@@ -824,8 +822,8 @@
         }
         showComponent(componentKinds.find(kind => !$(kind + '-body').hidden) || 'tables');
         for (const kind of ['plugins','themes']) if ($(kind + '-force')) $(kind + '-force').checked = !!(selection[kind + '_force'] ?? selection.file_force);
-        $('transport').value = selection.transport || 'stream'; $('file-verify').checked = !!selection.file_verify; $('ignore-active-plugins').checked = selection.sync_active_plugins === false;
-        $('media-mode').value = ['compare','changed'].includes(selection.media) && !session ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('media-verify').checked = !!selection.media_verify; $('replace').checked = selection.replace;
+        $('transport').value = selection.transport || 'stream'; $('ignore-active-plugins').checked = selection.sync_active_plugins === false;
+        $('media-mode').value = ['compare','changed'].includes(selection.media) && !session ? 'all' : selection.media; $('media-force').checked = !!selection.media_force; $('replace').checked = selection.replace;
         $('media-after').value = selection.media_after || ''; $('media-before').value = selection.media_before || '';
         renderReplacements(selection.replacements ?? sites.replacements?.[direction()] ?? []);
         renderMedia();
@@ -869,7 +867,7 @@
         source().media = [...media.values()].sort((a,b) => (Date.parse(b.uploaded) || 0) - (Date.parse(a.uploaded) || 0) || b.id - a.id);
     }
     async function loadSelectedMedia(selection) {
-        if (['all','compare'].includes(selection?.media) && !selection.media_force && !sites.remote.media_compare) throw new Error('Update Trickle on both sites to compare media checksums.');
+        if (['all','compare'].includes(selection?.media) && !selection.media_force && (!sites.remote.media_compare || !sites.remote.metadata_compare)) throw new Error('Update Trickle on both sites to compare media metadata.');
         if (selection?.media === 'uploaded' && !source().media_dates) throw new Error('Update Trickle on the source site to reuse upload-date transfers.');
         const missing = (selection?.media_ids || []).filter(id => !source().media.some(item => item.id === id));
         if (missing.length && source().media_browsing) {
@@ -1214,23 +1212,23 @@
     document.querySelectorAll('[data-media-mode]').forEach(input=>input.addEventListener('change',()=>{if(input.checked){$('media-mode').value=input.dataset.mediaMode;$('media-mode').dispatchEvent(new Event('change'));}}));
     for(const kind of ['plugins','themes']) {
         $('show-matching-'+kind).addEventListener('change',()=>filterComponents(kind));
-        $('show-hashes-'+kind).addEventListener('change',()=>$(kind).classList.toggle('csm-show-hashes',$('show-hashes-'+kind).checked));
     }
     $('workspace').addEventListener('click',event=>{
         const button=event.target.closest('[data-verify-matching]');if(!button)return;
         run(async()=>{
             await pauseComparisons();
+            if(!sites.local.metadata_compare || !sites.remote.metadata_compare)throw new Error('Update Trickle on both sites before comparing file metadata.');
             const kind=button.dataset.verifyMatching, dst=new Map(destination()[kind].map(item=>[item.id,item]));
             const checked=new Set([...document.querySelectorAll(`input[data-kind="${kind}"]:checked`)].map(e=>e.value));
             for(const item of source()[kind]) {
-                const target=dst.get(item.id);if(item.protected || !target || item.version!==target.version)continue;
+                const target=dst.get(item.id);if(item.protected || !target)continue;
                 $('hash-status-'+kind).textContent='Verifying '+item.name+'…';
                 const comparison=crypto.randomUUID().replaceAll('-','');let result;
                 do { result=await api('compare_component',{site:$('remote-site').value,direction:direction(),kind,component:item.id,comparison}); } while(result.continue);
-                item.content_hash=result.source;target.content_hash=result.destination;
+                item.metadata_signature=result.source;target.metadata_signature=result.destination;
             }
             components(kind);document.querySelectorAll(`input[data-kind="${kind}"]`).forEach(e=>e.checked=checked.has(e.value));
-            $('hash-status-'+kind).textContent='Matching requires equal versions and verified content hashes.';updateSelection();
+            $('hash-status-'+kind).textContent='Matching files have equal sizes and modification times.';updateSelection();
         });
     });
     $('preset').addEventListener('change', () => applyPreset($('preset').value).catch(fail));
@@ -1244,19 +1242,19 @@
         $('direction').value=direction()==='pull'?'push':'pull';$('direction').dispatchEvent(new Event('change'));
     });
     $('direction').addEventListener('change', () => { try{localStorage.setItem('trickle-last-direction',direction());}catch{} invalidateComparisons();presetRequest++;presetLoading=false;presetChosen=false;activePreset='';$('media-mode').value='none';$('replace').checked=true;$('recent').value='';if(sites)render();else{renderPresetChoices();renderEndpoints();updateSetup();}renderRecentMigrations();startComparisons(); });
-    let savedTransferSettings = {transport:$('transport').value, file_verify:$('file-verify').checked};
-    for (const id of ['transport', 'file-verify']) $(id).addEventListener('change', () => run(async () => {
+    let savedTransferSettings = {transport:$('transport').value};
+    for (const id of ['transport']) $(id).addEventListener('change', () => run(async () => {
         $('transfer-settings-status').textContent = 'Saving…';
         try {
-            savedTransferSettings = await api('transfer_settings', {transport:$('transport').value, file_verify:$('file-verify').checked});
+            savedTransferSettings = await api('transfer_settings', {transport:$('transport').value});
             $('transfer-settings-status').textContent = 'Saved.';
         } catch (error) {
-            $('transport').value = savedTransferSettings.transport; $('file-verify').checked = savedTransferSettings.file_verify;
+            $('transport').value = savedTransferSettings.transport;
             $('transfer-settings-status').textContent = 'Save failed. Previous preferences restored.';
             throw error;
         }
     }));
-    for (const id of ['transport', 'file-verify', 'media-verify', 'ignore-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
+    for (const id of ['transport', 'ignore-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
     $('media-mode').addEventListener('change', () => { mediaAnchor = null; renderMedia(); });
     for (const kind of ['plugins','themes']) $(kind + '-force')?.addEventListener('change', () => { $('recent').value = ''; updateSelection(); });
     $('media-force').addEventListener('change', () => { $('recent').value = ''; renderMedia(); });
