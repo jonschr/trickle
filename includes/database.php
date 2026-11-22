@@ -330,7 +330,7 @@ final class CSM_Database {
         CSM_Support::step(8, $continuing); $transaction=false;
         $pending=[]; $pending_bytes=0; $insert='';
         $packet=(int)self::rows('SELECT @@max_allowed_packet AS packet')[0]['packet'];
-        $batch_limit=max(1,min(262144,$packet-1024));
+        $batch_limit=max(1,min(1048576,$packet-1024));
         $flush=static function() use (&$pending,&$pending_bytes,&$insert):void {
             if (!$pending) { return; }
             CSM_Timing::measure('database.insert',static fn()=>CSM_Support::query($insert.implode(',',$pending)));

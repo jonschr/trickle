@@ -1,8 +1,25 @@
 <?php
 defined('ABSPATH') || exit;
+require_once __DIR__.'/timing.php';
 
 /** Small, independently verified gzip frames; saved cursors never depend on a PHP process surviving. */
 final class CSM_Package {
+    private static ?bool $openssl = null;
+
+    /** Same SHA-256 bytes, using the accelerated provider for large blocks when available. */
+    public static function digest(string $bytes, bool $binary = false): string {
+        $started=hrtime(true); $backend='checksum.block_native';
+        try {
+            if (strlen($bytes)>=4096 && (self::$openssl ??= function_exists('openssl_digest'))) {
+                try { $digest=@openssl_digest($bytes,'sha256',$binary); }
+                catch (Throwable $error) { $digest=false; }
+                if (is_string($digest) && strlen($digest)===($binary?32:64)) { $backend='checksum.block_openssl'; return $digest; }
+                self::$openssl=false;
+            }
+            return hash('sha256',$bytes,$binary);
+        } finally { CSM_Timing::add($backend,$started,strlen($bytes)); }
+    }
+
     public static function chain(string $hash, string $record): string { return hash('sha256', $hash . $record); }
     public static function frame(string $part, bool $control = false): string {
         if ($part==='' || strlen($part)>262144) { throw new RuntimeException('Invalid frame payload size.'); }
@@ -10,7 +27,7 @@ final class CSM_Package {
         $sample=substr($part,max(0,intdiv(strlen($part)-8192,2)),8192);
         $level=strlen($sample)===8192 && strlen(gzdeflate($sample,1))>=strlen($sample)*.98?0:3;
         $gzip=gzencode($part,$level);
-        return pack('N',strlen($gzip) | ($control?0x80000000:0)).hash('sha256',$gzip,true).$gzip;
+        return pack('N',strlen($gzip) | ($control?0x80000000:0)).self::digest($gzip,true).$gzip;
     }
 
     public static function put($fp, string $bytes): void {
@@ -90,7 +107,7 @@ final class CSM_Package {
                 $length = unpack('N', substr($header, 0, 4))[1];
                 if ($length < 1 || $length > 300000 || $state['in']+36+$length > $bundle['size']) { throw new RuntimeException('Invalid frame length.'); }
                 $gzip = ''; while (strlen($gzip) < $length) { $part = fread($in, $length-strlen($gzip)); if ($part === false || $part === '') { throw new RuntimeException('Truncated frame.'); } $gzip .= $part; }
-                if (!hash_equals(substr($header,4), hash('sha256',$gzip,true))) { throw new RuntimeException('Frame checksum mismatch.'); }
+                if (!hash_equals(substr($header,4), self::digest($gzip,true))) { throw new RuntimeException('Frame checksum mismatch.'); }
                 $raw = gzdecode($gzip, 262144);
                 if ($raw === false) { throw new RuntimeException('Invalid compressed frame.'); }
                 CSM_Support::write($out,$raw); $state = ['in'=>ftell($in),'out'=>ftell($out)];

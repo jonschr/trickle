@@ -751,7 +751,8 @@ final class CSM_Plugin {
         if (empty($job['activation_applied'])) { CSM_Timing::measure('apply.activation',static function() use (&$job) { CSM_Activation::apply($job); }); $job['activation_applied']=true; CSM_Jobs::save($job); }
         if (!self::verify_installed_step($job)) { return self::summary($job) + ['continue'=>true] + $authentication; }
         $job['status'] = 'applied'; $job['applied'] = time(); CSM_Jobs::save($job);
-        if (function_exists('opcache_reset')) { opcache_reset(); }
+        // Install and removal paths already invalidate their files; keep unrelated cached code warm.
+        if (!function_exists('opcache_invalidate') && function_exists('opcache_reset')) { opcache_reset(); }
         self::end_maintenance($job['id']);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
         unset($job['apply_work'],$job['file_plan'],$job['verification_work']); CSM_Jobs::save($job);

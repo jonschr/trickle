@@ -17,12 +17,12 @@ try{
   $selection=['tables'=>[$table],'plugins'=>[],'themes'=>[],'media'=>'none','replace'=>false,'sync_active_plugins'=>false];
   $fp=fopen($base.'.stream','w+b');chmod($base.'.stream',0600);foreach(CSM_Database::stream($selection,true)as$bytes)CSM_Support::write($fp,$bytes);fclose($fp);$fp=null;
   $r=CSM_Plugin::prepare($selection);$id=$r['id'];$job=CSM_Jobs::get($id);CSM_Support::atomic_json($base.'.json',['id'=>$id]);
-  $committed=false;
-  $inject=static function($sql)use(&$committed,$mode){if($sql==='COMMIT')$committed=true;if($committed&&str_starts_with($sql,'INSERT INTO `_csm_')){if($mode==='crash'){echo "INTENTIONAL HARD EXIT during uncommitted insert batch\n";exit(77);}throw new RuntimeException('Injected batch failure');}return $sql;};
+  $committed=false;$wide_batch=false;
+  $inject=static function($sql)use(&$committed,&$wide_batch,$mode){if(str_starts_with($sql,'INSERT INTO `_csm_')&&strlen($sql)>262144&&str_contains($sql,'),('))$wide_batch=true;if($sql==='COMMIT')$committed=true;if($committed&&str_starts_with($sql,'INSERT INTO `_csm_')){if($mode==='crash'){echo "INTENTIONAL HARD EXIT during uncommitted insert batch\n";exit(77);}throw new RuntimeException('Injected batch failure');}return $sql;};
   add_filter('query',$inject);$caught=false;$fp=fopen($base.'.stream','rb');
   try{while(!CSM_Database::stage_step($fp,$job)){}}catch(RuntimeException $e){$caught=$e->getMessage()==='Injected batch failure';}
   finally{remove_filter('query',$inject);$inject=null;fclose($fp);$fp=null;}
-  batch_check($caught,'Injected SQL failure rolls back its uncommitted batch');$job=CSM_Jobs::get($id);
+  batch_check($caught,'Injected SQL failure rolls back its uncommitted batch');batch_check($wide_batch,'Packet-safe multi-row inserts can exceed the old 256 KiB cap');$job=CSM_Jobs::get($id);
  }
  batch_check($job['rows']===250&&(int)$wpdb->get_var('SELECT COUNT(*) FROM '.CSM_Support::ident($job['database'][0]['stage']))===250,'Committed data and durable cursor both remain at 250 rows after interruption');
  $queries=0;$large_single=false;

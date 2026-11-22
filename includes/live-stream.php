@@ -15,6 +15,7 @@ final class CSM_Live_Stream {
     private int $initialPosition = 0;
     private int $received = 0;
     private string $selection;
+    private int $chain_format = 1;
 
     public function __construct(array &$job, string $selection) {
         CSM_Updates::assert_job($job);
@@ -22,6 +23,9 @@ final class CSM_Live_Stream {
         $this->job=&$job;
         $this->sequence=$job['live_files']['seq'] ?? 0;
         $partial=$job['live_partial'] ?? [];
+        $format=$partial['chain_format'] ?? 1;
+        if (!in_array($format,[1,2],true)) { throw new RuntimeException('Invalid stream checksum format.'); }
+        $this->chain_format=$format;
         $this->chain=$partial['chain'] ?? $job['live_files']['chain'] ?? '';
         $this->bytes=$partial['bytes'] ?? $job['live_files']['bytes'] ?? 0;
         $this->position=$this->initialPosition=$partial['offset'] ?? 0;
@@ -56,7 +60,7 @@ final class CSM_Live_Stream {
             if ($state===null) {
                 if ($seq!==0) { throw new RuntimeException('Source stream checkpoint is missing.'); }
                 $normalized=CSM_Files::selection($selection);
-                $state=['credential'=>CSM_Access::owner(),'selection'=>$digest,'export'=>$normalized,'seq'=>0,'chain'=>'','bytes'=>0,'cursor'=>['started'=>time()],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0]];
+                $state=['credential'=>CSM_Access::owner(),'selection'=>$digest,'export'=>$normalized,'seq'=>0,'chain'=>'','bytes'=>0,'cursor'=>['started'=>time()],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0],'chain_format'=>2];
                 CSM_Support::atomic_json($state_path,$state);
             }
             CSM_Access::assert_owner($state);
@@ -73,6 +77,8 @@ final class CSM_Live_Stream {
                 if ($next['seq']===$state['seq']) { unlink($next_path); if (is_file($window)) { unlink($window); } }
             }
             if ($seq!==$state['seq'] || !empty($state['cursor']['done'])) { throw new RuntimeException('Source stream sequence changed. Refresh the destination checkpoint.'); }
+            $format=$state['chain_format'] ?? 1;
+            if (!in_array($format,[1,2],true)) { throw new RuntimeException('Invalid source checksum format.'); }
             if (is_file($window) && is_file($next_path)) {
                 $fp=fopen($window,'rb');
                 if (!$fp || $offset>filesize($window) || fseek($fp,$offset)!==0) { if ($fp) { fclose($fp); } throw new RuntimeException('Invalid replay offset.'); }
@@ -85,13 +91,16 @@ final class CSM_Live_Stream {
             if (!$fp) { throw new RuntimeException('Cannot retain stream replay window.'); } chmod($window.'.part',0600);
             ignore_user_abort(true); CSM_Support::begin_source_budget(); CSM_Support::step();
             try {
-                $header=CSM_Package::frame(CSM_Support::json(['type'=>'window','id'=>$id,'seq'=>$seq,'selection'=>$digest,'previous'=>$state['chain']]),true);
+                $header=CSM_Package::frame(CSM_Support::json(['type'=>'window','id'=>$id,'seq'=>$seq,'selection'=>$digest,'previous'=>$state['chain']]+($format===2?['chain_format'=>2]:[])),true);
                 CSM_Support::write($fp,$header);
                 if ($offset===0) { yield $header; } elseif ($offset<strlen($header)) { throw new RuntimeException('Invalid replay offset.'); }
                 $raw=0; $wire=0;
                 foreach (CSM_Files::stream_step($state['export'],$state['cursor'],$state['components']) as $unit) {
                     $frame=CSM_Package::frame($unit);
-                    $state['chain']=CSM_Package::chain($state['chain'],hash('sha256',$frame));
+                    // The header binds length, control bit and the payload's SHA-256; do not hash its bytes twice.
+                    $chain_started=hrtime(true);
+                    $state['chain']=CSM_Package::chain($state['chain'],$format===2?substr($frame,0,36):CSM_Package::digest($frame));
+                    CSM_Timing::add('stream.frame_chain',$chain_started,$format===2?36:strlen($frame));
                     $state['bytes']+=strlen($frame); $raw+=strlen($unit); $wire+=strlen($frame);
                     $start=ftell($fp); CSM_Support::write($fp,$frame);
                     if ($start<$offset && ftell($fp)>$offset) { throw new RuntimeException('Invalid replay offset.'); }
@@ -125,12 +134,15 @@ final class CSM_Live_Stream {
             if ($length<1 || $length>300000) { throw new RuntimeException('Invalid stream frame length.'); }
             if (strlen($this->buffer)<36+$length) { break; }
             $frame=substr($this->buffer,0,36+$length); $gzip=substr($frame,36); $this->buffer=substr($this->buffer,strlen($frame));
-            if (!hash_equals(substr($frame,4,32),hash('sha256',$gzip,true))) { throw new RuntimeException('Stream frame checksum failed.'); }
+            if (!hash_equals(substr($frame,4,32),CSM_Package::digest($gzip,true))) { throw new RuntimeException('Stream frame checksum failed.'); }
             $unit=gzdecode($gzip,262144);
             if ($unit===false || $unit==='') { throw new RuntimeException('Invalid compressed stream frame.'); }
             if (!$this->started) {
                 $header=json_decode($unit,true,32,JSON_THROW_ON_ERROR);
                 if (!$control || ($header['type'] ?? '')!=='window' || ($header['id'] ?? '')!==$this->job['id'] || ($header['seq'] ?? null)!==$this->sequence || ($header['selection'] ?? '')!==$this->selection || ($header['previous'] ?? '')!==$this->chain) { throw new RuntimeException('Stream window does not match the destination checkpoint.'); }
+                $format=$header['chain_format'] ?? 1;
+                if (!in_array($format,[1,2],true)) { throw new RuntimeException('Unsupported stream checksum format.'); }
+                $this->chain_format=$format;
                 $this->started=true; $this->position+=strlen($frame); continue;
             }
             if ($control) {
@@ -142,7 +154,9 @@ final class CSM_Live_Stream {
                 $this->checkpoint=$record; return;
             }
             if (!empty($this->job['import_done']['files'])) { throw new RuntimeException('Unexpected data after file manifest.'); }
-            $this->chain=CSM_Package::chain($this->chain,hash('sha256',$frame)); $this->bytes+=strlen($frame);
+            $chain_started=hrtime(true);
+            $this->chain=CSM_Package::chain($this->chain,$this->chain_format===2?substr($frame,0,36):CSM_Package::digest($frame)); $this->bytes+=strlen($frame);
+            CSM_Timing::add('stream.frame_chain',$chain_started,$this->chain_format===2?36:strlen($frame));
             $fp=fopen('php://temp','w+b');
             try {
                 CSM_Support::write($fp,$unit); rewind($fp);
@@ -163,7 +177,7 @@ final class CSM_Live_Stream {
 
     public function save_partial(): bool {
         if (!$this->started || $this->checkpoint!==null || $this->position<=$this->initialPosition) { return false; }
-        $this->job['live_partial']=['offset'=>$this->position,'chain'=>$this->chain,'bytes'=>$this->bytes,'selection'=>$this->selection];
+        $this->job['live_partial']=['offset'=>$this->position,'chain'=>$this->chain,'bytes'=>$this->bytes,'selection'=>$this->selection,'chain_format'=>$this->chain_format];
         CSM_Jobs::save($this->job);
         return true;
     }

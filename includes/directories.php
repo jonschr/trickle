@@ -230,7 +230,16 @@ final class CSM_Directories {
                     if (file_exists($target) || !rename($op['stage'],$target)) { throw new RuntimeException('Cannot install replacement component: '.$op['path']); }
                 } elseif (!file_exists($target)) { throw new RuntimeException('Replacement component is missing: '.$op['path']); }
             }
-            if (function_exists('opcache_reset')) { opcache_reset(); }
+            if (function_exists('opcache_invalidate')) {
+                // Invalidate this snapshot, including removed files, without flushing other sites' code.
+                $paths=array_keys($op['manifest']+$op['incoming']); $state['cache_cursor'] ??= 0;
+                while ($state['cache_cursor']<count($paths)) {
+                    CSM_Support::check_cancel(); $started=hrtime(true);
+                    opcache_invalidate($target.substr($paths[$state['cache_cursor']],strlen($op['path'])),true);
+                    CSM_Timing::add('filesystem.opcache_invalidate',$started); $state['cache_cursor']++;
+                    if (CSM_Support::due()) { CSM_Support::atomic_json($op['journal'],$state); return false; }
+                }
+            } elseif (function_exists('opcache_reset')) { opcache_reset(); }
             CSM_Support::atomic_json($op['journal'],['phase'=>'done']);
         }
         return true;

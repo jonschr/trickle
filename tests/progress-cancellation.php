@@ -9,6 +9,12 @@ require __DIR__.'/../includes/support.php'; require __DIR__.'/../includes/progre
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label.PHP_EOL;}
 $dir=CSM_Support::private_dir();
 try{
+    $id=str_repeat('d',32);CSM_Support::work($id);$before=$salts;
+    for($i=0;$i<10000;++$i)CSM_Support::check_cancel();
+    check($salts===$before,'Direct work-loop guards reuse the validated marker path without repeating private-storage setup');
+    CSM_Support::cancel($id);$caught=false;
+    try{CSM_Support::check_cancel();}catch(CSM_Cancelled_Error $e){$caught=true;}
+    check($caught,'Direct guards observe a newly created cancellation marker on their next check');
     $id=str_repeat('a',32);CSM_Progress::start($id,'Receiving files');
     $before=$salts;
     for($i=0;$i<10000;++$i)CSM_Progress::update(['count'=>$i]);

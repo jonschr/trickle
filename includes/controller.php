@@ -327,8 +327,13 @@ final class CSM_Controller {
         }
         if ($pull) { $summary=CSM_Live_Stream::pull($peer,CSM_Jobs::get($id),$selection); }
         else {
-            // Discover the receiver's committed sequence after any lost HTTP response.
-            $state=CSM_Transport::request($peer,'live_state',['id'=>$id]);
+            $state=$control['live_checkpoint'] ?? [];
+            $acknowledged=empty($control['live_pending']) && ($state['selection'] ?? '')===hash('sha256',CSM_Support::json($selection))
+                && is_int($state['seq'] ?? null) && $state['seq']>=0 && is_int($state['bytes'] ?? null) && $state['bytes']>=0
+                && is_bool($state['done'] ?? null) && (!isset($state['offset']) || is_int($state['offset']) && $state['offset']>=0);
+            if (!$acknowledged) { $state=CSM_Transport::request($peer,'live_state',['id'=>$id]); }
+            // Persist uncertainty before uploading; a lost reply must rediscover receiver state.
+            $control['live_pending']=true; update_option('_csm_control',$control,false);
             $input=empty($state['done'])?CSM_Live_Stream::source($id,$selection,$state['seq'],$state['offset'] ?? 0):(static function(){ yield ''; })();
             try {
                 $summary=CSM_Transport::request($peer,'live_receive',['id'=>$id,'seq'=>$state['seq'],'offset'=>$state['offset'] ?? 0,'selection_hash'=>hash('sha256',CSM_Support::json($selection)),'progress_run'=>CSM_Progress::run()],$input,null,40);
@@ -341,6 +346,7 @@ final class CSM_Controller {
             }
         }
         $state=$summary['live_files'];
+        if (!$pull) { $control['live_checkpoint']=$state; unset($control['live_pending']); }
         $control['bundles']['files']=['format'=>3,'size'=>!empty($state['done'])?$state['bytes']:null,'continue'=>empty($state['done']),'components'=>$state['components'] ?? []];
         $control['checkpoints']['files']=$summary['checkpoint']; update_option('_csm_control',$control,false);
         $extra=[];

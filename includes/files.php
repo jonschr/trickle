@@ -542,8 +542,11 @@ final class CSM_Files {
                 }
             }
             if ($current=$state['current']) {
+                $open_started=hrtime(true);
                 $record=$current['record']; if ($current['written']>0 && (!is_file($current['stage']) || filesize($current['stage'])<$current['written'])) { throw new RuntimeException('Staged file checkpoint is missing or truncated.'); } $out=fopen($current['stage'],'c+b');
                 if (!$out || !ftruncate($out,$current['written']) || fseek($out,$current['written'])!==0) { throw new RuntimeException('Cannot resume staged file.'); }
+                CSM_Timing::add('stream.stage_open',$open_started);
+                $write_started=hrtime(true);
                 $hash=isset($current['hash'])?CSM_Support::restore_hash($current['hash']):null;
                 try {
                     do {
@@ -558,7 +561,7 @@ final class CSM_Files {
                     } while ($incremental || !CSM_Support::due());
                     if ($hash!==null) { $current['hash']=CSM_Support::save_hash($hash); }
                     fflush($out);
-                } finally { fclose($out); }
+                } finally { fclose($out); CSM_Timing::add('stream.stage_write',$write_started); }
                 $state['current']=$current;
                 if ($current['written']===$record['size'] && (!$incremental || ftell($fp)<$available)) {
                     $end=CSM_Support::line($fp);

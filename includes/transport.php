@@ -176,9 +176,12 @@ final class CSM_Transport {
         if ($upload) {
             $buffer = ''; $initialized = false;
             $options[CURLOPT_UPLOAD] = true;
+            // Uploads are serial; HTTP/1.1 avoids the extra upload delay measured on Flywheel.
+            $options[CURLOPT_HTTP_VERSION]=CURL_HTTP_VERSION_1_1;
             if ($action === 'stream_data' && isset($data['length'])) { $options[CURLOPT_INFILESIZE] = $data['length']; }
             $options[CURLOPT_CUSTOMREQUEST] = 'POST';
             $options[CURLOPT_READFUNCTION] = static function ($curl, $fp, $length) use ($upload, &$buffer, &$initialized, &$upload_error) {
+                $started=hrtime(true); $out='';
                 try {
                     while (strlen($buffer) < $length) {
                         if (!$initialized) { $upload->rewind(); $initialized = true; }
@@ -187,6 +190,7 @@ final class CSM_Transport {
                     }
                     $out = substr($buffer, 0, $length); $buffer = substr($buffer, strlen($out)); return $out;
                 } catch (Throwable $e) { $upload_error = $e; return CURL_READFUNC_ABORT; }
+                finally { CSM_Timing::add('stream.produce',$started,strlen($out)); }
             };
         } else {
             $options[CURLOPT_POST] = true; $options[CURLOPT_POSTFIELDS] = $body;
@@ -197,6 +201,11 @@ final class CSM_Transport {
         if ($cancellable) { CSM_Support::check_cancel(); }
         $error = curl_error($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $context += ['http_status' => $status, 'curl_errno' => curl_errno($ch), 'ssl_verify_result' => curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT), 'duration_ms' => (int)round(curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000)];
+        $context['performance']=['http'=>['dns_ms'=>1000*curl_getinfo($ch,CURLINFO_NAMELOOKUP_TIME),'connect_ms'=>1000*curl_getinfo($ch,CURLINFO_CONNECT_TIME),
+            'tls_ms'=>1000*curl_getinfo($ch,CURLINFO_APPCONNECT_TIME),'ready_ms'=>1000*curl_getinfo($ch,CURLINFO_PRETRANSFER_TIME),
+            'first_byte_ms'=>1000*curl_getinfo($ch,CURLINFO_STARTTRANSFER_TIME),'total_ms'=>1000*curl_getinfo($ch,CURLINFO_TOTAL_TIME),
+            'upload_bytes'=>(int)curl_getinfo($ch,CURLINFO_SIZE_UPLOAD),'http_version'=>curl_getinfo($ch,CURLINFO_HTTP_VERSION)]];
+        if (defined('CURLINFO_POSTTRANSFER_TIME_T')) { $context['performance']['http']['upload_end_ms']=curl_getinfo($ch,CURLINFO_POSTTRANSFER_TIME_T)/1000; }
         if ($retry_after) { $context['retry_after'] = $retry_after; }
         do_action('csm_request_complete', $action, $context, $bytes);
         unset($options, $ch);

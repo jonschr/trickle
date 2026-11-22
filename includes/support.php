@@ -7,6 +7,7 @@ final class CSM_Yield extends RuntimeException {}
 
 final class CSM_Support {
     private static ?string $work_id = null;
+    private static ?string $work_cancel_path = null;
     private static bool $cancellable = true;
     private static ?float $step_deadline = null;
 
@@ -28,7 +29,7 @@ final class CSM_Support {
     }
 
     public static function work(string $id, ?bool $cancellable = true): void {
-        self::cancel_path($id); if (self::$work_id!==$id || $cancellable!==null) { self::$cancellable=$cancellable ?? true; } self::$work_id=$id;
+        self::$work_cancel_path=self::cancel_path($id); if (self::$work_id!==$id || $cancellable!==null) { self::$cancellable=$cancellable ?? true; } self::$work_id=$id;
     }
 
     private static function cancel_path(string $id): string {
@@ -42,8 +43,11 @@ final class CSM_Support {
 
     public static function is_cancelled(string $id): bool { $path=self::cancel_path($id); clearstatcache(true,$path); return is_file($path); }
     public static function check_cancel(): void {
-        if (self::$cancellable && self::$work_id && self::is_cancelled(self::$work_id)) {
-            $marker=json_decode(file_get_contents(self::cancel_path(self::$work_id)),true);
+        if (self::$cancellable && self::$work_id) {
+            // The path was validated at work entry; never cache marker existence or contents.
+            $path=self::$work_cancel_path; clearstatcache(true,$path);
+            if (!is_file($path)) { return; }
+            $marker=json_decode(file_get_contents($path),true);
             if (!isset($marker['credential']) || !class_exists('CSM_Access') || $marker['credential']===CSM_Access::owner() || !empty($GLOBALS['_csm_credential']['master'])) { throw new CSM_Cancelled_Error('Transfer cancelled.'); }
         }
     }

@@ -26,6 +26,7 @@ function selection(){return ['plugins'=>['demo'],'themes'=>[],'tables'=>[],'medi
 function window($id,$selection,$seq){return implode('',iterator_to_array(CSM_Live_Stream::source($id,$selection,$seq)));}
 function deliver(&$job,$selection,$bytes){$writer=new CSM_Live_Stream($job,hash('sha256',CSM_Support::json($selection)));foreach(str_split($bytes,997)as$part)$writer->write($part);$writer->finish();}
 function rejects($fn,$fragment){try{$fn();}catch(Throwable$e){return str_contains($e->getMessage(),$fragment);}return false;}
+function window_chain($encoded,$format){$chain='';$header=null;$checkpoint=null;$dataFrames=0;for($p=0;$p<strlen($encoded);){$field=unpack('N',substr($encoded,$p,4))[1];$n=36+($field&0x7fffffff);$frame=substr($encoded,$p,$n);$p+=$n;if($field&0x80000000){$r=json_decode(gzdecode(substr($frame,36)),true);if($r['type']==='window')$header=$r;else$checkpoint=$r;}else{$chain=hash('sha256',$chain.($format===2?substr($frame,0,36):hash('sha256',$frame)));$dataFrames++;}}return[$header,$checkpoint,$chain,$dataFrames];}
 $private=CSM_Support::private_dir();$data=random_bytes(6*1024*1024+123);
 file_put_contents(WP_PLUGIN_DIR.'/demo/main.php','<?php /* Plugin Name: Demo */');file_put_contents(WP_PLUGIN_DIR.'/demo/large.bin',$data);file_put_contents(WP_PLUGIN_DIR.'/demo/empty','');file_put_contents(WP_PLUGIN_DIR.'/demo/.env','secret');
 try{
@@ -45,13 +46,19 @@ try{
  foreach($job['files']as$file){check(hash_file('sha256',$file['stage'])===$file['sha256'],'Streamed file matches its source checksum');}
  check(!is_file($private.'/segment-'.$job['id'].'-files.source')&&!glob($private.'/*.incoming*'),'Neither end creates a full archive or decompressed intermediate stream');
  check(file_get_contents(WP_PLUGIN_DIR.'/demo/large.bin')===$data,'Streaming never mutates live destination/source files');
+ $oldBudget=$budget;$budget=8;$vector=newJob();$encoded=window($vector['id'],$selection,0);[$h,$end,$expected,$frames]=window_chain($encoded,2);check($h['chain_format']===2&&$frames>10&&$end['chain']===$expected,'New windows commit each frame length, control bit and verified payload digest in their ordered chain');deliver($vector,$selection,$encoded);
+ $headLength=36+(unpack('N',substr($encoded,0,4))[1]&0x7fffffff);$h['chain_format']=3;$unsupported=CSM_Package::frame(CSM_Support::json($h),true).substr($encoded,$headLength);$unsupportedJob=newJob();$unsupportedJob['id']=$vector['id'];check(rejects(function()use($unsupportedJob,$selection,$unsupported){$j=$unsupportedJob;deliver($j,$selection,$unsupported);},'Unsupported stream checksum'),'Unknown checksum formats fail before staging data');
+ $legacy=newJob();$legacyDir=$private.'/segment-'.$legacy['id'].'-files.source.live';mkdir($legacyDir,0700);$initial=json_decode(file_get_contents($private.'/segment-'.$vector['id'].'-files.source.live/state.json'),true);unset($initial['chain_format']);CSM_Support::atomic_json($legacyDir.'/state.json',$initial);$oldWindow=window($legacy['id'],$selection,0);[$h,$end,$expected,$frames]=window_chain($oldWindow,1);check(!isset($h['chain_format'])&&$end['chain']===$expected,'Older source journals retain their original full-frame checksum format');
+ $writer=new CSM_Live_Stream($legacy,hash('sha256',CSM_Support::json($selection)));$writer->write(substr($oldWindow,0,intdiv(strlen($oldWindow),2)));$writer->save_partial();$legacy=$saved[$legacy['id']];check($legacy['live_partial']['chain_format']===1,'Older partial windows retain their original checksum mode');$offset=$legacy['live_partial']['offset'];unlink($legacyDir.'/window');unlink($legacyDir.'/next.json');$tail=implode('',iterator_to_array(CSM_Live_Stream::source($legacy['id'],$selection,0,$offset)));check($tail===substr($oldWindow,$offset),'An interrupted old producer regenerates the exact original replay bytes');deliver($legacy,$selection,$tail);check($legacy['live_files']['done'],'Legacy partial windows finish through the current importer');$budget=$oldBudget;
  $dir=$private.'/segment-'.$job['id'].'-files.source.live';
  check(count(glob($dir.'/window*'))===1&&filesize($dir.'/window')<strlen($data),'Only the latest replay window remains retained');
  // Corrupt/reorder data and bind every stream to its job, selection and sequence.
  // Verified frame prefixes survive a connection that never delivers its window trailer.
  $partialJob=newJob();$partialWindow=window($partialJob['id'],$selection,0);$headLength=36+(unpack('N',substr($partialWindow,0,4))[1]&0x7fffffff);
- $cut=max($headLength,strlen($partialWindow)-17);$writer=new CSM_Live_Stream($partialJob,hash('sha256',CSM_Support::json($selection)));$writer->write(substr($partialWindow,0,$cut));
+ $cut=max($headLength,strlen($partialWindow)-17);$streams=count(get_resources('stream'));$writer=new CSM_Live_Stream($partialJob,hash('sha256',CSM_Support::json($selection)));$writer->write(substr($partialWindow,0,$cut));
  check($writer->save_partial(),'A timed-out window checkpoints its complete frames without claiming completion');
+ check($partialJob['live_partial']['chain_format']===2,'New partial windows persist their checksum format for header-free resumption');
+ check(count(get_resources('stream'))===$streams,'Publishing a partial checkpoint closes its request-local output descriptor');
  $partialJob=$saved[$partialJob['id']];$offset=$partialJob['live_partial']['offset'];
  $tail=implode('',iterator_to_array(CSM_Live_Stream::source($partialJob['id'],$selection,0,$offset)));
  check($tail===substr($partialWindow,$offset),'Source replay resumes exactly at the last verified frame boundary');
@@ -59,9 +66,11 @@ try{
  // Rebuild an interrupted producer from its pinned timestamp and starting cursor.
  $regen=newJob();$oldBudget=$budget;$budget=8;$full=window($regen['id'],$selection,0);$budget=$oldBudget;
  $writer=new CSM_Live_Stream($regen,hash('sha256',CSM_Support::json($selection)));$writer->write(substr($full,0,intdiv(strlen($full),2)));$writer->save_partial();$regen=$saved[$regen['id']];
+ $partialFile=$regen['imports']['files']['current'];check($partialFile&&$partialFile['written']>0,'The resume fixture contains an acknowledged partial file');file_put_contents($partialFile['stage'],'unacknowledged trailing bytes',FILE_APPEND);
  $d=$private.'/segment-'.$regen['id'].'-files.source.live';unlink($d.'/window');unlink($d.'/next.json');$offset=$regen['live_partial']['offset'];
  $budget=8;$tail=implode('',iterator_to_array(CSM_Live_Stream::source($regen['id'],$selection,0,$offset)));$budget=$oldBudget;deliver($regen,$selection,$tail);
  check($regen['live_files']['done'],'A crashed producer can rebuild a lost replay and resume its verified prefix');
+ check(hash_file('sha256',$partialFile['stage'])===hash('sha256',$data),'A fresh request truncates unacknowledged staged bytes and preserves the source checksum');
  $foreign=bin2hex(random_bytes(16));CSM_Support::atomic_json($private.'/segment-'.$foreign.'-files.comparison.owner',['credential'=>'foreign']);
  check(rejects(fn()=>window($foreign,$selection,0),'Foreign owner'),'Source streaming respects retained comparison ownership');
  $fresh=newJob();$first=window($fresh['id'],$selection,0);$bad=$first;$bad[40]=chr(ord($bad[40])^1);
@@ -87,7 +96,7 @@ try{
   $budget=8;$size=1024*1024*1024+17;$fp=fopen(WP_PLUGIN_DIR.'/demo/large.bin','wb');ftruncate($fp,$size);fclose($fp);
   $large=newJob();$seq=0;do{$writer=new CSM_Live_Stream($large,hash('sha256',CSM_Support::json($selection)));foreach(CSM_Live_Stream::source($large['id'],$selection,$seq)as$frame)$writer->write($frame);$writer->finish();$large=$saved[$large['id']];$seq++;if($seq>100)throw new RuntimeException('Large stream stalled');}while(empty($large['live_files']['done']));
   $file=array_values(array_filter($large['files'],static fn($f)=>str_ends_with($f['path'],'large.bin')))[0];
-  check($seq>=33&&filesize($file['stage'])===$size&&hash_file('sha256',$file['stage'])===$file['sha256'],'A file larger than 1 GiB streams across bounded windows with an exact final disk checksum');
+  check($seq>=ceil($size/CSM_Live_Stream::WINDOW_BYTES)&&filesize($file['stage'])===$size&&hash_file('sha256',$file['stage'])===$file['sha256'],'A file larger than 1 GiB streams across bounded windows with an exact final disk checksum');
  }
  CSM_Segments::cleanup_source($job['id']);check(!is_dir($dir),'Existing source cleanup removes live replay journals');
  echo "Live stream fixtures passed.\n";

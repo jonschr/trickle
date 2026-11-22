@@ -49,11 +49,16 @@ try{
  check(file_get_contents(WP_PLUGIN_DIR.'/batch-one/new.php')==='new'&&file_get_contents(WP_PLUGIN_DIR.'/batch-two/new.php')==='new','Completed directory journals replay safely before the outer cursor is saved');
  if (in_array('opcache', $argv ?? [], true) && function_exists('opcache_compile_file')) {
   check((bool)ini_get('opcache.enable_file_override'), 'OPcache file override is enabled for the regression');
+  foreach([false,true]as$copy){
+   $replacement=make_job($copy?'cached-copy':'cached-rename');$relative='plugins/'.$replacement['selection']['plugins'][0].'/new.php';$path=$replacement['file_plan']['paths'][$relative];$fresh='<?php return "fresh snapshot";';put($path,'<?php return "stale snapshot";');check(opcache_compile_file($path),'Prior component code enters OPcache');put($replacement['file_plan']['new'][$relative]['stage'],$fresh);$replacement['file_plan']['new'][$relative]['sha256']=hash('sha256',$fresh);$replacement['file_plan']['new'][$relative]['size']=strlen($fresh);
+   if($copy)force_copy($replacement);prepare($replacement);$replacementOp=$replacement['apply_work']['directories']['ops'][0];replace_bounded($replacementOp,$replacement['selection']);check((include $path)==='fresh snapshot','Both copy and rename backends invalidate previously compiled replacement code');
+  }
   $cached=make_job('cached-obsolete');$obsolete='plugins/cached-obsolete/lib/licensing.php';
   mkdir(WP_PLUGIN_DIR.'/cached-obsolete/lib');rename(WP_PLUGIN_DIR.'/cached-obsolete/obsolete.php',WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php');
   unset($cached['file_plan']['paths']['plugins/cached-obsolete/obsolete.php']);$cached['file_plan']['paths'][$obsolete]=WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php';
   check(opcache_compile_file(WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php'), 'Old licensing file enters OPcache before replacement');
   prepare($cached);$cachedOp=$cached['apply_work']['directories']['ops'][0];CSM_Directories::replace($cachedOp,$cached['selection']);
+  check(!opcache_is_script_cached(WP_PLUGIN_DIR.'/cached-obsolete/lib/licensing.php'),'Removed code leaves OPcache even when its old parent directory no longer exists');
   check(!in_array('licensing.php',is_dir(WP_PLUGIN_DIR.'/cached-obsolete/lib')?scandir(WP_PLUGIN_DIR.'/cached-obsolete/lib'):[],true),'Whole-directory swap physically removes the obsolete PHP file');
   $cached['apply_work']['whole_components']=true;$cached['database']=[];
   $verify=new ReflectionMethod(CSM_Plugin::class,'verify_installed_step');
