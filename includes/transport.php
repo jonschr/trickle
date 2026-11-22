@@ -114,13 +114,13 @@ final class CSM_Transport {
         return ['status' => $status, 'verified' => $ok !== false && $status >= 200 && $status < 300, 'error'=>$error];
     }
 
-    public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0, int $download_limit = 0): array {
+    public static function request(array $peer, string $action, array $data = [], ?Generator $upload = null, $download = null, int $timeout = 0, int $download_limit = 0, ?Generator $idle = null): array {
         if (!$timeout) { $timeout = ($upload || $download) ? 50 : ($action==='bundle'?55:45); }
-        $request = static fn()=>self::send($peer, $action, $data, $upload, $download, $timeout, $download_limit);
+        $request = static fn()=>self::send($peer, $action, $data, $upload, $download, $timeout, $download_limit, $idle);
         return !$upload && !$download && in_array($action, ['manifest','version','file_policy','component_hashes','media_hashes','status','segment_state'], true) ? self::retry($request) : $request();
     }
 
-    private static function send(array $peer, string $action, array $data, ?Generator $upload, $download, int $timeout, int $download_limit): array {
+    private static function send(array $peer, string $action, array $data, ?Generator $upload, $download, int $timeout, int $download_limit, ?Generator $idle): array {
         if (self::$retry_deadline!==null) { $left=(int)ceil(self::$retry_deadline-hrtime(true)/1e9); if ($left<1) { $error=new CSM_Network_Error('Transfer step reached its request limit. Resume from its saved checkpoint.'); $error->exhausted=true; throw $error; } $timeout=min($timeout,$left); }
         if (!extension_loaded('curl')) { throw new RuntimeException('The PHP cURL extension is required.'); }
         CSM_Log::secret($peer['key']);
@@ -156,7 +156,7 @@ final class CSM_Transport {
         $options += self::http_auth($peer['http_auth'] ?? []);
         $options[CURLOPT_NOPROGRESS] = false;
         $cancel_checked=0.0; $cancellable=!in_array($action,['cancel','bundle_discard','rollback','status','progress'],true);
-        $options[CURLOPT_XFERINFOFUNCTION] = static function () use ($cancellable,&$cancel_checked) {
+        $options[defined('CURLOPT_XFERINFOFUNCTION') ? CURLOPT_XFERINFOFUNCTION : CURLOPT_PROGRESSFUNCTION] = static function () use ($cancellable,&$cancel_checked) {
             // cURL may call repeatedly between data callbacks, which retain their own work-loop guards.
             if ($cancellable) {
                 $now=hrtime(true)/1e9;
@@ -172,7 +172,7 @@ final class CSM_Transport {
             'ca_source' => $ca === ABSPATH . WPINC . '/certificates/ca-bundle.crt' ? 'WordPress CA bundle' : ($ca ? 'Custom CA bundle (' . basename($ca) . ')' : 'System CA bundle')];
         if ($action==='media_manifest') { $context['component']=($data['year'] ?? '').'/'.($data['month'] ?? ''); }
         if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Outgoing request started', $context); }
-        $upload_error = null;
+        $upload_error = null; $upload_done=false;
         if ($upload) {
             $buffer = ''; $initialized = false;
             $options[CURLOPT_UPLOAD] = true;
@@ -180,7 +180,7 @@ final class CSM_Transport {
             $options[CURLOPT_HTTP_VERSION]=CURL_HTTP_VERSION_1_1;
             if ($action === 'stream_data' && isset($data['length'])) { $options[CURLOPT_INFILESIZE] = $data['length']; }
             $options[CURLOPT_CUSTOMREQUEST] = 'POST';
-            $options[CURLOPT_READFUNCTION] = static function ($curl, $fp, $length) use ($upload, &$buffer, &$initialized, &$upload_error) {
+            $options[CURLOPT_READFUNCTION] = static function ($curl, $fp, $length) use ($upload, &$buffer, &$initialized, &$upload_error, &$upload_done) {
                 $started=hrtime(true); $out='';
                 try {
                     while (strlen($buffer) < $length) {
@@ -188,7 +188,7 @@ final class CSM_Transport {
                         if (!$upload->valid()) { break; }
                         $buffer .= $upload->current(); $upload->next();
                     }
-                    $out = substr($buffer, 0, $length); $buffer = substr($buffer, strlen($out)); return $out;
+                    $out = substr($buffer, 0, $length); $buffer = substr($buffer, strlen($out)); $upload_done=$out===''; return $out;
                 } catch (Throwable $e) { $upload_error = $e; return CURL_READFUNC_ABORT; }
                 finally { CSM_Timing::add('stream.produce',$started,strlen($out)); }
             };
@@ -197,7 +197,9 @@ final class CSM_Transport {
         }
         curl_setopt_array($ch, $options);
         $timing=hrtime(true);
-        try { $ok = curl_exec($ch); } finally { CSM_Timing::add('http.'.$action,$timing,$bytes); }
+        $idle_started=false;
+        try { $ok = $idle && $upload && function_exists('curl_multi_init') ? self::send_with_idle($ch,$idle,$upload_done,$idle_started) : curl_exec($ch); }
+        finally { CSM_Timing::add('http.'.$action,$timing,$bytes); }
         if ($cancellable) { CSM_Support::check_cancel(); }
         $error = curl_error($ch); $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $context += ['http_status' => $status, 'curl_errno' => curl_errno($ch), 'ssl_verify_result' => curl_getinfo($ch, CURLINFO_SSL_VERIFYRESULT), 'duration_ms' => (int)round(curl_getinfo($ch, CURLINFO_TOTAL_TIME) * 1000)];
@@ -246,6 +248,42 @@ final class CSM_Transport {
             throw new RuntimeException($message);
         }
         if (!in_array($action, ['progress', 'status'], true)) { CSM_Log::write('info', 'Outgoing request completed', $context); }
+        // Preserve work already started: the next request reuses this bounded window instead of producing it twice.
+        if ($idle_started) {
+            CSM_Support::check_cancel(); $work=hrtime(true);
+            try { while ($idle->valid()) { $idle->next(); } }
+            catch (Throwable $error) { CSM_Log::write('info','Source look-ahead deferred',['error'=>$error->getMessage()]); }
+            finally { CSM_Timing::add('stream.lookahead',$work); }
+            CSM_Support::check_cancel();
+        }
         return $parsed['data'] ?? [];
+    }
+
+    /** One network transfer; use response waits for bounded local production only. */
+    private static function send_with_idle($ch, Generator $idle, bool &$uploaded, bool &$started): bool {
+        $multi=curl_multi_init(); curl_multi_add_handle($multi,$ch);
+        $done=false; $uploaded_at=null;
+        try {
+            do {
+                do { $result=curl_multi_exec($multi,$running); } while ($result===CURLM_CALL_MULTI_PERFORM);
+                if ($result!==CURLM_OK) { throw new RuntimeException('Cannot advance upload connection.'); }
+                if (!$running) { break; }
+                if ($uploaded && $uploaded_at===null) { $uploaded_at=hrtime(true); }
+                // Avoid speculative work for immediate replies; never delay socket processing by more than one frame.
+                if ($uploaded_at!==null && !$done && hrtime(true)-$uploaded_at>=100000000) {
+                    CSM_Support::check_cancel(); $work=hrtime(true);
+                    try {
+                        if (!$started) { $idle->rewind(); $started=true; } else { $idle->next(); }
+                        $done=!$idle->valid();
+                    } catch (Throwable $error) {
+                        $done=true; CSM_Log::write('info','Source look-ahead deferred',['error'=>$error->getMessage()]);
+                    } finally { CSM_Timing::add('stream.lookahead',$work); }
+                    continue;
+                }
+                if (curl_multi_select($multi,.01)===-1) { usleep(1000); }
+            } while ($running);
+            $info=curl_multi_info_read($multi);
+            return $info && $info['result']===CURLE_OK;
+        } finally { curl_multi_remove_handle($multi,$ch); curl_multi_close($multi); }
     }
 }

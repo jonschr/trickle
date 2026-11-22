@@ -12,7 +12,7 @@ function plugin_basename($p){return 'trickle/trickle.php';}function get_option($
 function get_plugins(){return ['demo/main.php'=>['Name'=>'Demo','Version'=>'1','PluginURI'=>'']];}function get_site_transient($name){return false;}function get_template(){return 'default';}function get_stylesheet(){return 'default';}function esc_url_raw($url,...$args){return $url;}
 function get_theme_roots(){return [];}function wp_get_themes(){return [];}
 class CSM_Activation {static function current(){return [];}static function source(&$job,$header){}}
-class CSM_Progress {static function update(...$args){CSM_Support::check_cancel();}static function read($id){return [];}static function run(){return 'fixture';}}
+class CSM_Progress {static function update(...$args){CSM_Support::check_cancel();if(!empty($GLOBALS['slowSmall'])&&($args[0]['phase']??'')==='Packaging file'&&($args[0]['component']??'')==='plugins/demo/fast.bin'&&($args[0]['bytes']??0)===262144){$GLOBALS['slowSmall']=false;usleep(20000);}}static function read($id){return [];}static function run(){return 'fixture';}}
 class CSM_Jobs {static function save($job){$GLOBALS['saved'][$job['id']]=json_decode(json_encode($job),true);}}
 class CSM_Updates {static function assert_job($job){}}
 class CSM_Access {static function owner(){return 'fixture';}static function assert_owner($state){if(isset($state['credential'])&&$state['credential']!=='fixture')throw new RuntimeException('Foreign owner');}}
@@ -46,6 +46,48 @@ try{
  foreach($job['files']as$file){check(hash_file('sha256',$file['stage'])===$file['sha256'],'Streamed file matches its source checksum');}
  check(!is_file($private.'/segment-'.$job['id'].'-files.source')&&!glob($private.'/*.incoming*'),'Neither end creates a full archive or decompressed intermediate stream');
  check(file_get_contents(WP_PLUGIN_DIR.'/demo/large.bin')===$data,'Streaming never mutates live destination/source files');
+ // A speculative next window must never acknowledge or replace the current replay.
+ $aheadJob=newJob();$first=window($aheadJob['id'],$selection,0);$d=$private.'/segment-'.$aheadJob['id'].'-files.source.live';
+ $beforeState=file_get_contents($d.'/state.json');$oldBudget=$budget;$budget=8;
+ iterator_to_array(CSM_Live_Stream::lookahead($aheadJob['id'],$selection,0));
+ $prepared=file_get_contents($d.'/ahead/window');
+ check(file_get_contents($d.'/state.json')===$beforeState&&window($aheadJob['id'],$selection,0)===$first,'Look-ahead preserves the unacknowledged cursor and exact current replay');
+ deliver($aheadJob,$selection,$first);$next=window($aheadJob['id'],$selection,1);
+ check($next===$prepared&&!is_dir($d.'/ahead'),'A receiver acknowledgement promotes the exact prepared following window');
+ deliver($aheadJob,$selection,$next);check($aheadJob['live_files']['done'],'Promoted look-ahead completes with normal file and manifest checks');
+ foreach($aheadJob['files']as$file)check(hash_file('sha256',$file['stage'])===$file['sha256'],'Look-ahead installed staging preserves exact source bytes');
+ $budget=$oldBudget;$abandoned=newJob();$first=window($abandoned['id'],$selection,0);$d=$private.'/segment-'.$abandoned['id'].'-files.source.live';$budget=8;
+ $producer=CSM_Live_Stream::lookahead($abandoned['id'],$selection,0);$producer->rewind();$producer->next();$producer->next();unset($producer);
+ check(!is_file($d.'/ahead/next.json')&&window($abandoned['id'],$selection,0)===$first,'Abandoning incomplete look-ahead does not publish it or damage current replay');
+ deliver($abandoned,$selection,$first);$next=window($abandoned['id'],$selection,1);deliver($abandoned,$selection,$next);
+ check($abandoned['live_files']['done'],'An incomplete speculative window falls back to normal generation');$budget=$oldBudget;
+ $promoteCrash=newJob();$first=window($promoteCrash['id'],$selection,0);$d=$private.'/segment-'.$promoteCrash['id'].'-files.source.live';$budget=8;
+ iterator_to_array(CSM_Live_Stream::lookahead($promoteCrash['id'],$selection,0));$prepared=file_get_contents($d.'/ahead/window');deliver($promoteCrash,$selection,$first);
+ copy($d.'/next.json',$d.'/state.json');unlink($d.'/next.json');unlink($d.'/window');rename($d.'/ahead/window',$d.'/window');
+ $next=window($promoteCrash['id'],$selection,1);check($next===$prepared,'A crash between look-ahead publication moves safely regenerates the exact window');
+ deliver($promoteCrash,$selection,$next);check($promoteCrash['live_files']['done'],'Recovery from interrupted look-ahead publication keeps complete file checks');$budget=$oldBudget;
+ $smallPath=WP_PLUGIN_DIR.'/demo/fast.bin';$smallBytes=random_bytes(1048576+123);file_put_contents($smallPath,$smallBytes);$smallJob=newJob();$budget=.0000001;$seq=0;$savedDigest=false;$slowSmall=true;
+ do {
+  $bytes=window($smallJob['id'],$selection,$seq);deliver($smallJob,$selection,$bytes);
+  $state=json_decode(file_get_contents($private.'/segment-'.$smallJob['id'].'-files.source.live/next.json'),true)['cursor'];
+  $savedDigest=$savedDigest || isset($state['digest']) && $state['offset']>0 && $state['offset']<strlen($smallBytes);
+  if(++$seq>200)throw new RuntimeException('Small accelerated file did not resume');
+ }while(empty($smallJob['live_files']['done']));
+ $file=array_values(array_filter($smallJob['files'],static fn($f)=>$f['path']==='plugins/demo/fast.bin'))[0];
+ check((!function_exists('openssl_digest')||$savedDigest)&&hash_file('sha256',$file['stage'])===hash('sha256',$smallBytes),'Bounded accelerated source files resume across serialized windows with their exact original digest');
+ $smallMutation=newJob();$slowSmall=true;$seq=0;$changedSmall=false;$rejectedSmall=false;
+ try {
+  do {
+   $bytes=window($smallMutation['id'],$selection,$seq);deliver($smallMutation,$selection,$bytes);
+   $state=json_decode(file_get_contents($private.'/segment-'.$smallMutation['id'].'-files.source.live/next.json'),true)['cursor'];
+   if(!$changedSmall&&($state['offset']??0)>0&&($state['offset']??0)<strlen($smallBytes)&&isset($state['digest'])){
+    $mtime=filemtime($smallPath);file_put_contents($smallPath,str_repeat('X',strlen($smallBytes)));touch($smallPath,$mtime);$changedSmall=true;
+   }
+   if(++$seq>200)throw new RuntimeException('Mutation fixture did not finish');
+  }while(empty($smallMutation['live_files']['done']));
+ }catch(RuntimeException $error){$rejectedSmall=str_contains($error->getMessage(),'Source stream failed')||str_contains($error->getMessage(),'File checksum');}
+ check(!function_exists('openssl_digest')||$changedSmall&&$rejectedSmall,'Changing a small source after its first frame cannot complete with a mixed or stale digest');
+ unlink($smallPath);$budget=$oldBudget;
  // Metadata-matching components generate no source or receiver content reads until receipt is complete.
  $metadataSelection=selection();$inventory=CSM_Components::inventory(['selection'=>$metadataSelection,'source'=>true]);
  $metadataSelection['component_same']=base64_encode(gzencode(CSM_Support::json(['component_token'=>$inventory['token']])));

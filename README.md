@@ -63,3 +63,5 @@ Run `phpcs` with WordPress Coding Standards installed to audit first-party PHP u
 Sites behind hosting-provider HTTP Basic Auth can enter the site-protection username and password under **Add a site → Site protection**. Saved credentials stay on the controlling site and are sent only to that connection’s URL; redirects are not followed. **Update connection** preserves saved credentials when both fields are blank, or removes them with the explicit removal checkbox.
 
 File change selection uses size and modification time for plugins, themes and media; it does not read file contents to compare them before transfer. Transferred contents retain stream checksums and installed-file verification. Force retransfer sends matching files as well.
+
+Pushes keep one data request active. While awaiting a receipt, the sending plugin can prepare one additional private replay window; the current window remains available until acknowledged. No helper process or additional receiver worker is required. Small-file checksum acceleration is bounded to 2 MiB; larger files keep streaming checksums.

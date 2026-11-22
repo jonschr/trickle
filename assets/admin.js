@@ -1480,12 +1480,15 @@
         button.setAttribute('aria-expanded', String(!detail.hidden));
         button.textContent = detail.hidden ? 'View details' : 'Hide details';
     });
-    $('download-logs').addEventListener('click', () => {
-        const file = new Blob([JSON.stringify({site:location.origin, downloaded_at:new Date().toISOString(), entries:logEntries}, null, 2)], {type:'application/json'});
+    $('download-logs').addEventListener('click', () => run(async () => {
+        const details = diagnosticDetails(), transfer = new URLSearchParams(location.search).get('transfer_id');
+        if (transfer) details.transfer_id = transfer;
+        const report = await api('diagnostics', {details});
+        const file = new Blob([JSON.stringify(report, null, 2)], {type:'application/json'});
         const url = URL.createObjectURL(file), link = document.createElement('a');
         link.href = url; link.download = `trickle-diagnostics-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
-    });
+    }));
     $('direction').value = session?.direction || (()=>{try{return localStorage.getItem('trickle-last-direction');}catch{return null;}})() || connectionState.recents.find(item => ['push','pull'].includes(item.direction))?.direction || 'pull';
     renderConnections(connectionState);renderPresetChoices();updateSelection();
     if (CSM.state.recovery_error) { fail(new Error(`Recovery needs attention: ${CSM.state.recovery_error}. The site remains protected. Check Diagnostics, then retry recovery.`)); const retry=document.createElement('button'); retry.type='button'; retry.className='button'; retry.textContent='Retry recovery'; retry.addEventListener('click',()=>run(async()=>{ let result; do { result=await api('recover_destination'); } while (result.continue); location.reload(); })); ($('error').querySelector('.csm-error-actions') || $('error')).append(retry); }

@@ -1,7 +1,7 @@
 <?php
 defined('ABSPATH') || exit;
 
-/** Bounded, replayable file windows; only the current window is retained on the source. */
+/** Bounded replay windows, with at most one unpublished source look-ahead window. */
 final class CSM_Live_Stream {
     public const WINDOW_BYTES = 32 * 1024 * 1024;
     private array $job;
@@ -40,10 +40,24 @@ final class CSM_Live_Stream {
         return CSM_Support::private_dir().'/segment-'.$id.'-files.source';
     }
 
+    /** Prepare the following window without acknowledging or removing the current replay. */
+    public static function lookahead(string $id, array $selection, int $seq): Generator {
+        $dir=self::base($id).'.live'; $path=$dir.'/next.json';
+        if (!is_file($path)) { return; }
+        $state=json_decode(file_get_contents($path),true,512,JSON_THROW_ON_ERROR);
+        CSM_Access::assert_owner($state);
+        if ($state['seq']!==$seq+1 || !empty($state['cursor']['done']) || $state['selection']!==hash('sha256',CSM_Support::json($selection))) { return; }
+        $ahead=$dir.'/ahead';
+        if (is_file($ahead.'/state.json') && json_decode(file_get_contents($ahead.'/state.json'),true,512,JSON_THROW_ON_ERROR)!==$state) { CSM_Support::remove_tree($ahead); }
+        if (!is_dir($ahead) && !mkdir($ahead,0700)) { return; }
+        CSM_Support::atomic_json($ahead.'/state.json',$state);
+        yield from self::source($id,$selection,$seq+1,0,true);
+    }
+
     /** The saved state advances only when the receiver requests the following sequence. */
-    public static function source(string $id, array $selection, int $seq, int $offset = 0): Generator {
+    public static function source(string $id, array $selection, int $seq, int $offset = 0, bool $lookahead = false): Generator {
         if ($seq<0 || $offset<0) { throw new RuntimeException('Invalid file stream sequence.'); }
-        $base=self::base($id); $dir=$base.'.live'; $digest=hash('sha256',CSM_Support::json($selection));
+        $base=self::base($id); $dir=$base.'.live'.($lookahead?'/ahead':''); $digest=hash('sha256',CSM_Support::json($selection));
         $lock=fopen($base.'.lock','c');
         if (!$lock || !flock($lock,LOCK_EX|LOCK_NB)) { if ($lock) { fclose($lock); } throw new CSM_Busy_Error('Source stream is busy.'); }
         try {
@@ -77,6 +91,14 @@ final class CSM_Live_Stream {
                 if ($next['seq']===$state['seq']) { unlink($next_path); if (is_file($window)) { unlink($window); } }
             }
             if ($seq!==$state['seq'] || !empty($state['cursor']['done'])) { throw new RuntimeException('Source stream sequence changed. Refresh the destination checkpoint.'); }
+            $ahead=$dir.'/ahead';
+            if (!$lookahead && !is_file($next_path) && is_file($ahead.'/window') && is_file($ahead.'/next.json') && is_file($ahead.'/state.json')
+                && json_decode(file_get_contents($ahead.'/state.json'),true,512,JSON_THROW_ON_ERROR)===$state) {
+                // Publish the checkpoint last; a crash between these moves safely regenerates this window.
+                if (!rename($ahead.'/window',$window) || !rename($ahead.'/next.json',$next_path)) { throw new RuntimeException('Cannot publish prepared stream window.'); }
+                CSM_Timing::add('stream.lookahead_reuse',hrtime(true),filesize($window));
+                CSM_Support::remove_tree($ahead);
+            }
             $format=$state['chain_format'] ?? 1;
             if (!in_array($format,[1,2],true)) { throw new RuntimeException('Invalid source checksum format.'); }
             if (is_file($window) && is_file($next_path)) {

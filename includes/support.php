@@ -92,14 +92,21 @@ final class CSM_Support {
         $timing=hrtime(true);
         $fp=fopen($path,'rb'); if (!$fp) { throw new RuntimeException('Cannot read checksum file: '.basename($path)); }
         $seconds=max(1,min(15,(int)apply_filters('csm_hash_seconds',15))); $deadline=hrtime(true)/1e9+$seconds; $hash=hash_init('sha256'); $read=0;
+        // Keep large files streaming; small files can use the existing accelerated SHA-256 provider.
+        $buffer=function_exists('openssl_digest') && class_exists('CSM_Package',false) && fstat($fp)['size']<=2097152 ? '' : null;
         try {
             while (!feof($fp)) {
                 self::check_source_budget();
                 if (hrtime(true)/1e9>=$deadline) { throw new RuntimeException('Checksum exceeded the '.$seconds.'-second limit: '.basename($path)); }
                 $bytes=fread($fp,262144); if ($bytes===false || ($bytes==='' && !feof($fp))) { throw new RuntimeException('Checksum read failed: '.basename($path)); }
-                hash_update($hash,$bytes); $read+=strlen($bytes); if ($progress) { $progress($read); }
+                if ($buffer!==null && strlen($buffer)+strlen($bytes)<=2097152) { $buffer.=$bytes; }
+                else {
+                    if ($buffer!==null) { hash_update($hash,$buffer); $buffer=null; }
+                    hash_update($hash,$bytes);
+                }
+                $read+=strlen($bytes); if ($progress) { $progress($read); }
             }
-            return hash_final($hash);
+            return $buffer!==null ? CSM_Package::digest($buffer) : hash_final($hash);
         } finally { fclose($fp); CSM_Timing::add('checksum.read',$timing,$read); }
     }
 

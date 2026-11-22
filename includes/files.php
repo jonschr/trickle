@@ -494,9 +494,20 @@ final class CSM_Files {
             $filehash = $offset === 0 ? hash_init('sha256') : (isset($cursor['file_hash']) ? CSM_Support::restore_hash($cursor['file_hash']) : null);
             if (!$fp || fseek($fp,$offset)!==0) { throw new RuntimeException('Cannot resume source file: '.$relative); }
             try {
+                $buffer=null;
+                if ($offset===0 && $stat['size']<=2097152 && function_exists('openssl_digest')) {
+                    $buffer='';
+                    while (strlen($buffer)<$stat['size']) {
+                        CSM_Support::check_source_budget();
+                        $part=fread($fp,min(262144,$stat['size']-strlen($buffer)));
+                        if ($part===false || $part==='') { throw new RuntimeException('Source file is truncated: '.$relative); }
+                        $buffer.=$part;
+                    }
+                    $cursor['digest']=CSM_Package::digest($buffer); $filehash=null;
+                }
                 while ($offset < $stat['size']) {
                     CSM_Support::check_cancel();
-                    $bytes = fread($fp,min(262144,$stat['size']-$offset));
+                    $bytes = $buffer!==null ? substr($buffer,$offset,262144) : fread($fp,min(262144,$stat['size']-$offset));
                     if ($bytes === false || $bytes === '') { throw new RuntimeException('Source file is truncated: '.$relative); }
                     $offset += strlen($bytes); $cursor['offset'] = $offset;
                     if ($filehash !== null) { hash_update($filehash,$bytes); $cursor['file_hash']=CSM_Support::save_hash($filehash); }

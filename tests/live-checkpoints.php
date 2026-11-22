@@ -8,7 +8,7 @@ function update_option($key,$value,...$args){$GLOBALS['options'][$key]=$value;}
 class CSM_Support {static function json($v){return json_encode($v);}static function step(...$args){}}
 class CSM_Plugin {static function kinds($selection){return ['files'];}}
 class CSM_Progress {static function run(){return 'fixture';}static function read($id){return [];}}
-class CSM_Live_Stream {static function source(...$args){yield 'frame';}}
+class CSM_Live_Stream {static function source(...$args){yield 'frame';}static function lookahead(...$args){yield '';}}
 class CSM_Network_Error extends RuntimeException {}
 class CSM_Transport {
  static function request($peer,$action,$data,...$args){

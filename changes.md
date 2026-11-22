@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Include recorded performance samples in diagnostic downloads, with an optional retained-transfer filter.
+- Keep transport cancellation working on PHP 8.1 through its older cURL progress callback option.
+- Prepare one following file window during successful push response waits, retaining the current replay until acknowledged. Keep uploads serial and fall back when cURL multi is unavailable.
+- Accelerate bounded small-file source and verification SHA-256 through the existing optional provider; retain the streaming path for larger files and exact checksum fallback.
 - Compare plugins, themes and media by file size and modification time, including cold inventories. Remove pre-transfer content hashing and rehash preferences.
 - Keep stream checksums, private staging, recovery and installed-file verification. Establish skipped component recovery checksums after receipt.
 

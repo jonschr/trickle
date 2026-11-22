@@ -336,7 +336,7 @@ final class CSM_Controller {
             $control['live_pending']=true; update_option('_csm_control',$control,false);
             $input=empty($state['done'])?CSM_Live_Stream::source($id,$selection,$state['seq'],$state['offset'] ?? 0):(static function(){ yield ''; })();
             try {
-                $summary=CSM_Transport::request($peer,'live_receive',['id'=>$id,'seq'=>$state['seq'],'offset'=>$state['offset'] ?? 0,'selection_hash'=>hash('sha256',CSM_Support::json($selection)),'progress_run'=>CSM_Progress::run()],$input,null,40);
+                $summary=CSM_Transport::request($peer,'live_receive',['id'=>$id,'seq'=>$state['seq'],'offset'=>$state['offset'] ?? 0,'selection_hash'=>hash('sha256',CSM_Support::json($selection)),'progress_run'=>CSM_Progress::run()],$input,null,40,0,empty($state['done'])?CSM_Live_Stream::lookahead($id,$selection,$state['seq']):null);
             } catch (CSM_Network_Error $error) {
                 // A lost response may still have committed frames. Confirm progress before retrying.
                 try { $after=CSM_Transport::request($peer,'live_state',['id'=>$id],null,null,5); }
