@@ -1,4 +1,10 @@
 <?php
+/**
+ * Durable migration job records and checkpoint storage.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/timing.php';
 
@@ -7,6 +13,15 @@ final class CSM_Jobs {
 	private const INLINE_BYTES     = 262144;
 	private const MAX_RECORD_BYTES = 268435456;
 
+	/**
+	 * Load a job and merge its durable transactional cursor when applicable.
+	 *
+	 * @param string $id Transfer identifier.
+	 *
+	 * @return array Complete job state, merged with any valid transactional cursor.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function get( string $id ): array {
 		$timing = hrtime( true );
 		try {
@@ -25,11 +40,27 @@ final class CSM_Jobs {
 			CSM_Timing::add( 'checkpoint.load', $timing, 0 ); }
 	}
 
+	/**
+	 * Reject malformed transfer identifiers before accessing storage.
+	 *
+	 * @param string $id Transfer identifier.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function require_id( string $id ): void {
 		if ( ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) {
 			throw new RuntimeException( 'Invalid transfer ID.' ); }
 	}
 
+	/**
+	 * Reject public or symlinked checkpoint storage paths.
+	 *
+	 * @param mixed $dir Candidate private checkpoint directory.
+	 *
+	 * @return string The checked private directory path.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function private_directory( $dir ): string {
 		if ( ! is_string( $dir ) || is_link( $dir ) || CSM_Support::public_path( $dir ) ) {
 			throw new RuntimeException( 'Unsafe transfer checkpoint storage.' );
@@ -37,6 +68,16 @@ final class CSM_Jobs {
 		return $dir;
 	}
 
+	/**
+	 * Verify and decode a file-backed job record.
+	 *
+	 * @param string $id Transfer identifier.
+	 * @param array  $record Persisted record whose connection ownership must be checked.
+	 *
+	 * @return array Decoded job state matching the record digest and identity.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function read_state( string $id, array $record ): array {
 		$digest = $record['_csm_blob'];
 		if ( ! is_string( $digest ) || ! preg_match( '/^[a-f0-9]{64}$/D', $digest ) ) {
@@ -44,25 +85,34 @@ final class CSM_Jobs {
 		}
 		$dir = self::private_directory( $record['_csm_blob_dir'] ?? CSM_Support::private_dir() . '/job-records/' . $id );
 		$raw = @file_get_contents( $dir . '/' . $digest . '.json.gz' );
-		if ( $raw === false || ! hash_equals( $digest, hash( 'sha256', $raw ) ) ) {
+		if ( false === $raw || ! hash_equals( $digest, hash( 'sha256', $raw ) ) ) {
 			throw new RuntimeException( 'Transfer checkpoint is missing or changed.' );
 		}
 		$decoded = @gzdecode( $raw, self::MAX_RECORD_BYTES );
-		$job     = $decoded === false ? null : json_decode( $decoded, true, 512, JSON_THROW_ON_ERROR );
+		$job     = false === $decoded ? null : json_decode( $decoded, true, 512, JSON_THROW_ON_ERROR );
 		if ( ! is_array( $job ) || ( $job['id'] ?? null ) !== $id || ( $job['status'] ?? null ) !== $record['status'] ) {
 			throw new RuntimeException( 'Invalid transfer checkpoint.' );
 		}
 		return $job;
 	}
 
+	/**
+	 * Read the transactionally committed cursor without the options cache.
+	 *
+	 * @param string $id Transfer identifier.
+	 *
+	 * @return array Committed cursor, or an empty array when none exists.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function read_cursor( string $id ): array {
 		global $wpdb;
 		// Transactional writes bypass the options cache, including its negative cache.
 		$sql   = $wpdb->prepare( 'SELECT option_value FROM ' . CSM_Support::ident( $wpdb->options ) . ' WHERE option_name=%s', '_csm_cursor_' . $id );
 		$value = $wpdb->get_var( $sql );
-		if ( $wpdb->last_error !== '' ) {
+		if ( '' !== $wpdb->last_error ) {
 			throw new RuntimeException( 'Could not read transfer checkpoint: ' . $wpdb->last_error ); }
-		if ( $value === null ) {
+		if ( null === $value ) {
 			return array(); }
 		$cursor = maybe_unserialize( $value );
 		if ( ! is_array( $cursor ) || ! isset( $cursor['status'] ) ) {
@@ -70,6 +120,13 @@ final class CSM_Jobs {
 		return $cursor;
 	}
 
+	/**
+	 * Persist a complete job record and invalidate its superseded cursor.
+	 *
+	 * @param array $job Destination transfer record, including recovery state.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function save( array $job ): void {
 		$timing = hrtime( true );
 		try {
@@ -88,6 +145,15 @@ final class CSM_Jobs {
 			CSM_Timing::add( 'checkpoint.save', $timing, 0 ); }
 	}
 
+	/**
+	 * Store oversized job data privately and return its bounded reference.
+	 *
+	 * @param array $job Destination transfer record, including recovery state.
+	 *
+	 * @return array Inline job record or bounded reference to private compressed storage.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function encode_record( array $job ): array {
 		if ( strlen( maybe_serialize( $job ) ) <= self::INLINE_BYTES ) {
 			return $job; }
@@ -97,7 +163,7 @@ final class CSM_Jobs {
 		}
 		$raw = gzencode( $json, 3 );
 		unset( $json );
-		if ( $raw === false ) {
+		if ( false === $raw ) {
 			throw new RuntimeException( 'Could not encode transfer checkpoint.' ); }
 		$digest = hash( 'sha256', $raw );
 		$dir    = isset( $job['backup_dir'] ) ? $job['backup_dir'] . '/job-records' : CSM_Support::private_dir() . '/job-records/' . $job['id'];
@@ -114,6 +180,11 @@ final class CSM_Jobs {
 		);
 	}
 
+	/**
+	 * Persist a bounded cursor within the caller’s database transaction.
+	 *
+	 * @param array $job Destination transfer record, including recovery state.
+	 */
 	public static function save_transactional( array $job ): void {
 		self::require_id( $job['id'] ?? '' );
 		@touch( CSM_Support::private_dir() . '/' . $job['id'] . '-heartbeat' );
@@ -125,6 +196,11 @@ final class CSM_Jobs {
 		wp_cache_delete( $key, 'options' );
 	}
 
+	/**
+	 * Remove a job record and its associated private checkpoint storage.
+	 *
+	 * @param string $id Transfer identifier.
+	 */
 	public static function forget( string $id ): void {
 		self::require_id( $id );
 		CSM_Support::remove_tree( CSM_Support::private_dir() . '/job-records/' . $id );
@@ -132,6 +208,9 @@ final class CSM_Jobs {
 		delete_option( '_csm_job_' . $id );
 	}
 
+	/**
+	 * Remove unreferenced job checkpoint directories.
+	 */
 	public static function prune(): void {
 		$dirs = array();
 		foreach ( glob( CSM_Support::private_dir() . '/job-records/*', GLOB_ONLYDIR ) ?: array() as $dir ) {

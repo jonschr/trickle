@@ -1,21 +1,92 @@
 <?php
+/**
+ * Resumable framed file streaming and destination receipts.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Bounded replay windows, with at most one unpublished source look-ahead window. */
 final class CSM_Live_Stream {
 	public const WINDOW_BYTES = 32 * 1024 * 1024;
+	/**
+	 * Destination job record shared with the receiving request.
+	 *
+	 * @var array
+	 */
 	private array $job;
-	private string $buffer     = '';
-	private bool $started      = false;
+	/**
+	 * Unconsumed incoming frame bytes.
+	 *
+	 * @var string
+	 */
+	private string $buffer = '';
+	/**
+	 * Whether this file stream has consumed its opening record.
+	 *
+	 * @var bool
+	 */
+	private bool $started = false;
+	/**
+	 * Most recent complete frame checkpoint eligible for persistence.
+	 *
+	 * @var array|null
+	 */
 	private ?array $checkpoint = null;
+	/**
+	 * Running frame-chain checksum.
+	 *
+	 * @var string
+	 */
 	private string $chain;
+	/**
+	 * Logical file bytes acknowledged by the stream.
+	 *
+	 * @var int
+	 */
 	private int $bytes;
+	/**
+	 * Current replay window sequence number.
+	 *
+	 * @var int
+	 */
 	private int $sequence;
-	private int $position         = 0;
+	/**
+	 * Current byte offset in the replay window.
+	 *
+	 * @var int
+	 */
+	private int $position = 0;
+	/**
+	 * Window offset at the start of this request.
+	 *
+	 * @var int
+	 */
 	private int $initial_position = 0;
-	private int $received         = 0;
+	/**
+	 * Bytes received during this request.
+	 *
+	 * @var int
+	 */
+	private int $received = 0;
+	/**
+	 * Digest binding the stream to its approved selection.
+	 *
+	 * @var string
+	 */
 	private string $selection;
-	private int $chain_format  = 1;
+	/**
+	 * Negotiated frame-chain checksum format.
+	 *
+	 * @var int
+	 */
+	private int $chain_format = 1;
+	/**
+	 * Open staged-file handle and its validated receipt state.
+	 *
+	 * @var array
+	 */
 	private array $file_output = array();
 
 	public function __destruct() {
@@ -26,7 +97,7 @@ final class CSM_Live_Stream {
 
 	public function __construct( array &$job, string $selection ) {
 		CSM_Updates::assert_job( $job );
-		if ( $job['status'] !== 'staging' || ! in_array( 'files', CSM_Plugin::kinds( $job['selection'] ), true ) ) {
+		if ( 'staging' !== $job['status'] || ! in_array( 'files', CSM_Plugin::kinds( $job['selection'] ), true ) ) {
 			throw new RuntimeException( 'Transfer is not awaiting files.' ); }
 		$this->job      =&$job;
 		$this->sequence = $job['live_files']['seq'] ?? 0;
@@ -60,7 +131,7 @@ final class CSM_Live_Stream {
 			return; }
 		$state = json_decode( file_get_contents( $path ), true, 512, JSON_THROW_ON_ERROR );
 		CSM_Access::assert_owner( $state );
-		if ( $state['seq'] !== $seq + 1 || ! empty( $state['cursor']['done'] ) || $state['selection'] !== hash( 'sha256', CSM_Support::json( $selection ) ) ) {
+		if ( $seq + 1 !== $state['seq'] || ! empty( $state['cursor']['done'] ) || hash( 'sha256', CSM_Support::json( $selection ) ) !== $state['selection'] ) {
 			return; }
 		$ahead = $dir . '/ahead';
 		if ( is_file( $ahead . '/state.json' ) && json_decode( file_get_contents( $ahead . '/state.json' ), true, 512, JSON_THROW_ON_ERROR ) !== $state ) {
@@ -100,8 +171,8 @@ final class CSM_Live_Stream {
 			$next_path  = $dir . '/next.json';
 			$window     = $dir . '/window';
 			$state      = is_file( $state_path ) ? json_decode( file_get_contents( $state_path ), true, 512, JSON_THROW_ON_ERROR ) : null;
-			if ( $state === null ) {
-				if ( $seq !== 0 ) {
+			if ( null === $state ) {
+				if ( 0 !== $seq ) {
 					throw new RuntimeException( 'Source stream checkpoint is missing.' ); }
 				$normalized = CSM_Files::selection( $selection );
 				$state      = array(
@@ -174,9 +245,9 @@ final class CSM_Live_Stream {
 					while ( ! feof( $fp ) ) {
 						CSM_Support::check_cancel();
 						$part = fread( $fp, 262144 );
-						if ( $part === false ) {
+						if ( false === $part ) {
 							throw new RuntimeException( 'Cannot replay stream window.' );
-						} if ( $part !== '' ) {
+						} if ( '' !== $part ) {
 							yield $part; }
 					}
 				} finally {
@@ -201,12 +272,12 @@ final class CSM_Live_Stream {
 							'seq'       => $seq,
 							'selection' => $digest,
 							'previous'  => $state['chain'],
-						) + ( $format === 2 ? array( 'chain_format' => 2 ) : array() )
+						) + ( 2 === $format ? array( 'chain_format' => 2 ) : array() )
 					),
 					true
 				);
 				CSM_Support::write( $fp, $header );
-				if ( $offset === 0 ) {
+				if ( 0 === $offset ) {
 					yield $header;
 				} elseif ( $offset < strlen( $header ) ) {
 					throw new RuntimeException( 'Invalid replay offset.' ); }
@@ -216,8 +287,8 @@ final class CSM_Live_Stream {
 					$frame = CSM_Package::frame( $unit );
 					// The header binds length, control bit and the payload's SHA-256; do not hash its bytes twice.
 					$chain_started  = hrtime( true );
-					$state['chain'] = CSM_Package::chain( $state['chain'], $format === 2 ? substr( $frame, 0, 36 ) : CSM_Package::digest( $frame ) );
-					CSM_Timing::add( 'stream.frame_chain', $chain_started, $format === 2 ? 36 : strlen( $frame ) );
+					$state['chain'] = CSM_Package::chain( $state['chain'], 2 === $format ? substr( $frame, 0, 36 ) : CSM_Package::digest( $frame ) );
+					CSM_Timing::add( 'stream.frame_chain', $chain_started, 2 === $format ? 36 : strlen( $frame ) );
 					$state['bytes'] += strlen( $frame );
 					$raw            += strlen( $unit );
 					$wire           += strlen( $frame );
@@ -280,7 +351,7 @@ final class CSM_Live_Stream {
 
 	/** Accept arbitrarily split HTTP chunks, retaining at most one compressed frame in memory. */
 	public function write( string $data ): void {
-		if ( $this->checkpoint !== null && $data !== '' ) {
+		if ( null !== $this->checkpoint && '' !== $data ) {
 			throw new RuntimeException( 'Unexpected bytes after stream checkpoint.' ); }
 		$this->received += strlen( $data );
 		if ( $this->received > 40 * 1024 * 1024 ) {
@@ -301,7 +372,7 @@ final class CSM_Live_Stream {
 			if ( ! hash_equals( substr( $frame, 4, 32 ), CSM_Package::digest( $gzip, true ) ) ) {
 				throw new RuntimeException( 'Stream frame checksum failed.' ); }
 			$unit = gzdecode( $gzip, 262144 );
-			if ( $unit === false || $unit === '' ) {
+			if ( false === $unit || '' === $unit ) {
 				throw new RuntimeException( 'Invalid compressed stream frame.' ); }
 			if ( ! $this->started ) {
 				$header = json_decode( $unit, true, 32, JSON_THROW_ON_ERROR );
@@ -321,9 +392,9 @@ final class CSM_Live_Stream {
 					throw new RuntimeException( 'Source stream failed: ' . ( $record['error'] ?? 'Unknown source error.' ) ); }
 				if ( ( $record['type'] ?? '' ) !== 'checkpoint' ) {
 					throw new RuntimeException( 'Unexpected stream control record.' ); }
-				if ( ( $record['seq'] ?? null ) !== $this->sequence || ( $record['chain'] ?? '' ) !== $this->chain || ( $record['bytes'] ?? null ) !== $this->bytes || ! is_bool( $record['done'] ?? null ) || $record['done'] !== ! empty( $this->job['import_done']['files'] ) || ! is_array( $record['components'] ?? null ) ) {
+				if ( ( $record['seq'] ?? null ) !== $this->sequence || ( $record['chain'] ?? '' ) !== $this->chain || ( $record['bytes'] ?? null ) !== $this->bytes || ! is_bool( $record['done'] ?? null ) || ! empty( $this->job['import_done']['files'] ) !== $record['done'] || ! is_array( $record['components'] ?? null ) ) {
 					throw new RuntimeException( 'Stream checkpoint or completion manifest failed verification.' ); }
-				if ( $this->buffer !== '' ) {
+				if ( '' !== $this->buffer ) {
 					throw new RuntimeException( 'Unexpected bytes after stream checkpoint.' ); }
 				$this->checkpoint = $record;
 				return;
@@ -331,9 +402,9 @@ final class CSM_Live_Stream {
 			if ( ! empty( $this->job['import_done']['files'] ) ) {
 				throw new RuntimeException( 'Unexpected data after file manifest.' ); }
 			$chain_started = hrtime( true );
-			$this->chain   = CSM_Package::chain( $this->chain, $this->chain_format === 2 ? substr( $frame, 0, 36 ) : CSM_Package::digest( $frame ) );
+			$this->chain   = CSM_Package::chain( $this->chain, 2 === $this->chain_format ? substr( $frame, 0, 36 ) : CSM_Package::digest( $frame ) );
 			$this->bytes  += strlen( $frame );
-			CSM_Timing::add( 'stream.frame_chain', $chain_started, $this->chain_format === 2 ? 36 : strlen( $frame ) );
+			CSM_Timing::add( 'stream.frame_chain', $chain_started, 2 === $this->chain_format ? 36 : strlen( $frame ) );
 			$fp = fopen( 'php://temp', 'w+b' );
 			try {
 				CSM_Support::write( $fp, $unit );
@@ -351,7 +422,7 @@ final class CSM_Live_Stream {
 
 	public function finish(): void {
 		CSM_Files::close_stage_output( $this->file_output );
-		if ( ! $this->started || $this->checkpoint === null || $this->buffer !== '' ) {
+		if ( ! $this->started || null === $this->checkpoint || '' !== $this->buffer ) {
 			throw new CSM_Network_Error( 'Incomplete stream window. Resume its saved checkpoint.' ); }
 		$this->job['live_files'] = array(
 			'seq'        => $this->sequence + 1,
@@ -367,7 +438,7 @@ final class CSM_Live_Stream {
 
 	public function save_partial(): bool {
 		CSM_Files::close_stage_output( $this->file_output );
-		if ( ! $this->started || $this->checkpoint !== null || $this->position <= $this->initial_position ) {
+		if ( ! $this->started || null !== $this->checkpoint || $this->position <= $this->initial_position ) {
 			return false; }
 		$this->job['live_partial'] = array(
 			'offset'       => $this->position,
@@ -423,7 +494,7 @@ final class CSM_Live_Stream {
 	}
 
 	public static function receive( array $job, string $selection, int $seq, $input, int $offset = 0 ): array {
-		if ( $seq !== ( $job['live_files']['seq'] ?? 0 ) || $offset !== ( $job['live_partial']['offset'] ?? 0 ) ) {
+		if ( ( $job['live_files']['seq'] ?? 0 ) !== $seq || ( $job['live_partial']['offset'] ?? 0 ) !== $offset ) {
 			throw new CSM_Network_Error( 'Destination stream checkpoint changed. Refresh and resume.' ); }
 		if ( ! empty( $job['live_files']['done'] ) ) {
 			if ( ( $job['live_files']['selection'] ?? '' ) !== $selection ) {
@@ -435,7 +506,7 @@ final class CSM_Live_Stream {
 			while ( ! feof( $input ) ) {
 				CSM_Support::check_cancel();
 				$data = fread( $input, 262144 );
-				if ( $data === false || ( $data === '' && ! feof( $input ) ) ) {
+				if ( false === $data || ( '' === $data && ! feof( $input ) ) ) {
 					throw new CSM_Network_Error( 'Incoming stream was interrupted.' );
 				} $writer->write( $data ); }
 			$writer->finish();

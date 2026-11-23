@@ -1,17 +1,44 @@
 <?php
+/**
+ * Bounded request timing samples and numeric performance counters.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** In-memory counters; one diagnostic sample per request, never per file. */
 final class CSM_Timing {
+	/**
+	 * Active request timing context, when initialized.
+	 *
+	 * @var array|null
+	 */
 	private static ?array $request = null;
-	private static array $metrics  = array();
-	private static bool $shutdown  = false;
+	/**
+	 * Numeric timing and byte counters for the current request.
+	 *
+	 * @var array
+	 */
+	private static array $metrics = array();
+	/**
+	 * Whether the request timing shutdown hook is registered.
+	 *
+	 * @var bool
+	 */
+	private static bool $shutdown = false;
 
+	/**
+	 * Initialize bounded request metrics and register their shutdown flush.
+	 *
+	 * @param string $id Transfer identifier.
+	 * @param string $operation Request operation label.
+	 */
 	public static function begin( string $id, string $operation ): void {
-		if ( $id !== '' && ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) {
+		if ( '' !== $id && ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) {
 			return; }
-		if ( self::$request !== null ) {
-			if ( self::$request['id'] === '' && $id !== '' ) {
+		if ( null !== self::$request ) {
+			if ( '' === self::$request['id'] && '' !== $id ) {
 				self::$request['id'] = $id; }
 			return;
 		}
@@ -28,6 +55,11 @@ final class CSM_Timing {
 			self::$shutdown = true; }
 	}
 
+	/**
+	 * Return cumulative process CPU milliseconds when the runtime supports it.
+	 *
+	 * @return float|null Cumulative process CPU milliseconds, or null when unavailable.
+	 */
 	private static function cpu(): ?float {
 		if ( ! function_exists( 'getrusage' ) ) {
 			return null; }
@@ -35,8 +67,15 @@ final class CSM_Timing {
 		return is_array( $usage ) ? 1000 * ( ( $usage['ru_utime.tv_sec'] ?? 0 ) + ( $usage['ru_stime.tv_sec'] ?? 0 ) ) + ( ( $usage['ru_utime.tv_usec'] ?? 0 ) + ( $usage['ru_stime.tv_usec'] ?? 0 ) ) / 1000 : null;
 	}
 
+	/**
+	 * Accumulate elapsed time, call count and bytes for a named metric.
+	 *
+	 * @param string $name Diagnostic metric name.
+	 * @param int    $started Start time from hrtime( true ), in nanoseconds.
+	 * @param int    $bytes Logical bytes associated with the measured work.
+	 */
 	public static function add( string $name, int $started, int $bytes = 0 ): void {
-		if ( self::$request === null ) {
+		if ( null === self::$request ) {
 			return; }
 		$metric   =&self::$metrics[ $name ];
 		$metric ??= array(
@@ -49,6 +88,12 @@ final class CSM_Timing {
 		$metric['bytes'] += $bytes;
 	}
 
+	/**
+	 * Measure a callback and preserve its return value or exception.
+	 *
+	 * @param string   $name Diagnostic metric name.
+	 * @param callable $work Callback whose work is measured.
+	 */
 	public static function measure( string $name, callable $work ) {
 		$started = hrtime( true );
 		try {
@@ -57,14 +102,17 @@ final class CSM_Timing {
 			self::add( $name, $started ); }
 	}
 
+	/**
+	 * Persist the current numeric sample once, without interrupting migration.
+	 */
 	public static function flush(): void {
-		if ( self::$request === null ) {
+		if ( null === self::$request ) {
 			return; }
 		$request       = self::$request;
 		$metrics       = self::$metrics;
 		self::$request = null;
 		self::$metrics = array();
-		if ( $request['id'] === '' ) {
+		if ( '' === $request['id'] ) {
 			return; }
 		foreach ( $metrics as &$metric ) {
 			$metric['ms'] = round( $metric['ms'], 3 );
@@ -73,7 +121,7 @@ final class CSM_Timing {
 		$sample = array(
 			'started'        => $request['started'],
 			'elapsed_ms'     => round( ( hrtime( true ) - $request['clock'] ) / 1e6, 3 ),
-			'process_cpu_ms' => $cpu !== null && $request['cpu'] !== null ? round( max( 0, $cpu - $request['cpu'] ), 3 ) : null,
+			'process_cpu_ms' => null !== $cpu && null !== $request['cpu'] ? round( max( 0, $cpu - $request['cpu'] ), 3 ) : null,
 			'bootstrap_ms'   => isset( $_SERVER['REQUEST_TIME_FLOAT'] ) && PHP_SAPI !== 'cli' ? round( max( 0, 1000 * ( $request['started'] - $_SERVER['REQUEST_TIME_FLOAT'] ) ), 3 ) : null,
 			'metrics'        => $metrics,
 		);
@@ -90,18 +138,32 @@ final class CSM_Timing {
 		);
 	}
 
+	/**
+	 * Retain bounded numeric diagnostic values and discard other payloads.
+	 *
+	 * @param array $values Candidate metric values.
+	 *
+	 * @return array Bounded numeric metric values.
+	 */
 	public static function numeric( array $values ): array {
 		$result = array();
 		foreach ( $values as $key => $value ) {
 			if ( ! is_string( $key ) || ! preg_match( '/^[a-z][a-z0-9_.]{0,63}$/D', $key ) ) {
 				continue; }
 			if ( is_array( $value ) ) {
-				$result[ $key ] = self::numeric( $value ); } elseif ( $value === null || is_int( $value ) || ( is_float( $value ) && is_finite( $value ) ) ) {
+				$result[ $key ] = self::numeric( $value ); } elseif ( null === $value || is_int( $value ) || ( is_float( $value ) && is_finite( $value ) ) ) {
 				$result[ $key ] = $value; }
 		}
 		return $result;
 	}
 
+	/**
+	 * Aggregate retained samples while keeping their overlapping timing scope.
+	 *
+	 * @param array $entries Retained diagnostic records containing performance samples.
+	 *
+	 * @return array Samples, per-operation totals, metrics and timing scope.
+	 */
 	public static function report( array $entries ): array {
 		$operations = array();
 		$metrics    = array();

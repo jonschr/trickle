@@ -1,9 +1,20 @@
 <?php
+/**
+ * Bounded gzip framing and resumable snapshot packaging.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/timing.php';
 
 /** Small, independently verified gzip frames; saved cursors never depend on a PHP process surviving. */
 final class CSM_Package {
+	/**
+	 * Whether the optional OpenSSL digest provider is usable.
+	 *
+	 * @var bool|null
+	 */
 	private static ?bool $openssl = null;
 
 	/** Same SHA-256 bytes, using the accelerated provider for large blocks when available. */
@@ -28,7 +39,7 @@ final class CSM_Package {
 	public static function chain( string $hash, string $record ): string {
 		return hash( 'sha256', $hash . $record ); }
 	public static function frame( string $part, bool $control = false ): string {
-		if ( $part === '' || strlen( $part ) > 262144 ) {
+		if ( '' === $part || strlen( $part ) > 262144 ) {
 			throw new RuntimeException( 'Invalid frame payload size.' ); }
 		CSM_Support::check_source_budget();
 		$sample = substr( $part, max( 0, intdiv( strlen( $part ) - 8192, 2 ) ), 8192 );
@@ -71,7 +82,7 @@ final class CSM_Package {
 			throw new RuntimeException( 'Cannot resume source packaging.' ); }
 		CSM_Support::step();
 		try {
-			if ( $kind === 'database' ) {
+			if ( 'database' === $kind ) {
 				// Keep one consistent snapshot, with read locks for nontransactional tables. Its hard budget fails safely rather than mixing snapshots from different requests.
 				$state = array(
 					'offset'         => 0,
@@ -95,14 +106,14 @@ final class CSM_Package {
 						self::put( $fp, substr( $buffer, 0, 262144 ) );
 						$buffer = substr( $buffer, 262144 ); }
 				}
-				if ( $buffer !== '' ) {
+				if ( '' !== $buffer ) {
 					self::put( $fp, $buffer ); }
 				$done = true;
 			} else {
 				$buffer    = '';
 				$component = null;
 				$flush     = static function ( bool $all ) use ( $fp, &$buffer, &$component, &$state ): void {
-					while ( strlen( $buffer ) >= 262144 || ( $all && $buffer !== '' ) ) {
+					while ( strlen( $buffer ) >= 262144 || ( $all && '' !== $buffer ) ) {
 						$part   = substr( $buffer, 0, 262144 );
 						$buffer = substr( $buffer, strlen( $part ) );
 						$start  = ftell( $fp );
@@ -226,13 +237,13 @@ final class CSM_Package {
 				$gzip = '';
 				while ( strlen( $gzip ) < $length ) {
 					$part = fread( $in, $length - strlen( $gzip ) );
-					if ( $part === false || $part === '' ) {
+					if ( false === $part || '' === $part ) {
 						throw new RuntimeException( 'Truncated frame.' );
 					} $gzip .= $part; }
 				if ( ! hash_equals( substr( $header, 4 ), self::digest( $gzip, true ) ) ) {
 					throw new RuntimeException( 'Frame checksum mismatch.' ); }
 				$raw = gzdecode( $gzip, 262144 );
-				if ( $raw === false ) {
+				if ( false === $raw ) {
 					throw new RuntimeException( 'Invalid compressed frame.' ); }
 				CSM_Support::write( $out, $raw );
 				$state = array(

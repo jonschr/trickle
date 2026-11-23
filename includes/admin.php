@@ -1,8 +1,21 @@
-<?php defined( 'ABSPATH' ) || exit; ?>
+<?php
+/**
+ * WordPress administration page templates and controls.
+ *
+ * @package Trickle
+ */
+
+defined( 'ABSPATH' ) || exit; ?>
 <div class="wrap csm">
 	<?php require __DIR__ . '/app-header.php'; ?>
 	<div id="csm-app-notices">
 	<?php
+	/**
+	 * WordPress administration page templates and controls.
+	 *
+	 * @package Trickle
+	 */
+
 	if ( $loader_error ) :
 		?>
 		<div class="notice notice-warning inline" role="alert"><p><?php echo esc_html( $loader_error ); ?></p></div><?php endif; ?>
@@ -12,7 +25,7 @@
 	<div class="csm-content">
 	<section data-csm-view="migrate" aria-label="Migrate"
 	<?php
-	if ( $view !== 'migrate' ) {
+	if ( 'migrate' !== $view ) {
 		echo 'hidden';}
 	?>
 	>
@@ -53,7 +66,7 @@
 	</section>
 	<section data-csm-view="settings" aria-label="Settings"
 	<?php
-	if ( $view !== 'settings' ) {
+	if ( 'settings' !== $view ) {
 		echo 'hidden';}
 	?>
 	>
@@ -111,7 +124,7 @@ if ( defined( 'CSM_REQUEST_INTERVAL' ) ) {
 	</section>
 	<section data-csm-view="diagnostics" aria-label="Diagnostics"
 	<?php
-	if ( $view !== 'diagnostics' ) {
+	if ( 'diagnostics' !== $view ) {
 		echo 'hidden';}
 	?>
 	>

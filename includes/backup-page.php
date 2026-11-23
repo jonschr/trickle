@@ -1,8 +1,21 @@
-<?php defined( 'ABSPATH' ) || exit; ?>
+<?php
+/**
+ * Retained migration backup administration markup.
+ *
+ * @package Trickle
+ */
+
+defined( 'ABSPATH' ) || exit; ?>
 <div class="wrap csm csm-backups">
 	<?php require __DIR__ . '/app-header.php'; ?>
 	<div id="csm-app-notices">
 	<?php
+	/**
+	 * Retained migration backup administration markup.
+	 *
+	 * @package Trickle
+	 */
+
 	if ( $loader_error ) :
 		?>
 		<div class="notice notice-warning inline" role="alert"><p><?php echo esc_html( $loader_error ); ?></p></div><?php endif; ?>

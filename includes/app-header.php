@@ -1,3 +1,10 @@
-<?php defined( 'ABSPATH' ) || exit; ?>
+<?php
+/**
+ * Shared administration header and navigation markup.
+ *
+ * @package Trickle
+ */
+
+defined( 'ABSPATH' ) || exit; ?>
 	<div class="csm-header-band"><div class="csm-app-header"><header class="csm-heading"><div class="csm-title-row"><h1><a class="csm-home-link" data-csm-tab="migrate" href="<?php echo esc_url( admin_url( 'tools.php?page=trickle' ) ); ?>" aria-label="Trickle — Migrate" title="Migrate"><svg viewBox="0 0 32 32" aria-hidden="true"><path transform="translate(16 12) scale(.85)" d="M0-8C-2-5-6-1-6 3a6 6 0 0 0 12 0C6-1 2-5 0-8Z" fill="currentColor"/><path d="M5 22v5h22v-5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg></a>Trickle <span><?php echo esc_html( CSM_VERSION ); ?></span></h1><button type="button" class="button" id="csm-copy" title="Copy connection code"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg><span aria-live="polite" aria-atomic="true">Copy connection code</span></button></div></header>
 	<?php require __DIR__ . '/navigation.php'; ?></div></div>

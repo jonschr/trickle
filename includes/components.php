@@ -1,4 +1,10 @@
 <?php
+/**
+ * Reusable administration controls and component markup.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Size/mtime inventories; digests below cover metadata, never file contents. */
@@ -16,12 +22,12 @@ final class CSM_Components {
 	}
 
 	private static function read( array $selection, string $token = '' ): array {
-		return self::read_cache( $token !== '' && preg_match( '/^[a-f0-9]{64}$/D', $token ) ? CSM_Support::private_dir() . '/component-snapshot-' . $token . '.json' : self::cache_path( $selection ) );
+		return self::read_cache( '' !== $token && preg_match( '/^[a-f0-9]{64}$/D', $token ) ? CSM_Support::private_dir() . '/component-snapshot-' . $token . '.json' : self::cache_path( $selection ) );
 	}
 
 	private static function read_cache( string $path ): array {
 		$raw   = @file_get_contents( $path );
-		$cache = $raw === false ? array() : json_decode( $raw, true );
+		$cache = false === $raw ? array() : json_decode( $raw, true );
 		if ( ! is_array( $cache ) || ! isset( $cache['files'], $cache['token'] ) || ( $cache['comparison'] ?? '' ) !== 'size_mtime' || ! hash_equals( $cache['token'], hash( 'sha256', CSM_Support::json( $cache['files'] ) ) ) ) {
 			return array(); }
 		return $cache;
@@ -45,9 +51,9 @@ final class CSM_Components {
 			);
 		}
 		$work_id = $selection['comparison_id'] ?? '';
-		if ( ! is_string( $work_id ) || ( $work_id !== '' && ! preg_match( '/^[a-f0-9]{32}$/D', $work_id ) ) ) {
+		if ( ! is_string( $work_id ) || ( '' !== $work_id && ! preg_match( '/^[a-f0-9]{32}$/D', $work_id ) ) ) {
 			throw new RuntimeException( 'Invalid comparison work ID.' ); }
-		$result_path = $work_id !== '' ? $path . '.comparison-' . $work_id . '.json' : '';
+		$result_path = '' !== $work_id ? $path . '.comparison-' . $work_id . '.json' : '';
 		if ( $result_path && is_file( $result_path ) ) {
 			$result = json_decode( file_get_contents( $result_path ), true, 512, JSON_THROW_ON_ERROR );
 			if ( ( $result['comparison'] ?? '' ) === 'size_mtime' ) {
@@ -65,7 +71,7 @@ final class CSM_Components {
 				foreach ( CSM_Files::scan( $root . '/' . $id, $kind . '/' . $id, $selection, null, $source ) as $file ) {
 					$relative = $kind . '/' . substr( $file, strlen( $root ) + 1 );
 					$resolved = $source ? CSM_Files::source_path( $file, $relative, $selection ) : $file;
-					if ( $resolved === null ) {
+					if ( null === $resolved ) {
 						continue; }
 					$stamp              = self::stamp( $resolved );
 					$stat               = stat( $resolved );
@@ -201,7 +207,7 @@ final class CSM_Components {
 				CSM_Transport::request( $peer, 'component_manifest', $query + array( 'token' => $index['token'] ), null, $fp, 0, 32 * 1024 * 1024 );
 				rewind( $fp );
 				$raw  = gzdecode( stream_get_contents( $fp ), 32 * 1024 * 1024 );
-				$data = $raw === false ? null : json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
+				$data = false === $raw ? null : json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
 				if ( ! is_array( $data ) || ( $data['token'] ?? '' ) !== $index['token'] || ! is_array( $data['files'] ?? null ) ) {
 					throw new RuntimeException( 'Invalid component metadata manifest.' ); }
 				return $data['files'];
@@ -263,13 +269,13 @@ final class CSM_Components {
 
 	public static function unchanged( array $selection ): array {
 		$plan = $selection['component_same'] ?? '';
-		if ( $plan === '' ) {
+		if ( '' === $plan ) {
 			return array(); }
 		if ( ! is_string( $plan ) || strlen( $plan ) > 600000 ) {
 			throw new RuntimeException( 'Invalid unchanged-file plan.' ); }
 		$bytes = base64_decode( $plan, true );
-		$raw   = $bytes === false ? false : @gzdecode( $bytes, 32 * 1024 * 1024 );
-		$files = $raw === false ? null : json_decode( $raw, true );
+		$raw   = false === $bytes ? false : @gzdecode( $bytes, 32 * 1024 * 1024 );
+		$files = false === $raw ? null : json_decode( $raw, true );
 		if ( ! is_array( $files ) ) {
 			throw new RuntimeException( 'Invalid unchanged-file plan.' ); }
 		if ( array_key_exists( 'component_token', $files ) ) {

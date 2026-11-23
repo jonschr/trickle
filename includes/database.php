@@ -1,12 +1,21 @@
 <?php
+/**
+ * Verified database export, staging, replacement and recovery.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
+/**
+ * Verified database export, staging, replacement and recovery.
+ */
 final class CSM_Database {
 	public static function rows( string $sql, string $format = ARRAY_A, ?wpdb $reader = null ): array {
 		global $wpdb;
 		$reader ??= $wpdb;
 		$rows     = $reader->get_results( $sql, $format );
-		if ( $reader->last_error !== '' || ! is_array( $rows ) ) {
+		if ( '' !== $reader->last_error || ! is_array( $rows ) ) {
 			throw new RuntimeException( 'Database read failed: ' . $reader->last_error ); }
 		return $rows;
 	}
@@ -26,7 +35,7 @@ final class CSM_Database {
 	public static function page_sql( array $keys, ?array $last, int $offset, array $columns ): string {
 		global $wpdb;
 		$where = '';
-		if ( $keys && $last !== null ) {
+		if ( $keys && null !== $last ) {
 			$clauses = array();
 			foreach ( $keys as $index => $key ) {
 				$terms = array();
@@ -95,7 +104,7 @@ final class CSM_Database {
 			if ( ! is_string( $source[ $id ] ?? null ) || ! is_string( $destination[ $id ] ?? null ) ) {
 				throw new RuntimeException( 'Update Trickle on both sites to preview all default replacements.' ); }
 			$find = $source[ $id ];
-			if ( $find === '' ) {
+			if ( '' === $find ) {
 				continue; }
 			if ( isset( $rules[ $find ] ) ) {
 				$rules[ $find ]['label'] .= ' / ' . $label;
@@ -122,12 +131,12 @@ final class CSM_Database {
 				'https'    => 'https:' . $from,
 				'relative' => $from,
 			) as $variant => $find ) {
-				$replace = $variant === 'relative' ? $to : $destination[ $id ];
+				$replace = 'relative' === $variant ? $to : $destination[ $id ];
 				if ( ! isset( $rules[ $find ] ) ) {
 					$rules[ $find ] = array(
 						'kind'    => 'default',
 						'id'      => $id . '_' . $variant,
-						'label'   => ( $id === 'url' ? 'WordPress URL' : 'Home URL' ) . ' (' . $variant . ')',
+						'label'   => ( 'url' === $id ? 'WordPress URL' : 'Home URL' ) . ' (' . $variant . ')',
 						'find'    => $find,
 						'replace' => $replace,
 						'enabled' => true,
@@ -155,8 +164,8 @@ final class CSM_Database {
 				throw new RuntimeException( 'Invalid replacement rule type.' ); }
 			$selection['replacements'][] = array(
 				'kind'    => $kind,
-				'id'      => $kind === 'default' ? sanitize_key( $rule['id'] ?? '' ) : '',
-				'label'   => $kind === 'default' ? sanitize_text_field( $rule['label'] ?? 'Default replacement' ) : '',
+				'id'      => 'default' === $kind ? sanitize_key( $rule['id'] ?? '' ) : '',
+				'label'   => 'default' === $kind ? sanitize_text_field( $rule['label'] ?? 'Default replacement' ) : '',
 				'find'    => $rule['find'],
 				'replace' => $rule['replace'],
 				'enabled' => $rule['enabled'] ?? true,
@@ -173,7 +182,7 @@ final class CSM_Database {
 		foreach ( $rules as $rule ) {
 			if ( ! $rule['enabled'] ) {
 				continue; }
-			if ( $rule['find'] === '' ) {
+			if ( '' === $rule['find'] ) {
 				throw new RuntimeException( 'An enabled replacement cannot have empty find text. Disable or remove the empty row.' ); }
 			if ( array_key_exists( $rule['find'], $pairs ) && $pairs[ $rule['find'] ] !== $rule['replace'] ) {
 				throw new RuntimeException( 'Enabled replacement rules search for the same text with different replacements. Disable one of the conflicting rows.' );
@@ -282,7 +291,7 @@ final class CSM_Database {
 							continue; }
 						$encoded = array();
 						foreach ( $row as $name => $value ) {
-							$encoded[] = $value === null ? null : base64_encode( (string) $value ); }
+							$encoded[] = null === $value ? null : base64_encode( (string) $value ); }
 						$line = CSM_Support::json(
 							array(
 								'type'   => 'row',
@@ -387,8 +396,8 @@ final class CSM_Database {
 	private static function prefix_key( string $value, string $column, string $table, string $prefix ): string {
 		global $wpdb;
 		// Plugin option names can begin with wp_ without being tied to the site's table prefix.
-		$roles       = $column === 'option_name' && $table === $prefix . 'options' && $value === $prefix . 'user_roles';
-		$user_option = $column === 'meta_key' && $table === $prefix . 'usermeta' && str_starts_with( $value, $prefix );
+		$roles       = 'option_name' === $column && $table === $prefix . 'options' && $value === $prefix . 'user_roles';
+		$user_option = 'meta_key' === $column && $table === $prefix . 'usermeta' && str_starts_with( $value, $prefix );
 		return $prefix !== $wpdb->prefix && ( $roles || $user_option ) ? $wpdb->prefix . substr( $value, strlen( $prefix ) ) : $value;
 	}
 
@@ -419,7 +428,7 @@ final class CSM_Database {
 				return;
 			}
 			hash_update( $hash, CSM_Support::json( $record ) );
-			if ( $record['type'] === 'table' ) {
+			if ( 'table' === $record['type'] ) {
 				if ( $current || ! in_array( $record['name'], $header['tables'], true ) || in_array( $record['name'], $seen, true ) || ! str_starts_with( $record['name'], $prefix ) ) {
 					throw new RuntimeException( 'Unexpected table.' ); }
 				$seen[] = $record['name'];
@@ -457,16 +466,16 @@ final class CSM_Database {
 				CSM_Jobs::save( $job );
 				$ddl = preg_replace( '/^CREATE TABLE `[^`]+`/', 'CREATE TABLE ' . CSM_Support::ident( $current ), $ddl, 1 );
 				CSM_Support::query( preg_replace( '/\bENGINE=(?:InnoDB|MyISAM|MEMORY)\b/i', 'ENGINE=InnoDB', $ddl, 1 ) );
-			} elseif ( $record['type'] === 'row' && $current ) {
+			} elseif ( 'row' === $record['type'] && $current ) {
 				if ( count( $record['values'] ) !== count( $columns ) ) {
 					throw new RuntimeException( 'Invalid database row.' ); }
 				$values = array();
 				foreach ( $record['values'] as $index => $value ) {
-					if ( $value === null ) {
+					if ( null === $value ) {
 						$values[] = 'NULL';
 						continue; }
 					$decoded = base64_decode( $value, true );
-					if ( $decoded === false ) {
+					if ( false === $decoded ) {
 						throw new RuntimeException( 'Invalid row encoding.' ); }
 					if ( in_array( $columns[ $index ], $text_columns, true ) ) {
 						$decoded = CSM_Support::replace( $decoded, $pairs ); }
@@ -477,7 +486,7 @@ final class CSM_Database {
 				CSM_Support::query( 'INSERT INTO ' . CSM_Support::ident( $current ) . ' (' . implode( ',', array_map( array( CSM_Support::class, 'ident' ), $columns ) ) . ') VALUES (' . implode( ',', $values ) . ')' );
 				++$rows;
 				CSM_Progress::update( array( 'count' => $rows ) );
-			} elseif ( $record['type'] === 'table-end' && $current ) {
+			} elseif ( 'table-end' === $record['type'] && $current ) {
 				$current = null;
 			} else {
 				throw new RuntimeException( 'Unexpected database record.' ); }
@@ -542,7 +551,7 @@ final class CSM_Database {
 				CSM_Support::check_cancel();
 				$record = CSM_Support::line( $fp );
 				$type   = $record['type'] ?? '';
-				if ( $type === 'end' ) {
+				if ( 'end' === $type ) {
 					if ( $state['current'] || $state['rows'] !== $record['rows'] || ! hash_equals( $state['hash'], $record['sha256'] ) || $state['seen'] !== $state['header']['tables'] || fread( $fp, 1 ) !== '' ) {
 						throw new RuntimeException( 'Database stream is incomplete or checksum failed.' ); }
 					$checkpoint();
@@ -552,7 +561,7 @@ final class CSM_Database {
 					return true;
 				}
 				$state['hash'] = CSM_Package::chain( $state['hash'], CSM_Support::json( $record ) );
-				if ( $type === 'table' ) {
+				if ( 'table' === $type ) {
 					if ( $state['current'] || ! in_array( $record['name'], $state['header']['tables'], true ) || in_array( $record['name'], $state['seen'], true ) || ! str_starts_with( $record['name'], $prefix ) ) {
 						throw new RuntimeException( 'Unexpected table.' ); }
 					if ( $transaction ) {
@@ -583,7 +592,7 @@ final class CSM_Database {
 					$state['columns']      = $record['columns'];
 					$state['text_columns'] = $record['text_columns'] ?? array();
 					$checkpoint();
-				} elseif ( $type === 'row' && $state['current'] ) {
+				} elseif ( 'row' === $type && $state['current'] ) {
 					if ( count( $record['values'] ) !== count( $state['columns'] ) ) {
 						throw new RuntimeException( 'Invalid database row.' ); }
 					if ( ! $transaction ) {
@@ -591,18 +600,18 @@ final class CSM_Database {
 						$transaction = true; }
 					$values = array();
 					foreach ( $record['values'] as $i => $value ) {
-						if ( $value === null ) {
+						if ( null === $value ) {
 							$values[] = 'NULL';
 							continue; }
 						$decoded = base64_decode( $value, true );
-						if ( $decoded === false ) {
+						if ( false === $decoded ) {
 							throw new RuntimeException( 'Invalid row encoding.' ); }
 						if ( in_array( $state['columns'][ $i ], $state['text_columns'], true ) ) {
 							$decoded = CSM_Support::replace( $decoded, $pairs ); }
 						$decoded  = self::prefix_key( $decoded, $state['columns'][ $i ], end( $state['seen'] ), $prefix );
 						$values[] = "UNHEX('" . bin2hex( $decoded ) . "')";
 					}
-					if ( $insert === '' ) {
+					if ( '' === $insert ) {
 						$insert = 'INSERT INTO ' . CSM_Support::ident( $state['current'] ) . ' (' . implode( ',', array_map( array( CSM_Support::class, 'ident' ), $state['columns'] ) ) . ') VALUES '; }
 					$row = '(' . implode( ',', $values ) . ')';
 					if ( $pending && strlen( $insert ) + $pending_bytes + strlen( $row ) + 1 > $batch_limit ) {
@@ -621,9 +630,9 @@ final class CSM_Database {
 							'unit'      => 'rows',
 						)
 					);
-					if ( $state['rows'] % 250 === 0 ) {
+					if ( 0 === $state['rows'] % 250 ) {
 						$checkpoint(); }
-				} elseif ( $type === 'table-end' && $state['current'] ) {
+				} elseif ( 'table-end' === $type && $state['current'] ) {
 					$state['current'] = null;
 					$checkpoint(); } else {
 					throw new RuntimeException( 'Unexpected database record.' ); }
@@ -661,7 +670,7 @@ final class CSM_Database {
 			foreach ( self::rows( 'SELECT ID, post_date_gmt FROM ' . CSM_Support::ident( $table['stage'] ) . " WHERE post_status='future'" ) as $post ) {
 				$id   = (int) $post['ID'];
 				$time = strtotime( $post['post_date_gmt'] . ' UTC' );
-				if ( $id < 1 || $time === false || $time < 1 ) {
+				if ( $id < 1 || false === $time || $time < 1 ) {
 					throw new RuntimeException( 'A scheduled source post has an invalid ID or publication date.' ); }
 				$args = array( $id );
 				$cron[ $time ]['publish_future_post'][ md5( serialize( $args ) ) ] = array(
@@ -697,7 +706,7 @@ final class CSM_Database {
 					'unit'      => 'tables',
 				)
 			);
-			if ( isset( $table['engine'] ) && $table['engine'] !== 'INNODB' ) {
+			if ( isset( $table['engine'] ) && 'INNODB' !== $table['engine'] ) {
 				if ( ! in_array( $table['engine'], array( 'MYISAM', 'MEMORY' ), true ) ) {
 					throw new RuntimeException( 'Invalid destination table engine.' ); }
 				CSM_Support::query( 'ALTER TABLE ' . CSM_Support::ident( $table['stage'] ) . ' ENGINE=' . $table['engine'] );
@@ -766,7 +775,7 @@ final class CSM_Database {
 			$backup_exists = self::table_exists( $table['backup'] );
 			$stage_exists  = self::table_exists( $table['stage'] );
 			if ( $backup_exists ) {
-				if ( isset( $table['backup_engine'] ) && $table['backup_engine'] !== 'INNODB' ) {
+				if ( isset( $table['backup_engine'] ) && 'INNODB' !== $table['backup_engine'] ) {
 					if ( ! in_array( $table['backup_engine'], array( 'MYISAM', 'MEMORY' ), true ) ) {
 						throw new RuntimeException( 'Invalid backup table engine.' ); }
 					CSM_Support::query( 'ALTER TABLE ' . CSM_Support::ident( $table['backup'] ) . ' ENGINE=' . $table['backup_engine'] );

@@ -1,4 +1,10 @@
 <?php
+/**
+ * Shared administration navigation markup.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 $view = in_array( $_GET['view'] ?? '', array( 'settings', 'backups', 'diagnostics' ), true ) ? $_GET['view'] : 'migrate';
 ?>
@@ -16,6 +22,6 @@ $view = in_array( $_GET['view'] ?? '', array( 'settings', 'backups', 'diagnostic
 									if ( $view === $key ) {
 										echo 'aria-current="page"';}
 									?>
-		data-csm-tab="<?php echo esc_attr( $key ); ?>" href="<?php echo esc_url( admin_url( 'tools.php?page=trickle' . ( $key === 'migrate' ? '' : '&view=' . $key ) ) ); ?>"><?php echo esc_html( $label ); ?></a>
+		data-csm-tab="<?php echo esc_attr( $key ); ?>" href="<?php echo esc_url( admin_url( 'tools.php?page=trickle' . ( 'migrate' === $key ? '' : '&view=' . $key ) ) ); ?>"><?php echo esc_html( $label ); ?></a>
 	<?php endforeach; ?>
 </nav>

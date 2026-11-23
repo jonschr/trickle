@@ -1,8 +1,17 @@
 <?php
+/**
+ * Signed peer endpoints and migration lifecycle coordination.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/timing.php';
 require_once __DIR__ . '/directories.php';
 
+/**
+ * Signed peer endpoints and migration lifecycle coordination.
+ */
 final class CSM_Plugin {
 	public static function loader_code(): string {
 		return str_replace( '__CSM_PLUGIN__', var_export( plugin_basename( CSM_FILE ), true ), file_get_contents( __DIR__ . '/loader.php' ) );
@@ -228,7 +237,7 @@ final class CSM_Plugin {
 		$action    = sanitize_key( wp_unslash( $_GET['trickle'] ) );
 		$streaming = false;
 		try {
-			if ( $_SERVER['REQUEST_METHOD'] !== 'POST' ) {
+			if ( 'POST' !== $_SERVER['REQUEST_METHOD'] ) {
 				throw new RuntimeException( 'POST required.', 405 ); }
 			self::supported();
 			CSM_Support::long_request();
@@ -257,7 +266,7 @@ final class CSM_Plugin {
 					self::install_loader(); } catch ( Throwable $error ) {
 					CSM_Log::write( 'error', 'Recovery loader refresh failed', array( 'error' => $error->getMessage() ) ); }
 			}
-			if ( ( ( $action === 'live_files' || ( in_array( $action, array( 'export', 'bundle' ), true ) && ( $data['kind'] ?? '' ) === 'files' ) ) || ( $action === 'prepare' && in_array( 'files', self::kinds( $data['selection'] ?? array() ), true ) ) ) && ( ( $data['selection']['file_policy'] ?? 0 ) !== 1 ) ) {
+			if ( ( ( 'live_files' === $action || ( in_array( $action, array( 'export', 'bundle' ), true ) && ( $data['kind'] ?? '' ) === 'files' ) ) || ( 'prepare' === $action && in_array( 'files', self::kinds( $data['selection'] ?? array() ), true ) ) ) && ( ( $data['selection']['file_policy'] ?? 0 ) !== 1 ) ) {
 				throw new RuntimeException( 'Update Trickle on both sites before transferring files with Git and environment-file protection.' ); }
 			if ( in_array( $action, array( 'commit', 'rollback', 'restore_backup' ), true ) ) {
 				ignore_user_abort( true ); }
@@ -271,7 +280,7 @@ final class CSM_Plugin {
 					)
 				); }
 			self::prune_nonces();
-			if ( $action === 'version' ) {
+			if ( 'version' === $action ) {
 				self::respond(
 					array(
 						'url'           => site_url(),
@@ -281,12 +290,12 @@ final class CSM_Plugin {
 						'instance_fingerprint' => CSM_Controller::fingerprint(),
 					)
 				); }
-			if ( $action === 'build_info' ) {
+			if ( 'build_info' === $action ) {
 				self::respond( CSM_Updates::build_info() ); }
-			if ( $action === 'update_trickle_build' ) {
+			if ( 'update_trickle_build' === $action ) {
 				CSM_Support::lock();
 				self::respond( CSM_Updates::install_build( $data ) ); }
-			if ( $action === 'update_trickle_zip' ) {
+			if ( 'update_trickle_zip' === $action ) {
 				CSM_Support::lock();
 				$input = fopen( 'php://input', 'rb' );
 				try {
@@ -295,30 +304,30 @@ final class CSM_Plugin {
 					fclose( $input ); }
 				self::respond( $result );
 			}
-			if ( $action === 'update_info' ) {
+			if ( 'update_info' === $action ) {
 				self::respond( CSM_Updates::info() ); }
-			if ( $action === 'update_trickle' ) {
+			if ( 'update_trickle' === $action ) {
 				CSM_Support::lock();
 				self::respond( CSM_Updates::install( $data['target'] ?? '', $data['from'] ?? '' ) ); }
-			if ( $action === 'backups' ) {
+			if ( 'backups' === $action ) {
 				self::respond( CSM_Backups::listing() ); }
-			if ( $action === 'restore_backup' ) {
+			if ( 'restore_backup' === $action ) {
 				CSM_Support::lock();
 				CSM_Progress::start( $data['id'] ?? '', 'Restoring saved backup', $data['progress_run'] ?? null );
 				self::respond( CSM_Backups::restore( $data['id'] ?? '' ) ); }
-			if ( $action === 'estimates' ) {
+			if ( 'estimates' === $action ) {
 				self::respond( CSM_Estimates::read( true ) ); }
-			if ( $action === 'manifest' ) {
+			if ( 'manifest' === $action ) {
 				$manifest = self::manifest( ! empty( $data['refresh'] ), ! isset( $data['selection'] ) );
 				if ( isset( $data['selection'] ) ) {
 					$manifest['git_folders'] = CSM_Files::git_folders( $data['selection'], ! empty( $data['source'] ) ); }
 				self::respond( $manifest );
 			}
-			if ( $action === 'media' ) {
+			if ( 'media' === $action ) {
 				self::respond( CSM_Files::media( (int) ( $data['page'] ?? 1 ), $data['ids'] ?? array() ) ); }
-			if ( $action === 'live_state' ) {
+			if ( 'live_state' === $action ) {
 				self::respond( CSM_Live_Stream::state( CSM_Jobs::get( $data['id'] ?? '' ) ) ); }
-			if ( $action === 'live_receive' ) {
+			if ( 'live_receive' === $action ) {
 				CSM_Support::lock();
 				$job = CSM_Jobs::get( $data['id'] ?? '' );
 				CSM_Access::assert_owner( $job );
@@ -329,7 +338,7 @@ final class CSM_Plugin {
 					fclose( $input ); }
 					self::respond( $result );
 			}
-			if ( $action === 'live_files' ) {
+			if ( 'live_files' === $action ) {
 				CSM_Support::lock();
 				CSM_Progress::start( $data['id'] ?? '', 'Streaming source files', $data['progress_run'] ?? null );
 				$generator = CSM_Live_Stream::source( $data['id'] ?? '', $data['selection'] ?? array(), $data['seq'] ?? -1, $data['offset'] ?? 0 );
@@ -349,14 +358,14 @@ final class CSM_Plugin {
 					fclose( $out ); }
 				exit;
 			}
-			if ( $action === 'bundle' ) {
+			if ( 'bundle' === $action ) {
 				if ( ( $data['format'] ?? 0 ) !== 2 ) {
 					throw new RuntimeException( 'Install this Trickle build on both sites before packaging.' ); }
 				CSM_Support::lock();
 				CSM_Progress::start( $data['id'] ?? '', 'Building resumable source stream', $data['progress_run'] ?? null );
 				self::respond( CSM_Segments::bundle( $data['id'] ?? '', $data['kind'] ?? '', $data['selection'] ?? array() ) );
 			}
-			if ( $action === 'bundle_chunk' ) {
+			if ( 'bundle_chunk' === $action ) {
 				$bytes = CSM_Segments::chunk( $data['id'] ?? '', $data['kind'] ?? '', (int) ( $data['offset'] ?? -1 ) );
 				while ( ob_get_level() ) {
 					ob_end_clean(); }
@@ -365,16 +374,16 @@ final class CSM_Plugin {
 				echo $bytes;
 				exit;
 			}
-			if ( $action === 'cancel' ) {
+			if ( 'cancel' === $action ) {
 				CSM_Segments::cancel( $data['id'] ?? '' );
 				self::respond( array( 'cancel_requested' => true ) ); }
-			if ( $action === 'bundle_discard' ) {
+			if ( 'bundle_discard' === $action ) {
 				if ( ! empty( $data['comparison_only'] ) ) {
 					self::respond( array( 'comparison_cleared' => CSM_Segments::release_comparison( $data['id'] ?? '' ) ) ); }
 				CSM_Segments::cleanup_source( $data['id'] ?? '' );
 				self::respond( array() );
 			}
-			if ( $action === 'bundle_stream' ) {
+			if ( 'bundle_stream' === $action ) {
 				$offset = $data['offset'] ?? -1;
 				if ( ! is_int( $offset ) ) {
 					throw new RuntimeException( 'Invalid source offset.' ); }
@@ -401,7 +410,7 @@ final class CSM_Plugin {
 				exit;
 			}
 			if ( in_array( $action, array( 'component_manifest', 'media_manifest' ), true ) ) {
-				$raw = CSM_Support::json( $action === 'media_manifest' ? CSM_Media::manifest( $data ) : CSM_Components::manifest( $data ) );
+				$raw = CSM_Support::json( 'media_manifest' === $action ? CSM_Media::manifest( $data ) : CSM_Components::manifest( $data ) );
 				if ( strlen( $raw ) > 32 * 1024 * 1024 ) {
 					throw new RuntimeException( 'Component manifest exceeds its size limit.' ); }
 				$bytes = gzencode( $raw, 3 );
@@ -413,34 +422,34 @@ final class CSM_Plugin {
 				echo $bytes;
 				exit;
 			}
-			if ( $action === 'component_hashes' ) {
+			if ( 'component_hashes' === $action ) {
 				$result = CSM_Components::inventory( $data );
 				CSM_Progress::update( array( 'component' => '' ) );
 				CSM_Progress::finish( 'Plugin and theme metadata ready' );
 				if ( ! empty( $data['selection']['comparison_only'] ) ) {
 					CSM_Segments::release_comparison( $work_id );
 				} self::respond( $result ); }
-			if ( $action === 'file_policy' ) {
+			if ( 'file_policy' === $action ) {
 				self::respond( array( 'git_folders' => CSM_Files::git_folders( $data['selection'] ?? array(), ! empty( $data['source'] ) ) ) ); }
-			if ( $action === 'media_hashes' ) {
+			if ( 'media_hashes' === $action ) {
 				$result = CSM_Media::inventory( $data );
 				CSM_Progress::update( array( 'component' => '' ) );
 				CSM_Progress::finish( 'Media metadata ready' );
 				if ( ! empty( $data['selection']['comparison_only'] ) ) {
 					CSM_Segments::release_comparison( $work_id );
 				} self::respond( $result ); }
-			if ( $action === 'progress' ) {
+			if ( 'progress' === $action ) {
 				CSM_Segments::assert_progress_owner( $data['id'] ?? '' );
 				self::respond( CSM_Progress::read( $data['id'] ?? '' ) ); }
-			if ( $action === 'preview' ) {
+			if ( 'preview' === $action ) {
 				$job = CSM_Jobs::get( $data['id'] ?? '' );
 				CSM_Access::assert_owner( $job );
 				self::respond( self::preview_page( $job, (int) ( $data['offset'] ?? 0 ) ) ); }
-			if ( $action === 'status' ) {
+			if ( 'status' === $action ) {
 				$job = CSM_Jobs::get( $data['id'] ?? '' );
 				CSM_Access::assert_owner( $job );
 				self::respond( self::summary( $job ) ); }
-			if ( $action === 'export' ) {
+			if ( 'export' === $action ) {
 				CSM_Support::lock();
 				if ( ! empty( $data['progress_id'] ) ) {
 					CSM_Progress::start( $data['progress_id'], 'Exporting ' . ( $data['kind'] ?? 'stream' ), $data['progress_run'] ?? null ); }
@@ -455,7 +464,7 @@ final class CSM_Plugin {
 				header( 'X-Accel-Buffering: no' );
 				header( 'Content-Disposition: attachment; filename="trickle-' . $data['kind'] . '.csm"' );
 				$streaming = true;
-				$generator = $data['kind'] === 'database' ? CSM_Database::stream( $selection ) : CSM_Files::stream( $selection );
+				$generator = 'database' === $data['kind'] ? CSM_Database::stream( $selection ) : CSM_Files::stream( $selection );
 				$out       = fopen( 'php://output', 'wb' );
 				foreach ( CSM_Support::gzip( $generator ) as $bytes ) {
 					CSM_Support::write( $out, $bytes );
@@ -468,19 +477,19 @@ final class CSM_Plugin {
 				exit;
 			}
 			CSM_Support::lock();
-			if ( $action === 'prepare' ) {
+			if ( 'prepare' === $action ) {
 				self::respond( self::prepare( $data['selection'] ?? array(), $data['context'] ?? array() ) ); }
 			$id  = $data['id'] ?? '';
 			$job = CSM_Jobs::get( $id );
 			CSM_Access::assert_owner( $job );
-			if ( $action === 'segment_state' ) {
+			if ( 'segment_state' === $action ) {
 				self::respond( CSM_Segments::state( $job, $data['kind'] ?? '', $data['bundle'] ?? array() ) ); }
-			if ( $action === 'segment_data' ) {
+			if ( 'segment_data' === $action ) {
 				ignore_user_abort( true );
 				$bytes = file_get_contents( 'php://input', false, null, 0, CSM_Segments::SIZE + 1 );
 				self::respond( CSM_Segments::receive( $job, $data['kind'] ?? '', $data['bundle'] ?? array(), (int) ( $data['offset'] ?? -1 ), $bytes, $data['sha256'] ?? '' ) );
 			}
-			if ( $action === 'stream_data' ) {
+			if ( 'stream_data' === $action ) {
 				CSM_Updates::assert_job( $job );
 				if ( ! is_int( $data['offset'] ?? null ) ) {
 					throw new RuntimeException( 'Invalid destination offset.' ); }
@@ -492,19 +501,19 @@ final class CSM_Plugin {
 					self::respond( CSM_Segments::receive_stream( $job, $data['kind'] ?? '', $data['bundle'] ?? array(), $data['offset'], $fp, $data['length'] ?? null ) ); } finally {
 					fclose( $fp ); }
 			}
-			if ( $action === 'receive' ) {
+			if ( 'receive' === $action ) {
 				$fp = fopen( 'php://input', 'rb' );
 				try {
 					$job = self::receive( $job, $data['kind'] ?? '', $fp, $data['progress_run'] ?? null ); } finally {
 					fclose( $fp ); }
 					self::respond( self::summary( $job ) );
 			}
-			if ( $action === 'commit' ) {
+			if ( 'commit' === $action ) {
 				self::respond( self::commit( $job, $data['progress_run'] ?? null ) ); }
-			if ( $action === 'rollback' ) {
+			if ( 'rollback' === $action ) {
 				CSM_Progress::start( $id, 'Restoring destination backup', $data['progress_run'] ?? null );
 				self::respond( self::rollback( $job ) ); }
-			if ( $action === 'discard' ) {
+			if ( 'discard' === $action ) {
 				self::discard( $job );
 				self::respond( array() ); }
 			self::respond( self::summary( $job ) );
@@ -565,8 +574,8 @@ final class CSM_Plugin {
 		$active = get_option( '_csm_active_job' );
 		if ( $active ) {
 			$previous = CSM_Jobs::get( $active );
-			if ( $previous['status'] === 'applied' ) {
-				CSM_Backups::retain( $previous ); } elseif ( $previous['status'] === 'restored' ) {
+			if ( 'applied' === $previous['status'] ) {
+				CSM_Backups::retain( $previous ); } elseif ( 'restored' === $previous['status'] ) {
 				self::discard( $previous ); } else {
 					throw new RuntimeException( 'Finish or cancel the active transfer before starting another on this destination. Saved backups do not block new transfers.' ); }
 		}
@@ -587,7 +596,7 @@ final class CSM_Plugin {
 					throw new RuntimeException( 'Invalid component.' ); }
 			}
 		}
-		if ( ! $selection['tables'] && ! $selection['plugins'] && ! $selection['themes'] && $selection['media'] === 'none' ) {
+		if ( ! $selection['tables'] && ! $selection['plugins'] && ! $selection['themes'] && 'none' === $selection['media'] ) {
 			throw new RuntimeException( 'Select something to transfer.' ); }
 		$job = array(
 			'plugin_version' => CSM_VERSION,
@@ -611,16 +620,16 @@ final class CSM_Plugin {
 
 	public static function receive( array $job, string $kind, $fp, ?string $run = null ): array {
 		CSM_Updates::assert_job( $job );
-		if ( $job['status'] !== 'staging' || ! in_array( $kind, self::kinds( $job['selection'] ), true ) ) {
+		if ( 'staging' !== $job['status'] || ! in_array( $kind, self::kinds( $job['selection'] ), true ) ) {
 			throw new RuntimeException( 'Transfer is not awaiting this stream.' ); }
 		CSM_Progress::start( $job['id'], 'Receiving ' . $kind, $run );
 		unset( $job['received'][ $kind ] );
-		if ( $kind === 'files' ) {
+		if ( 'files' === $kind ) {
 			$job['files'] = array(); }
 		CSM_Jobs::save( $job );
 		CSM_Support::decompress( $fp );
 		try {
-			if ( $kind === 'database' ) {
+			if ( 'database' === $kind ) {
 				foreach ( $job['database'] as $table ) {
 					CSM_Support::query( 'DROP TABLE IF EXISTS ' . CSM_Support::ident( $table['stage'] ) ); }
 				CSM_Database::stage( $fp, $job );
@@ -655,12 +664,12 @@ final class CSM_Plugin {
 	public static function receive_step( array $job, string $kind, $fp, bool $continuing = false ): array {
 		CSM_Support::step( 8, $continuing );
 		CSM_Updates::assert_job( $job );
-		if ( $job['status'] !== 'staging' || ! in_array( $kind, self::kinds( $job['selection'] ), true ) ) {
+		if ( 'staging' !== $job['status'] || ! in_array( $kind, self::kinds( $job['selection'] ), true ) ) {
 			throw new RuntimeException( 'Transfer is not awaiting this stream.' ); }
 		if ( ! empty( $job['received'][ $kind ] ) ) {
 			return $job; }
 		$already = ! empty( $job['import_done'][ $kind ] );
-		$done    = $already || ( $kind === 'database' ? CSM_Database::stage_step( $fp, $job, true ) : CSM_Files::stage_step( $fp, $job, true ) );
+		$done    = $already || ( 'database' === $kind ? CSM_Database::stage_step( $fp, $job, true ) : CSM_Files::stage_step( $fp, $job, true ) );
 		if ( $done ) {
 			$job['import_done'][ $kind ] = true; }
 		if ( $done ) {
@@ -796,14 +805,14 @@ final class CSM_Plugin {
 			'plugins' => 'plugin',
 			'themes'  => 'theme',
 		)[ $parts[0] ] ?? 'file';
-		$name  = $kind === 'file' ? basename( $file['path'] ) : $parts[1];
-		if ( $kind !== 'file' ) {
+		$name  = 'file' === $kind ? basename( $file['path'] ) : $parts[1];
+		if ( 'file' !== $kind ) {
 			foreach ( $job['files'] as $candidate ) {
 				$path = explode( '/', $candidate['path'] );
 				if ( $path[0] !== $parts[0] || ( $path[1] ?? '' ) !== $parts[1] ) {
 					continue; }
-				if ( ( $kind === 'theme' && count( $path ) === 3 && $path[2] === 'style.css' ) || ( $kind === 'plugin' && count( $path ) <= 3 && str_ends_with( $candidate['path'], '.php' ) ) ) {
-					$header = get_file_data( ! empty( $candidate['unchanged'] ) ? CSM_Files::destination( $candidate['path'], $job['selection'] ) : $candidate['stage'], array( 'name' => $kind === 'theme' ? 'Theme Name' : 'Plugin Name' ) );
+				if ( ( 'theme' === $kind && count( $path ) === 3 && 'style.css' === $path[2] ) || ( 'plugin' === $kind && count( $path ) <= 3 && str_ends_with( $candidate['path'], '.php' ) ) ) {
+					$header = get_file_data( ! empty( $candidate['unchanged'] ) ? CSM_Files::destination( $candidate['path'], $job['selection'] ) : $candidate['stage'], array( 'name' => 'theme' === $kind ? 'Theme Name' : 'Plugin Name' ) );
 					if ( trim( $header['name'] ) ) {
 						$name = wp_strip_all_tags( $header['name'] );
 						break; }
@@ -819,7 +828,7 @@ final class CSM_Plugin {
 			if ( ! empty( $file['unchanged'] ) ) {
 				return; }
 			$parts = explode( '/', $file['path'] );
-			if ( str_ends_with( $file['path'], '.php' ) || ( $parts[0] === 'themes' && count( $parts ) === 3 && $parts[2] === 'style.css' ) ) {
+			if ( str_ends_with( $file['path'], '.php' ) || ( 'themes' === $parts[0] && count( $parts ) === 3 && 'style.css' === $parts[2] ) ) {
 				CSM_Progress::update(
 					array(
 						'phase'     => 'Checking PHP compatibility',
@@ -830,7 +839,7 @@ final class CSM_Plugin {
 						'bytes'     => 0,
 					)
 				); }
-			if ( ( $parts[0] === 'plugins' && count( $parts ) <= 3 && str_ends_with( $file['path'], '.php' ) ) || ( $parts[0] === 'themes' && count( $parts ) === 3 && $parts[2] === 'style.css' ) ) {
+			if ( ( 'plugins' === $parts[0] && count( $parts ) <= 3 && str_ends_with( $file['path'], '.php' ) ) || ( 'themes' === $parts[0] && count( $parts ) === 3 && 'style.css' === $parts[2] ) ) {
 				$headers = get_file_data(
 					$file['stage'],
 					array(
@@ -872,7 +881,7 @@ final class CSM_Plugin {
 				'signature' => array(),
 			);
 			CSM_Support::step( 8, $continuing );
-			if ( $state['phase'] === 'files' ) {
+			if ( 'files' === $state['phase'] ) {
 				while ( $state['index'] < count( $job['files'] ) ) {
 					$file   = $job['files'][ $state['index'] ];
 					$target = CSM_Files::destination( $file['path'], $job['selection'] );
@@ -903,7 +912,7 @@ final class CSM_Plugin {
 				$state['phase'] = 'obsolete';
 				$state['index'] = 0;
 			}
-			if ( $state['phase'] === 'obsolete' ) {
+			if ( 'obsolete' === $state['phase'] ) {
 				$roots = array(); foreach ( array( 'plugins', 'themes' ) as $kind ) {
 					foreach ( $job['selection'][ $kind ] as $component ) {
 						$roots[] = array( CSM_Files::root( $kind, $component ) . '/' . CSM_Files::safe_relative( $component ), $kind . '/' . $component );
@@ -961,13 +970,13 @@ final class CSM_Plugin {
 			}
 			$state['backup_work'] ??= null;
 			$backup_bytes           = CSM_Directories::backup_bytes( $state['paths'], $job['selection'], $state['backup_work'] );
-			if ( $backup_bytes === null ) {
+			if ( null === $backup_bytes ) {
 				$job['preview_work'] = $state;
 				CSM_Jobs::save( $job );
 				return null; }
 			$state['backup'] = $backup_bytes;
 			$free            = ( function_exists( 'disk_free_space' ) ? disk_free_space( CSM_Support::private_dir() ) : false );
-			if ( $free !== false && $free < $state['backup'] + 16777216 ) {
+			if ( false !== $free && $free < $state['backup'] + 16777216 ) {
 				throw new RuntimeException( 'Insufficient private storage for the destination rollback backup.' ); }
 			ksort( $state['signature'], SORT_STRING );
 			usort(
@@ -1063,7 +1072,7 @@ final class CSM_Plugin {
 		$backup_work = null;
 		$backup      = CSM_Directories::backup_bytes( $plan['paths'], $job['selection'], $backup_work, false );
 		$free        = ( function_exists( 'disk_free_space' ) ? disk_free_space( CSM_Support::private_dir() ) : false );
-		if ( $free !== false && $free < $backup + 16 * 1024 * 1024 ) {
+		if ( false !== $free && $free < $backup + 16 * 1024 * 1024 ) {
 			throw new RuntimeException( 'Insufficient private storage for the destination rollback backup.' ); }
 		usort(
 			$items,
@@ -1094,7 +1103,7 @@ final class CSM_Plugin {
 
 	public static function preview_page( array $job, int $offset = 0 ): array {
 		$raw = @file_get_contents( CSM_Support::private_dir() . '/' . $job['id'] . '-preview.json' );
-		if ( $offset < 0 || $raw === false || ! hash_equals( $job['preview']['file_hash'] ?? '', hash( 'sha256', $raw ) ) ) {
+		if ( $offset < 0 || false === $raw || ! hash_equals( $job['preview']['file_hash'] ?? '', hash( 'sha256', $raw ) ) ) {
 			throw new RuntimeException( 'Transfer preview is unavailable or changed. Prepare again.' ); }
 		$items = json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
 		return array(
@@ -1106,7 +1115,7 @@ final class CSM_Plugin {
 
 	public static function commit( array $job, ?string $run = null ): array {
 		CSM_Updates::assert_job( $job );
-		if ( $job['status'] === 'restoring' ) {
+		if ( 'restoring' === $job['status'] ) {
 			$result = self::rollback( $job );
 			if ( empty( $result['continue'] ) && ! empty( $job['error'] ) ) {
 				throw new RuntimeException( 'Apply failed; changes rolled back. ' . $job['error'] ); }
@@ -1162,7 +1171,7 @@ final class CSM_Plugin {
 			return self::summary( $job ) + array( 'continue' => true ); }
 		if ( ! self::backup_files( $job, $base ) ) {
 			return self::summary( $job ) + array( 'continue' => true ); }
-		if ( $job['status'] !== 'applying' || empty( $job['ops_hash'] ) ) {
+		if ( 'applying' !== $job['status'] || empty( $job['ops_hash'] ) ) {
 			self::save_recovery_plan( $job, $base ); }
 		wp_clear_scheduled_hook( 'trickle_recover', array( $job['id'] ) );
 		wp_schedule_single_event( time() + 60, 'trickle_recover', array( $job['id'] ) );
@@ -1191,7 +1200,7 @@ final class CSM_Plugin {
 			CSM_Support::check_cancel();
 			if ( empty( $job['db_applied'] ) ) {
 				$token                 = $actor ? wp_get_session_token() : '';
-				$authenticated_session = $token !== '' ? WP_Session_Tokens::get_instance( $actor->ID )->get( $token ) : null;
+				$authenticated_session = '' !== $token ? WP_Session_Tokens::get_instance( $actor->ID )->get( $token ) : null;
 				CSM_Timing::measure(
 					'apply.database',
 					static function () use ( &$job ) {
@@ -1224,7 +1233,7 @@ final class CSM_Plugin {
 		try {
 			$work = &$job['apply_work'];
 			$new  = $job['file_plan']['new'];
-			if ( $work['phase'] === 'backup' ) {
+			if ( 'backup' === $work['phase'] ) {
 				$backup_paths = $work['backup_paths'];
 				$keys         = array_keys( $backup_paths );
 				while ( count( $work['ops'] ) < count( $keys ) ) {
@@ -1289,7 +1298,7 @@ final class CSM_Plugin {
 			);
 			foreach ( $ops as $op ) {
 				[$kind, $component] = explode( '/', $op['path'], 3 );
-				if ( $kind === 'uploads' ) {
+				if ( 'uploads' === $kind ) {
 					$components['media'] = true; } elseif ( isset( $components[ $kind ] ) && ! in_array( $component, $components[ $kind ], true ) ) {
 					$components[ $kind ][] = $component; }
 			}
@@ -1343,7 +1352,7 @@ final class CSM_Plugin {
 			$position    = 0;
 			foreach ( $paths as $relative => $target ) {
 				$kind = explode( '/', $relative, 2 )[0];
-				if ( $kind === 'uploads' ) {
+				if ( 'uploads' === $kind ) {
 					$kind = 'media';
 				}
 				if ( isset( $replacement[ $kind ] ) ) {
@@ -1435,7 +1444,7 @@ final class CSM_Plugin {
 					throw new RuntimeException( 'Could not remove obsolete file.' );
 				}
 				$kind = explode( '/', $relative, 2 )[0];
-				if ( $kind === 'uploads' ) {
+				if ( 'uploads' === $kind ) {
 					$kind = 'media';
 				}
 				if ( isset( $replacement[ $kind ] ) ) {
@@ -1487,16 +1496,16 @@ final class CSM_Plugin {
 			if ( ! empty( $job['apply_work']['whole_components'] ) ) {
 				// Older cursors index the complete list; changing that list mid-resume could skip files.
 				$ops     = ! empty( $state['scoped_components'] ) ? ( $job['apply_work']['directories']['ops'] ?? null ) : null;
-				$rebuilt = $ops === null ? null : array_fill_keys( array_column( $ops, 'path' ), true );
+				$rebuilt = null === $ops ? null : array_fill_keys( array_column( $ops, 'path' ), true );
 				foreach ( $new as $relative => $file ) {
 					// Only rebuilt components have new copies of otherwise unchanged files to verify.
 					$parts     = explode( '/', $relative, 3 );
 					$component = $parts[0] . '/' . ( $parts[1] ?? '' );
-					if ( $rebuilt === null || isset( $rebuilt[ $component ] ) ) {
+					if ( null === $rebuilt || isset( $rebuilt[ $component ] ) ) {
 						$paths[ $relative ] = true; }
 				}
 			}
-			if ( $state['phase'] === 'files' ) {
+			if ( 'files' === $state['phase'] ) {
 				foreach ( array_keys( $paths ) as $index => $relative ) {
 					if ( $index < $state['cursor'] ) {
 						continue; }
@@ -1734,7 +1743,7 @@ final class CSM_Plugin {
 			while ( $state['offset'] < $stat['size'] ) {
 				CSM_Support::check_cancel();
 				$bytes = stream_copy_to_stream( $in, $out, min( 262144, $stat['size'] - $state['offset'] ) );
-				if ( $bytes === false || $bytes === 0 ) {
+				if ( false === $bytes || 0 === $bytes ) {
 					throw new RuntimeException( 'File copy was truncated.' ); }
 				$state['offset'] += $bytes;
 				$copied          += $bytes;
@@ -1799,7 +1808,7 @@ final class CSM_Plugin {
 		if ( ! isset( $job['ops_hash'] ) ) {
 			return $job['ops']; }
 		$plan = @file_get_contents( ( $job['backup_dir'] ?? CSM_Support::private_dir() . '/' . $job['id'] . '-backup' ) . '/operations.json' );
-		if ( $plan === false || ! hash_equals( $job['ops_hash'], hash( 'sha256', $plan ) ) ) {
+		if ( false === $plan || ! hash_equals( $job['ops_hash'], hash( 'sha256', $plan ) ) ) {
 			throw new RuntimeException( 'The file recovery plan is missing or changed.' ); }
 		$ops = json_decode( $plan, true, 512, JSON_THROW_ON_ERROR );
 		if ( ! is_array( $ops ) || ! array_is_list( $ops ) ) {
@@ -1904,7 +1913,7 @@ final class CSM_Plugin {
 		$user->set_role( 'administrator' );
 		$manager = WP_Session_Tokens::get_instance( $user->ID );
 		$token   = wp_get_session_token();
-		if ( $token !== '' ) {
+		if ( '' !== $token ) {
 			$session                 = $authenticated_session ?? ( $manager->get( $token ) ?: array() );
 			$session['expiration'] ??= (int) ( wp_parse_auth_cookie( '', 'logged_in' )['expiration'] ?? time() + 2 * DAY_IN_SECONDS );
 			$manager->update( $token, $session );
@@ -2025,7 +2034,7 @@ final class CSM_Plugin {
 		} else {
 			// Codes issued by the first preview encoded the same URL/key pair as base64 JSON.
 			$decoded = base64_decode( $code, true );
-			$peer    = $decoded === false ? null : json_decode( $decoded, true );
+			$peer    = false === $decoded ? null : json_decode( $decoded, true );
 		}
 		if ( ! is_array( $peer ) || ! is_string( $peer['url'] ?? null ) || ! is_string( $peer['key'] ?? null ) || ! preg_match( '/^[a-f0-9]{64}$/D', $peer['key'] ) ) {
 			throw new RuntimeException( 'Invalid connection code. Copy both the site URL and the key from the remote Trickle page.' );
@@ -2037,21 +2046,21 @@ final class CSM_Plugin {
 	}
 
 	public static function assets( string $hook ): void {
-		if ( $hook !== 'tools_page_trickle' ) {
+		if ( 'tools_page_trickle' !== $hook ) {
 			return; }
 		wp_enqueue_style( 'trickle', plugins_url( 'assets/admin.css', CSM_FILE ), array(), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/admin.css' ) );
 		wp_enqueue_style( 'trickle-workspace', plugins_url( 'assets/workspace.css', CSM_FILE ), array( 'trickle' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/workspace.css' ) );
 		wp_enqueue_style( 'trickle-clarity', plugins_url( 'assets/clarity.css', CSM_FILE ), array( 'trickle-workspace' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/clarity.css' ) );
 		$script = ( $_GET['view'] ?? '' ) === 'backups' ? 'backups' : 'admin';
-		if ( $script === 'admin' ) {
+		if ( 'admin' === $script ) {
 			wp_enqueue_script( 'trickle-carbon-date-picker', plugins_url( 'vendor/carbon/date-picker.min.js', CSM_FILE ), array(), '2.68.0', true );
 			wp_enqueue_script( 'trickle-media-dates', plugins_url( 'assets/media-dates.js', CSM_FILE ), array( 'trickle-carbon-date-picker' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/media-dates.js' ), true );
 			wp_enqueue_script( 'trickle-progress', plugins_url( 'assets/transfer-progress.js', CSM_FILE ), array(), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/transfer-progress.js' ), true );
 		}
 		wp_enqueue_script( 'trickle-header', plugins_url( 'assets/app-header.js', CSM_FILE ), array(), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/app-header.js' ), true );
 		wp_enqueue_script( 'trickle-request', plugins_url( 'assets/request.js', CSM_FILE ), array(), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/request.js' ), true );
-		wp_enqueue_script( 'trickle', plugins_url( 'assets/' . $script . '.js', CSM_FILE ), $script === 'admin' ? array( 'trickle-request', 'trickle-progress', 'trickle-media-dates' ) : array( 'trickle-request' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/' . $script . '.js' ), true );
-		if ( $script === 'admin' ) {
+		wp_enqueue_script( 'trickle', plugins_url( 'assets/' . $script . '.js', CSM_FILE ), 'admin' === $script ? array( 'trickle-request', 'trickle-progress', 'trickle-media-dates' ) : array( 'trickle-request' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/' . $script . '.js' ), true );
+		if ( 'admin' === $script ) {
 			wp_enqueue_script( 'trickle-tabs', plugins_url( 'assets/admin-tabs.js', CSM_FILE ), array( 'trickle' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/admin-tabs.js' ), true ); }
 		wp_localize_script(
 			'trickle',

@@ -1,11 +1,30 @@
 <?php
+/**
+ * Destination backup discovery, restoration and removal.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
+/**
+ * Destination backup discovery, restoration and removal.
+ */
 final class CSM_Backups {
+	/**
+	 * Remove a transfer identifier from the retained-backup index.
+	 *
+	 * @param string $id Transfer identifier.
+	 */
 	public static function forget( string $id ): void {
 		update_option( '_csm_backups', array_values( array_diff( get_option( '_csm_backups', array() ), array( $id ) ) ), false );
 	}
 
+	/**
+	 * Register a completed destination backup for later restoration.
+	 *
+	 * @param array $job Destination transfer record, including recovery state.
+	 */
 	public static function retain( array $job ): void {
 		$ids = array_values( array_unique( array_merge( array( $job['id'] ), get_option( '_csm_backups', array() ) ) ) );
 		update_option( '_csm_backups', $ids, false );
@@ -43,6 +62,11 @@ final class CSM_Backups {
 		}
 	}
 
+	/**
+	 * List retained backups accessible to the authenticated connection.
+	 *
+	 * @return array Retained backup metadata visible to the authenticated owner.
+	 */
 	public static function listing(): array {
 		$items = array();
 		foreach ( get_option( '_csm_backups', array() ) as $id ) {
@@ -54,7 +78,7 @@ final class CSM_Backups {
 				self::authorize( $job );
 			} catch ( Throwable $e ) {
 				continue; }
-			if ( $job['status'] !== 'applied' ) {
+			if ( 'applied' !== $job['status'] ) {
 				continue; }
 			$items[] = array(
 				'id'             => $id,
@@ -78,11 +102,25 @@ final class CSM_Backups {
 		);
 	}
 
+	/**
+	 * Require ownership before reading or mutating a retained backup.
+	 *
+	 * @param array $job Destination transfer record, including recovery state.
+	 */
 	private static function authorize( array $job ): void {
 		if ( isset( $GLOBALS['_csm_credential'] ) ) {
 			CSM_Access::assert_owner( $job ); }
 	}
 
+	/**
+	 * Restore a retained backup through the native recovery workflow.
+	 *
+	 * @param string $id Transfer identifier.
+	 *
+	 * @return array Native restoration status for the selected backup.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function restore( string $id ): array {
 		if ( ! in_array( $id, get_option( '_csm_backups', array() ), true ) ) {
 			throw new RuntimeException( 'Backup not found. Refresh the backup list.' ); }
@@ -95,7 +133,7 @@ final class CSM_Backups {
 			throw new RuntimeException( 'Finish or cancel the active transfer before restoring a backup.' ); }
 		if ( $restore ) {
 			$job = CSM_Jobs::get( $restore['job_id'] ); } else {
-			if ( $original['status'] !== 'applied' ) {
+			if ( 'applied' !== $original['status'] ) {
 				throw new RuntimeException( 'This backup is no longer available.' ); }
 			$ops                        = CSM_Plugin::recovery_operations( $original );
 			$selection                  = $original['selection'];
@@ -180,7 +218,7 @@ final class CSM_Backups {
 			// Each copy batch and its cursor commit together; a killed worker repeats no acknowledged rows.
 			CSM_Support::work( $job['id'], false );
 			CSM_Support::step();
-			if ( $job['status'] === 'backup_copy' ) {
+			if ( 'backup_copy' === $job['status'] ) {
 				$cursor = $job['backup_copy'] ?? array(
 					'table'       => 0,
 					'offset'      => 0,
@@ -227,7 +265,7 @@ final class CSM_Backups {
 						$cursor['offset'] += $count;
 						if ( $keys && $count ) {
 							$cursor['last'] = CSM_Database::rows( 'SELECT ' . implode( ',', array_map( array( CSM_Support::class, 'ident' ), $keys ) ) . ' FROM ' . $copy . ' ORDER BY ' . implode( ',', array_map( static fn( $key )=>CSM_Support::ident( $key ) . ' DESC', $keys ) ) . ' LIMIT 1' )[0] ?? null;
-							if ( $cursor['last'] === null ) {
+							if ( null === $cursor['last'] ) {
 								throw new RuntimeException( 'Backup copy row checkpoint is missing.' ); }
 						}
 						if ( $count < 250 ) {

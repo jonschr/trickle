@@ -1,8 +1,19 @@
 <?php
+/**
+ * Scoped connection credentials and migration authorization.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Separately revocable, scoped connection keys; the original administrator key remains compatible. */
 final class CSM_Access {
+	/**
+	 * Return the site-wide permissions for remote reads and writes.
+	 *
+	 * @return array Remote pull and push permission flags.
+	 */
 	public static function settings(): array {
 		return get_option(
 			'_csm_settings',
@@ -12,13 +23,37 @@ final class CSM_Access {
 			)
 		); }
 
+	/**
+	 * Derive the public identifier for a connection key without exposing the key.
+	 *
+	 * @param string $key Raw connection secret used only to derive its public identifier.
+	 *
+	 * @return string Twenty-four-character public credential identifier.
+	 */
 	public static function id( string $key ): string {
 		return substr( hash( 'sha256', $key ), 0, 24 ); }
 
+	/**
+	 * List scoped keys with credential bytes removed.
+	 *
+	 * @return array Scoped key metadata without key bytes.
+	 */
 	public static function list(): array {
 		return array_values( array_map( static fn( $token ) => array_intersect_key( $token, array_flip( array( 'id', 'name', 'read', 'write', 'expires' ) ) ), get_option( '_csm_tokens', array() ) ) );
 	}
 
+	/**
+	 * Issue a revocable key with bounded lifetime and explicit read/write scope.
+	 *
+	 * @param string $name Human-readable label for the new connection.
+	 * @param bool   $read Whether the new connection may read from this site.
+	 * @param bool   $write Whether the new connection may modify this site.
+	 * @param int    $days Connection lifetime in days, between 1 and 90.
+	 *
+	 * @return array New pairing code, identifier and redacted key list.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function issue( string $name, bool $read, bool $write, int $days ): array {
 		if ( ! $read && ! $write ) {
 			throw new RuntimeException( 'A connection needs read or write access.' ); }
@@ -45,6 +80,13 @@ final class CSM_Access {
 		);
 	}
 
+	/**
+	 * Revoke one scoped connection key.
+	 *
+	 * @param string $id Scoped credential identifier.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function revoke( string $id ): void {
 		$tokens = get_option( '_csm_tokens', array() );
 		if ( ! isset( $tokens[ $id ] ) ) {
@@ -53,9 +95,18 @@ final class CSM_Access {
 		update_option( '_csm_tokens', $tokens, false );
 	}
 
+	/**
+	 * Resolve and validate a scoped key or the administrator key.
+	 *
+	 * @param string $id Scoped credential identifier.
+	 *
+	 * @return array Validated credential, including private key and access flags.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function credential( string $id ): array {
 		$master = (string) get_option( '_csm_key' );
-		if ( $master && ( $id === '' || hash_equals( self::id( $master ), $id ) ) ) {
+		if ( $master && ( '' === $id || hash_equals( self::id( $master ), $id ) ) ) {
 			return array(
 				'id'     => self::id( $master ),
 				'key'    => $master,
@@ -69,8 +120,16 @@ final class CSM_Access {
 		return $token + array( 'master' => false );
 	}
 
+	/**
+	 * Require the connection scope and site settings needed by an action.
+	 *
+	 * @param array  $token Resolved connection credential and its access scope.
+	 * @param string $action Signed peer operation being authorized.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function authorize( array $token, string $action ): void {
-		if ( $action === 'cancel' && ( ! empty( $token['read'] ) || ! empty( $token['write'] ) ) ) {
+		if ( 'cancel' === $action && ( ! empty( $token['read'] ) || ! empty( $token['write'] ) ) ) {
 			$GLOBALS['_csm_credential'] = $token;
 			return; }
 		if ( in_array( $action, array( 'update_trickle', 'update_trickle_build', 'update_trickle_zip' ), true ) ) {
@@ -93,11 +152,23 @@ final class CSM_Access {
 		$GLOBALS['_csm_credential'] = $token;
 	}
 
+	/**
+	 * Return the authenticated connection identifier, or the local owner.
+	 *
+	 * @return string Authenticated credential identifier, or "local".
+	 */
 	public static function owner(): string {
 		return $GLOBALS['_csm_credential']['id'] ?? 'local'; }
 
+	/**
+	 * Reject access to a job owned by a different scoped connection.
+	 *
+	 * @param array $record Persisted record whose connection ownership must be checked.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function assert_owner( array $record ): void {
-		if ( isset( $record['credential'] ) && $record['credential'] !== self::owner() && empty( $GLOBALS['_csm_credential']['master'] ) ) {
+		if ( isset( $record['credential'] ) && self::owner() !== $record['credential'] && empty( $GLOBALS['_csm_credential']['master'] ) ) {
 			throw new RuntimeException( 'This transfer belongs to another connection key. Use its original key or the site administrator connection.', 403 ); }
 	}
 }

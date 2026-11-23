@@ -1,4 +1,10 @@
 <?php
+/**
+ * Early request isolation and interrupted migration recovery.
+ *
+ * @package Trickle
+ */
+
 // TRICKLE_LOADER: generated on activation; normal site requests are unaffected.
 defined( 'ABSPATH' ) || exit;
 $csm_recovery_job  = get_option( '_csm_active_job' );
@@ -17,7 +23,7 @@ if ( in_array( $csm_plugin, $csm_active, true ) && ! $csm_request ) {
 		$path      = parse_url( $_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH );
 		$base_path = rtrim( (string) parse_url( (string) get_option( 'siteurl' ), PHP_URL_PATH ), '/' );
 		$endpoint  = is_string( $path ) && str_starts_with( $path, '/' ) && in_array( rtrim( $path, '/' ), array( $base_path, $base_path . '/index.php' ), true );
-		if ( $post && $endpoint && is_string( $_GET['trickle'] ?? null ) && $_GET['trickle'] !== 'manifest' ) {
+		if ( $post && $endpoint && is_string( $_GET['trickle'] ?? null ) && 'manifest' !== $_GET['trickle'] ) {
 			$base = WP_PLUGIN_DIR . '/' . dirname( $csm_plugin ) . '/includes/';
 			foreach ( array( 'support', 'access', 'transport' ) as $part ) {
 				require_once $base . $part . '.php'; }
@@ -26,10 +32,10 @@ if ( in_array( $csm_plugin, $csm_active, true ) && ! $csm_request ) {
 				return true; } catch ( Throwable $error ) {
 				return false; }
 		}
-		$ajax = $post && defined( 'DOING_AJAX' ) && DOING_AJAX && $script === realpath( ABSPATH . 'wp-admin/admin-ajax.php' )
+		$ajax = $post && defined( 'DOING_AJAX' ) && DOING_AJAX && realpath( ABSPATH . 'wp-admin/admin-ajax.php' ) === $script
 			&& ( $_POST['action'] ?? '' ) === 'csm_admin' && ( $_REQUEST['action'] ?? '' ) === 'csm_admin'
 			&& ! in_array( $_POST['op'] ?? '', array( 'manifest', 'connect' ), true );
-		$page = ! $post && $script === realpath( ABSPATH . 'wp-admin/tools.php' ) && ( $_GET['page'] ?? '' ) === 'trickle';
+		$page = ! $post && realpath( ABSPATH . 'wp-admin/tools.php' ) === $script && ( $_GET['page'] ?? '' ) === 'trickle';
 		if ( ! $ajax && ! $page ) {
 			return false; }
 		// Core user/session APIs are available here, before ordinary plugins load.

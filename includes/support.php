@@ -1,17 +1,62 @@
 <?php
+/**
+ * Shared storage, cancellation, deadlines and migration primitives.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/timing.php';
 
+/**
+ * Signals explicit cancellation at a durable work boundary.
+ */
 final class CSM_Cancelled_Error extends RuntimeException {}
+/**
+ * Yields bounded work so another request can resume its checkpoint.
+ */
 final class CSM_Yield extends RuntimeException {}
 
+/**
+ * Shared storage, cancellation, deadlines and migration primitives.
+ */
 final class CSM_Support {
-	private static ?string $work_id          = null;
+	/**
+	 * Transfer whose cancellation marker is checked by this request.
+	 *
+	 * @var string|null
+	 */
+	private static ?string $work_id = null;
+	/**
+	 * Validated cancellation marker path for the current transfer.
+	 *
+	 * @var string|null
+	 */
 	private static ?string $work_cancel_path = null;
-	private static bool $cancellable         = true;
-	private static ?float $step_deadline     = null;
+	/**
+	 * Whether the current operation may honor cancellation.
+	 *
+	 * @var bool
+	 */
+	private static bool $cancellable = true;
+	/**
+	 * Monotonic deadline for the current bounded work step.
+	 *
+	 * @var float|null
+	 */
+	private static ?float $step_deadline = null;
 
-	private static $runtime_handle         = null;
+	/**
+	 * Open runtime lock handle, when acquired.
+	 *
+	 * @var resource|false|null
+	 */
+	private static $runtime_handle = null;
+	/**
+	 * Whether this request holds the exclusive runtime lock.
+	 *
+	 * @var bool
+	 */
 	private static bool $runtime_exclusive = false;
 
 	/** Drain ordinary requests before replacing code; keep them out until verification ends. */
@@ -40,7 +85,7 @@ final class CSM_Support {
 
 	public static function work( string $id, ?bool $cancellable = true ): void {
 		self::$work_cancel_path = self::cancel_path( $id );
-		if ( self::$work_id !== $id || $cancellable !== null ) {
+		if ( self::$work_id !== $id || null !== $cancellable ) {
 			self::$cancellable = $cancellable ?? true;
 		} self::$work_id = $id;
 	}
@@ -73,17 +118,17 @@ final class CSM_Support {
 			if ( ! is_file( $path ) ) {
 				return; }
 			$marker = json_decode( file_get_contents( $path ), true );
-			if ( ! isset( $marker['credential'] ) || ! class_exists( 'CSM_Access' ) || $marker['credential'] === CSM_Access::owner() || ! empty( $GLOBALS['_csm_credential']['master'] ) ) {
+			if ( ! isset( $marker['credential'] ) || ! class_exists( 'CSM_Access' ) || CSM_Access::owner() === $marker['credential'] || ! empty( $GLOBALS['_csm_credential']['master'] ) ) {
 				throw new CSM_Cancelled_Error( 'Transfer cancelled.' ); }
 		}
 	}
 
 	public static function step( float $seconds = 8, bool $continuing = false ): void {
-		if ( ! $continuing || self::$step_deadline === null ) {
+		if ( ! $continuing || null === self::$step_deadline ) {
 			self::$step_deadline = hrtime( true ) / 1e9 + max( .01, (float) apply_filters( 'csm_step_seconds', $seconds ) ); }
 	}
 	public static function due(): bool {
-		return self::$step_deadline !== null && hrtime( true ) / 1e9 >= self::$step_deadline; }
+		return null !== self::$step_deadline && hrtime( true ) / 1e9 >= self::$step_deadline; }
 
 	public static function atomic_json( string $path, array $data ): void {
 		self::atomic_bytes( $path, self::json( $data ) );
@@ -106,8 +151,18 @@ final class CSM_Support {
 			CSM_Timing::add( str_ends_with( $path, '-apply.json' ) ? 'filesystem.atomic_cursor' : ( str_ends_with( $path, '/swap.json' ) ? 'filesystem.atomic_journal' : 'filesystem.atomic_other' ), $timing, strlen( $raw ) ); }
 	}
 
+	/**
+	 * Monotonic deadline for source snapshot production.
+	 *
+	 * @var float|null
+	 */
 	private static ?float $source_deadline = null;
-	private static int $source_seconds     = 45;
+	/**
+	 * Maximum source production time in seconds.
+	 *
+	 * @var int
+	 */
+	private static int $source_seconds = 45;
 
 	public static function begin_source_budget(): void {
 		self::$source_seconds  = max( 1, min( 45, (int) apply_filters( 'csm_source_packaging_seconds', 45 ) ) );
@@ -117,7 +172,7 @@ final class CSM_Support {
 	public static function check_source_budget( bool $check_cancel = true ): void {
 		if ( $check_cancel ) {
 			self::check_cancel(); }
-		if ( self::$source_deadline !== null && hrtime( true ) / 1e9 >= self::$source_deadline ) {
+		if ( null !== self::$source_deadline && hrtime( true ) / 1e9 >= self::$source_deadline ) {
 			throw new RuntimeException( 'Source packaging exceeded the ' . self::$source_seconds . '-second limit. Select fewer components or a smaller media date range.' );
 		}
 	}
@@ -142,11 +197,11 @@ final class CSM_Support {
 				if ( hrtime( true ) / 1e9 >= $deadline ) {
 					throw new RuntimeException( 'Checksum exceeded the ' . $seconds . '-second limit: ' . basename( $path ) ); }
 				$bytes = fread( $fp, 262144 );
-				if ( $bytes === false || ( $bytes === '' && ! feof( $fp ) ) ) {
+				if ( false === $bytes || ( '' === $bytes && ! feof( $fp ) ) ) {
 					throw new RuntimeException( 'Checksum read failed: ' . basename( $path ) ); }
-				if ( $buffer !== null && strlen( $buffer ) + strlen( $bytes ) <= 2097152 ) {
+				if ( null !== $buffer && strlen( $buffer ) + strlen( $bytes ) <= 2097152 ) {
 					$buffer .= $bytes; } else {
-					if ( $buffer !== null ) {
+					if ( null !== $buffer ) {
 						hash_update( $hash, $buffer );
 						$buffer = null; }
 					hash_update( $hash, $bytes );
@@ -155,7 +210,7 @@ final class CSM_Support {
 					if ( $progress ) {
 						$progress( $read ); }
 			}
-			return $buffer !== null ? CSM_Package::digest( $buffer ) : hash_final( $hash );
+			return null !== $buffer ? CSM_Package::digest( $buffer ) : hash_final( $hash );
 		} finally {
 			fclose( $fp );
 			CSM_Timing::add( 'checksum.read', $timing, $read ); }
@@ -186,7 +241,7 @@ final class CSM_Support {
 		$actual = self::hash_file( $path );
 		clearstatcache( true, $path );
 		$after = @stat( $path );
-		if ( ! $after || $stamp !== array_intersect_key( $after, array_flip( array_keys( $stamp ) ) ) || ! hash_equals( $expected, $actual ) ) {
+		if ( ! $after || array_intersect_key( $after, array_flip( array_keys( $stamp ) ) ) !== $stamp || ! hash_equals( $expected, $actual ) ) {
 			return false; }
 		// Only reuse a check made after timestamps settled; same-second writes must be rehashed.
 		$receipt = $stable ? array(
@@ -202,9 +257,9 @@ final class CSM_Support {
 			throw new RuntimeException( 'Cannot initialize stream compression.' ); }
 		foreach ( $input as $bytes ) {
 			$compressed = deflate_add( $context, $bytes, ZLIB_NO_FLUSH );
-			if ( $compressed === false ) {
+			if ( false === $compressed ) {
 				throw new RuntimeException( 'Stream compression failed.' ); }
-			if ( $compressed !== '' ) {
+			if ( '' !== $compressed ) {
 				yield $compressed; }
 		}
 		yield deflate_add( $context, '', ZLIB_FINISH );
@@ -221,7 +276,7 @@ final class CSM_Support {
 
 	public static function line( $fp ): array {
 		$line = fgets( $fp, 32 * 1024 * 1024 );
-		if ( $line === false || ! str_ends_with( $line, "\n" ) ) {
+		if ( false === $line || ! str_ends_with( $line, "\n" ) ) {
 			throw new RuntimeException( 'Incomplete stream or record exceeds the 32 MB record limit.' );
 		}
 		$value = json_decode( $line, true, 512, JSON_THROW_ON_ERROR );
@@ -250,7 +305,7 @@ final class CSM_Support {
 	public static function query( string $sql ) {
 		global $wpdb;
 		$result = $wpdb->query( $sql );
-		if ( $result === false ) {
+		if ( false === $result ) {
 			throw new RuntimeException( 'Database operation failed: ' . $wpdb->last_error ); }
 		return $result;
 	}
@@ -378,7 +433,7 @@ final class CSM_Support {
 		if ( is_serialized( $text ) ) {
 			$offset = 0;
 			$result = self::serialized( $text, $offset, $pairs );
-			if ( $offset !== strlen( $text ) ) {
+			if ( strlen( $text ) !== $offset ) {
 				throw new RuntimeException( 'Unexpected trailing serialized data.' ); }
 			return $result;
 		}
@@ -399,7 +454,7 @@ final class CSM_Support {
 		}
 		if ( preg_match( '/^(a:(\d+):\{|O:\d+:"[^"]*":(\d+):\{)/', $tail, $m ) ) {
 			$header = $m[1];
-			$count  = (int) ( $m[2] !== '' ? $m[2] : $m[3] );
+			$count  = (int) ( '' !== $m[2] ? $m[2] : $m[3] );
 			$p     += strlen( $header );
 			$output = $header;
 			for ( $i = 0; $i < $count * 2; $i++ ) {

@@ -1,4 +1,10 @@
 <?php
+/**
+ * Bounded stream windows, replay checkpoints and receipts.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Immutable gzip snapshots with resumable streaming, bounded chunks and durable byte offsets. */
@@ -99,7 +105,7 @@ final class CSM_Segments {
 				CSM_Support::atomic_json( $meta, $info );
 				return $info;
 			} catch ( Throwable $error ) {
-				if ( $kind === 'database' ) {
+				if ( 'database' === $kind ) {
 					@unlink( $path . '.part' ); }
 				throw $error;
 			} finally {
@@ -123,7 +129,7 @@ final class CSM_Segments {
 			throw new RuntimeException( 'Could not read source checkpoint.' ); }
 		try {
 			$bytes = fread( $fp, self::SIZE );
-			if ( $bytes === false || $bytes === '' ) {
+			if ( false === $bytes || '' === $bytes ) {
 				throw new RuntimeException( 'Source checkpoint is unreadable.' );
 			} return $bytes; } finally {
 			fclose( $fp ); }
@@ -147,9 +153,9 @@ final class CSM_Segments {
 			while ( $length > 0 && ! feof( $fp ) ) {
 				CSM_Support::check_cancel();
 				$bytes = fread( $fp, min( self::SIZE, $length ) );
-				if ( $bytes === false ) {
+				if ( false === $bytes ) {
 					throw new RuntimeException( 'Cannot read source snapshot.' ); }
-				if ( $bytes !== '' ) {
+				if ( '' !== $bytes ) {
 					$length -= strlen( $bytes );
 					yield $bytes; }
 			}
@@ -198,7 +204,7 @@ final class CSM_Segments {
 		$path  = self::path( $job['id'], $kind, '.incoming' );
 		if ( $offset !== $state['offset'] ) {
 			throw new RuntimeException( 'Destination offset changed. Refresh its checkpoint before resuming.' ); }
-		if ( $length !== null && ( $length < 0 || $length > self::UPLOAD_SIZE || $length > $bundle['size'] - $offset || ( $length === 0 && $offset !== $bundle['size'] ) ) ) {
+		if ( null !== $length && ( $length < 0 || $length > self::UPLOAD_SIZE || $length > $bundle['size'] - $offset || ( 0 === $length && $offset !== $bundle['size'] ) ) ) {
 			throw new RuntimeException( 'Invalid upload window length.' ); }
 		$end = $offset + ( $length ?? ( $bundle['size'] - $offset ) );
 		CSM_Support::atomic_json( $path . '.json', $bundle );
@@ -210,7 +216,7 @@ final class CSM_Segments {
 			while ( ! feof( $input ) ) {
 				CSM_Support::check_cancel();
 				$bytes = fread( $input, self::SIZE );
-				if ( $bytes === false || ( $bytes === '' && ! feof( $input ) ) ) {
+				if ( false === $bytes || ( '' === $bytes && ! feof( $input ) ) ) {
 					throw new CSM_Network_Error( 'Connection failed: Incoming stream interrupted.' ); }
 				if ( $offset + strlen( $bytes ) > $end ) {
 					throw new RuntimeException( 'Snapshot stream exceeds its declared size.' ); }
@@ -244,10 +250,10 @@ final class CSM_Segments {
 		CSM_Updates::assert_job( $job );
 		self::validate_bundle( $bundle );
 		$path = self::path( $job['id'], $kind, '.incoming' );
-		if ( $job['status'] !== 'staging' || ! in_array( $kind, CSM_Plugin::kinds( $job['selection'] ), true ) ) {
+		if ( 'staging' !== $job['status'] || ! in_array( $kind, CSM_Plugin::kinds( $job['selection'] ), true ) ) {
 			throw new RuntimeException( 'Transfer is not awaiting this stream.' ); }
 		$raw = @file_get_contents( $path . '.json' );
-		if ( $raw !== false ) {
+		if ( false !== $raw ) {
 			$old = json_decode( $raw, true, 32, JSON_THROW_ON_ERROR );
 			if ( $old['size'] !== $bundle['size'] || ! hash_equals( $old['sha256'], $bundle['sha256'] ) ) {
 				throw new RuntimeException( 'Source stream changed. Discard and prepare again.' ); }
@@ -281,7 +287,7 @@ final class CSM_Segments {
 			fclose( $fp );
 			if ( $offset + strlen( $bytes ) > $state['offset'] || ! hash_equals( $old, $bytes ) ) {
 				throw new RuntimeException( 'Conflicting retry at an acknowledged offset.' ); }
-		} elseif ( $bytes !== '' ) {
+		} elseif ( '' !== $bytes ) {
 			CSM_Support::atomic_json( $path . '.json', $bundle );
 			$fp = fopen( $path, 'c+b' );
 			if ( ! $fp || fseek( $fp, $offset ) !== 0 ) {
@@ -461,7 +467,7 @@ final class CSM_Segments {
 				continue; }
 			$record = json_decode( file_get_contents( $path ), true, 32, JSON_THROW_ON_ERROR );
 			CSM_Access::assert_owner( $record );
-			if ( $owner !== null && $owner !== $record['credential'] ) {
+			if ( null !== $owner && $owner !== $record['credential'] ) {
 				throw new RuntimeException( 'Inconsistent source ownership. Recovery state has been kept.' ); }
 			$owner = $record['credential'];
 		}
@@ -479,7 +485,7 @@ final class CSM_Segments {
 				)
 			);
 		} finally {
-			if ( $previous === null ) {
+			if ( null === $previous ) {
 				unset( $GLOBALS['_csm_credential'] );
 			} else {
 				$GLOBALS['_csm_credential'] = $previous; }

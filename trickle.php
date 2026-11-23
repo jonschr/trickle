@@ -9,7 +9,10 @@
  * Requires PHP: 8.1
  * Author: Elodin
  * License: GPL-2.0-or-later
+ *
+ * @package Trickle
  */
+
 defined( 'ABSPATH' ) || exit;
 define( 'CSM_FILE', __FILE__ );
 define( 'CSM_VERSION', '0.1.37' );

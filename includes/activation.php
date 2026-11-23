@@ -1,7 +1,25 @@
 <?php
+/**
+ * Source plugin activation selection, application and recovery.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
+/**
+ * Source plugin activation selection, application and recovery.
+ */
 final class CSM_Activation {
+	/**
+	 * Validate and deduplicate relative plugin entry-point filenames.
+	 *
+	 * @param array $plugins Relative plugin entry-point filenames.
+	 *
+	 * @return array Unique relative plugin entry-point filenames.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function validate( $plugins ): array {
 		if ( ! is_array( $plugins ) ) {
 			throw new RuntimeException( 'Invalid source plugin activation list.' ); }
@@ -13,6 +31,11 @@ final class CSM_Activation {
 		return array_values( array_unique( $plugins ) );
 	}
 
+	/**
+	 * Read the real active-plugin list outside the migration isolation filter.
+	 *
+	 * @return array Actual destination active-plugin filenames.
+	 */
 	public static function current(): array {
 		$filter = $GLOBALS['_csm_active_plugins_filter'] ?? null;
 		if ( ! $filter && defined( 'CSM_ORIGINAL_ACTIVE_PLUGINS' ) ) {
@@ -26,6 +49,15 @@ final class CSM_Activation {
 			}
 	}
 
+	/**
+	 * Validate and default the active-plugin synchronization preference.
+	 *
+	 * @param array $selection Approved component selection and activation preferences.
+	 *
+	 * @return array Selection with a validated synchronization preference.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function selection( array $selection ): array {
 		if ( isset( $selection['sync_active_plugins'] ) && ! is_bool( $selection['sync_active_plugins'] ) ) {
 			throw new RuntimeException( 'Plugin activation setting must be true or false.' ); }
@@ -33,6 +65,14 @@ final class CSM_Activation {
 		return $selection;
 	}
 
+	/**
+	 * Capture the approved source active-plugin list in the destination job.
+	 *
+	 * @param array &$job Destination transfer record, including recovery state.
+	 * @param array $header Verified source stream metadata.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function source( array &$job, array $header ): void {
 		if ( empty( $job['selection']['sync_active_plugins'] ) || ! array_key_exists( 'active_plugins', $header ) ) {
 			return; }
@@ -47,6 +87,13 @@ final class CSM_Activation {
 		$job['source_active_plugins'] = $plugins;
 	}
 
+	/**
+	 * Record destination activation state before changing installed plugins.
+	 *
+	 * @param array &$job Destination transfer record, including recovery state.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function capture( array &$job ): void {
 		if ( empty( $job['selection']['sync_active_plugins'] ) ) {
 			return; }
@@ -55,6 +102,13 @@ final class CSM_Activation {
 		$job['active_plugins_before'] = self::current();
 	}
 
+	/**
+	 * Apply the source active-plugin list while retaining Trickle itself.
+	 *
+	 * @param array &$job Destination transfer record, including recovery state.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function apply( array &$job ): void {
 		if ( ! isset( $job['active_plugins_before'] ) ) {
 			return; }
@@ -113,11 +167,23 @@ final class CSM_Activation {
 			); }
 	}
 
+	/**
+	 * Restore the destination active-plugin list from its recovery record.
+	 *
+	 * @param array $job Destination transfer record, including recovery state.
+	 */
 	public static function restore( array $job ): void {
 		if ( isset( $job['active_plugins_before'] ) ) {
 			self::store( $job['active_plugins_before'] ); }
 	}
 
+	/**
+	 * Persist the active-plugin list and refresh the corresponding option cache.
+	 *
+	 * @param array $plugins Relative plugin entry-point filenames.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	private static function store( array $plugins ): void {
 		$plugins = self::validate( $plugins );
 		$own     = plugin_basename( CSM_FILE );

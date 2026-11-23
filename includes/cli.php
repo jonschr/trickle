@@ -1,8 +1,19 @@
 <?php
+/**
+ * WP-CLI commands for selective migrations and recovery.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Manage saved sites and selective streamed transfers. */
 final class CSM_CLI {
+	/**
+	 * Sanitized context attached to CLI failure output.
+	 *
+	 * @var array
+	 */
 	private static array $failure_context = array();
 
 	private static function guard( callable $fn, array $assoc = array() ) {
@@ -27,7 +38,7 @@ final class CSM_CLI {
 			}
 			WP_CLI::error( $e->getMessage() );
 			} finally {
-				if ( $https === null ) {
+				if ( null === $https ) {
 						unset( $_SERVER['HTTPS'] );
 				} else {
 					$_SERVER['HTTPS'] = $https; }
@@ -195,8 +206,8 @@ final class CSM_CLI {
 		self::guard(
 			static function () use ( $assoc ) {
 				$path = $assoc['code-file'];
-				$code = $path === '-' ? stream_get_contents( STDIN ) : @file_get_contents( $path );
-				if ( $code === false ) {
+				$code = '-' === $path ? stream_get_contents( STDIN ) : @file_get_contents( $path );
+				if ( false === $code ) {
 					throw new RuntimeException( 'Cannot read the connection code file.' ); }
 				$result = CSM_Controller::execute(
 					'connect',
@@ -358,7 +369,7 @@ final class CSM_CLI {
 		self::guard(
 			static function () use ( $args, $assoc ) {
 				$site = $assoc['remote'] ?? '';
-				$url  = $site === '' ? site_url() : CSM_Controller::peer( $site )['url'];
+				$url  = '' === $site ? site_url() : CSM_Controller::peer( $site )['url'];
 				WP_CLI::confirm( 'Restore backup ' . $args[0] . ' on ' . $url . '? Later changes to its included items will be overwritten.', $assoc );
 				do {
 					$result = CSM_Controller::execute(
@@ -566,7 +577,7 @@ final class CSM_CLI {
 			$inventory = CSM_Controller::inventory( $peer );
 			if ( $automated ) {
 				$assoc += CSM_Presets::resolve( $assoc['preset'], $inventory ); }
-			$source = $inventory[ $direction === 'push' ? 'local' : 'remote' ];
+			$source = $inventory[ 'push' === $direction ? 'local' : 'remote' ];
 			if ( ( $assoc['media'] ?? '' ) === 'uploaded' && empty( $source['media_dates'] ) ) {
 				throw new RuntimeException( 'Update Trickle on the source site before transferring by upload date.' ); }
 			$selection = array(
@@ -596,7 +607,7 @@ final class CSM_CLI {
 				unset( $rule );
 				if ( isset( $assoc['replacements'] ) ) {
 					$file = @file_get_contents( $assoc['replacements'] );
-					if ( $file === false ) {
+					if ( false === $file ) {
 						throw new RuntimeException( 'Cannot read the custom replacement JSON file.' ); }
 					$custom = json_decode( $file, true, 64, JSON_THROW_ON_ERROR );
 					if ( ! is_array( $custom ) || ! array_is_list( $custom ) ) {
@@ -611,7 +622,7 @@ final class CSM_CLI {
 			} elseif ( isset( $assoc['replacements'] ) || isset( $assoc['skip-default-replacements'] ) ) {
 				throw new RuntimeException( 'Update Trickle on both sites before configuring replacement rules.' ); }
 			foreach ( $source['themes'] as $theme ) {
-				if ( ( ! $automated || $assoc['preset'] !== 'push-git' ) && in_array( $theme['id'], $selection['themes'], true ) && $theme['parent'] ) {
+				if ( ( ! $automated || 'push-git' !== $assoc['preset'] ) && in_array( $theme['id'], $selection['themes'], true ) && $theme['parent'] ) {
 					$selection['themes'][] = $theme['parent']; }
 			}
 			$selection['themes'] = array_values( array_unique( $selection['themes'] ) );
@@ -625,7 +636,7 @@ final class CSM_CLI {
 				if ( ! $stamp ) {
 					throw new RuntimeException( 'Use a valid UTC date/time or Unix timestamp for --since.' ); }
 				$selection['since'] = $stamp;
-			} elseif ( $selection['media'] === 'changed' ) {
+			} elseif ( 'changed' === $selection['media'] ) {
 				$selection['since'] = $inventory['history'][ $direction . ':' . $peer['url'] ] ?? 0; }
 		}
 		if ( ! in_array( $selection['transport'] ?? 'stream', array( 'stream', 'chunks' ), true ) ) {
@@ -696,7 +707,7 @@ final class CSM_CLI {
 				self::$failure_context['recovery'] = $recovery['status'];
 				if ( in_array( $recovery['status'], array( 'applied', 'restored' ), true ) ) {
 					CSM_Controller::execute( 'finish', array( 'id' => $session['id'] ) ); }
-				if ( $recovery['status'] !== 'applied' ) {
+				if ( 'applied' !== $recovery['status'] ) {
 					throw $e; }
 				$summary = $recovery;
 			} catch ( Throwable $recovery_error ) {
@@ -730,7 +741,7 @@ final class CSM_CLI {
 	}
 
 	private static function csv( string $value ): array {
-		return array_values( array_unique( array_filter( array_map( 'trim', explode( ',', $value ) ), static fn( $item ) => $item !== '' ) ) ); }
+		return array_values( array_unique( array_filter( array_map( 'trim', explode( ',', $value ) ), static fn( $item ) => '' !== $item ) ) ); }
 
 	private static function current(): array {
 		$session = CSM_Controller::session();
@@ -774,7 +785,7 @@ final class CSM_CLI {
 			static function () use ( $assoc ) {
 				$session = self::current();
 				$summary = CSM_Controller::execute( 'status', array( 'id' => $session['id'] ) );
-				if ( $summary['status'] !== 'staging' ) {
+				if ( 'staging' !== $summary['status'] ) {
 					throw new RuntimeException( 'Only a staging transfer can resume its streams.' ); }
 				foreach ( $summary['pending'] as $kind ) {
 					do {

@@ -1,6 +1,15 @@
 <?php
+/**
+ * Safe file inventory, comparison, staging and installation.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
+/**
+ * Safe file inventory, comparison, staging and installation.
+ */
 final class CSM_Files {
 	public static function excluded( string $relative ): bool {
 		if ( preg_match( '/^\.trickle-[a-f0-9]{32}-[a-f0-9]{20}\.part$/D', basename( $relative ) ) ) {
@@ -116,7 +125,7 @@ final class CSM_Files {
 			throw new RuntimeException( 'Only plugin and theme source links can be followed.' ); }
 		clearstatcache( true, $path );
 		$resolved = realpath( $path );
-		if ( $resolved === false ) {
+		if ( false === $resolved ) {
 			throw new RuntimeException( 'Broken or circular source link: ' . $relative ); }
 		if ( self::excluded( $resolved ) ) {
 			if ( count( explode( '/', $relative ) ) === 2 ) {
@@ -145,7 +154,7 @@ final class CSM_Files {
 		try {
 			foreach ( new FilesystemIterator( $path, FilesystemIterator::SKIP_DOTS ) as $entry ) {
 				$reason = self::transfer_block_reason( $entry->getPathname(), $relative . '/' . $entry->getFilename(), $deadline );
-				if ( $reason !== '' ) {
+				if ( '' !== $reason ) {
 					return $reason; }
 			}
 		} catch ( UnexpectedValueException $error ) {
@@ -177,10 +186,10 @@ final class CSM_Files {
 				'update'    => $plugin_updates->response[ $file ]->new_version ?? null,
 				'icon'      => esc_url_raw( $icons['svg'] ?? $icons['2x'] ?? $icons['1x'] ?? '', array( 'http', 'https' ) ),
 				'active'    => in_array( $file, $active_plugins, true ),
-				'protected' => $id === basename( dirname( CSM_FILE ) ),
+				'protected' => basename( dirname( CSM_FILE ) ) === $id,
 			);
 			$reason         = $plugins[ $id ]['protected'] ? '' : self::transfer_block_reason( WP_PLUGIN_DIR . '/' . $id, 'plugins/' . $id, $deadline );
-			if ( $reason !== '' ) {
+			if ( '' !== $reason ) {
 				$plugins[ $id ]['protected']        = true;
 				$plugins[ $id ]['protected_reason'] = $reason;
 				$plugins[ $id ]['symlinks']         = str_contains( $reason, 'contains symlinks' ); }
@@ -197,7 +206,7 @@ final class CSM_Files {
 				'active'  => in_array( $id, $active_themes, true ),
 			);
 			$reason   = self::transfer_block_reason( $theme->get_theme_root() . '/' . $id, 'themes/' . $id, $deadline );
-			if ( $reason !== '' ) {
+			if ( '' !== $reason ) {
 				$themes[ array_key_last( $themes ) ] += array(
 					'protected'        => true,
 					'protected_reason' => $reason,
@@ -232,7 +241,7 @@ final class CSM_Files {
 		$media = array();
 		foreach ( get_posts( $args ) as $post ) {
 			$image    = wp_attachment_is_image( $post->ID ) ? wp_get_attachment_image_src( $post->ID, 'thumbnail' ) : false;
-			$uploaded = $post->post_date_gmt !== '0000-00-00 00:00:00' ? str_replace( ' ', 'T', $post->post_date_gmt ) . 'Z' : null;
+			$uploaded = '0000-00-00 00:00:00' !== $post->post_date_gmt ? str_replace( ' ', 'T', $post->post_date_gmt ) . 'Z' : null;
 			$media[]  = array(
 				'id'       => $post->ID,
 				'name'     => $post->post_title,
@@ -261,7 +270,7 @@ final class CSM_Files {
 				throw new RuntimeException( 'Invalid source symlink approval.' ); }
 			[$kind, $id] = explode( '/', $component );
 			self::safe_relative( $id );
-			if ( ! in_array( $id, $selection[ $kind ] ?? array(), true ) || ( $kind === 'plugins' && $id === basename( dirname( CSM_FILE ) ) ) ) {
+			if ( ! in_array( $id, $selection[ $kind ] ?? array(), true ) || ( 'plugins' === $kind && basename( dirname( CSM_FILE ) ) === $id ) ) {
 				throw new RuntimeException( 'Symlink approval is outside the selected components.' ); }
 		}
 		$inventory = self::inventory( false, false );
@@ -294,22 +303,22 @@ final class CSM_Files {
 		$selection['media_force'] = in_array( $mode, array( 'all', 'compare' ), true ) && ! empty( $selection['media_force'] );
 		unset( $selection['media_verify'], $selection['file_verify'] );
 		$selection['since'] = max( 0, (int) ( $selection['since'] ?? 0 ) );
-		if ( $mode === 'changed' && ! $selection['since'] ) {
+		if ( 'changed' === $mode && ! $selection['since'] ) {
 			throw new RuntimeException( 'Choose a starting date or complete an initial media transfer first.' ); }
 		$selection['media_ids'] = array_values( array_unique( array_map( 'intval', $selection['media_ids'] ?? array() ) ) );
 		foreach ( array( 'media_after', 'media_before' ) as $field ) {
 			$date = $selection[ $field ] ?? '';
 			if ( ! is_string( $date ) ) {
 				throw new RuntimeException( 'Upload dates must use YYYY-MM-DD.' ); }
-			if ( $date !== '' ) {
+			if ( '' !== $date ) {
 				$parsed = DateTimeImmutable::createFromFormat( '!Y-m-d', $date, new DateTimeZone( 'UTC' ) );
 				if ( ! $parsed || $parsed->format( 'Y-m-d' ) !== $date ) {
 					throw new RuntimeException( 'Upload dates must use valid YYYY-MM-DD dates.' ); }
 			}
 			$selection[ $field ] = $date;
 		}
-		if ( $mode === 'uploaded' ) {
-			if ( $selection['media_after'] === '' && $selection['media_before'] === '' ) {
+		if ( 'uploaded' === $mode ) {
+			if ( '' === $selection['media_after'] && '' === $selection['media_before'] ) {
 				throw new RuntimeException( 'Choose at least one upload-date boundary.' ); }
 			if ( $selection['media_after'] && $selection['media_before'] && $selection['media_after'] > $selection['media_before'] ) {
 				throw new RuntimeException( 'The upload end date must be on or after the start date.' ); }
@@ -318,7 +327,7 @@ final class CSM_Files {
 	}
 
 	private static function attachment_ids( array $selection ): Generator {
-		if ( $selection['media'] === 'selected' ) {
+		if ( 'selected' === $selection['media'] ) {
 			yield from $selection['media_ids'];
 			return; }
 		$query = array(
@@ -349,9 +358,9 @@ final class CSM_Files {
 	}
 
 	public static function root( string $kind, string $component = '' ): string {
-		if ( $kind === 'plugins' ) {
+		if ( 'plugins' === $kind ) {
 			return WP_PLUGIN_DIR; }
-		if ( $kind === 'themes' ) {
+		if ( 'themes' === $kind ) {
 			return $component && wp_get_theme( $component )->exists() ? wp_get_theme( $component )->get_theme_root() : WP_CONTENT_DIR . '/themes'; }
 		$uploads = wp_upload_dir( null, false );
 		if ( $uploads['error'] ) {
@@ -374,11 +383,11 @@ final class CSM_Files {
 		if ( ! in_array( $kind, array( 'plugins', 'themes', 'uploads' ), true ) || ! $tail ) {
 			throw new RuntimeException( 'Unsupported file location.' ); }
 		$first = explode( '/', $tail )[0];
-		if ( $kind === 'uploads' ) {
+		if ( 'uploads' === $kind ) {
 			if ( ( $selection['media'] ?? 'none' ) === 'none' || preg_match( '/\.(php\d*|phtml|phar|cgi|pl|sh|htaccess|user\.ini)$/i', $tail ) || str_starts_with( basename( $tail ), '.' ) ) {
 				throw new RuntimeException( 'Executable or unselected media file blocked.' );
 			}
-		} elseif ( ! in_array( $first, $selection[ $kind ] ?? array(), true ) || ( $kind === 'plugins' && $first === basename( dirname( CSM_FILE ) ) ) ) {
+		} elseif ( ! in_array( $first, $selection[ $kind ] ?? array(), true ) || ( 'plugins' === $kind && basename( dirname( CSM_FILE ) ) === $first ) ) {
 			throw new RuntimeException( 'File outside the selected components.' );
 		}
 		$root = self::root( $kind, $first );
@@ -462,7 +471,7 @@ final class CSM_Files {
 			$resolved = $path;
 			if ( $source ) {
 				$resolved = self::source_path( $path, $relative, $selection );
-				if ( $resolved === null ) {
+				if ( null === $resolved ) {
 					continue; }
 			} elseif ( is_link( $path ) ) {
 				throw new RuntimeException( 'Symbolic links are not transferable: ' . basename( $path ) ); }
@@ -482,7 +491,7 @@ final class CSM_Files {
 				throw new RuntimeException( 'Circular source link: ' . $relative ); }
 			$ancestors[] = $real;
 			$names       = scandir( $path );
-			if ( $names === false ) {
+			if ( false === $names ) {
 				throw new RuntimeException( 'Cannot list directory: ' . $relative ); }
 			$cursor['active'] = array(
 				'path'      => $path,
@@ -512,7 +521,7 @@ final class CSM_Files {
 			$roots[] = array( self::root( 'uploads' ), 'uploads' ); }
 		foreach ( self::walk( $cursor['walk'], $roots, $selection, true ) as [$relative, $path] ) {
 			if ( str_starts_with( $relative, 'uploads/' ) ) {
-				if ( $selection['media'] === 'changed' && filemtime( $path ) < $selection['since'] ) {
+				if ( 'changed' === $selection['media'] && filemtime( $path ) < $selection['since'] ) {
 					continue; }
 				if ( preg_match( '#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups|\.git)(/|$)#i', $relative ) ) {
 					continue; }
@@ -525,7 +534,7 @@ final class CSM_Files {
 		}
 		if ( $cursor['walk']['pending'] || $cursor['walk']['active'] ) {
 			return; }
-		if ( ! $ordinary && $selection['media'] !== 'none' ) {
+		if ( ! $ordinary && 'none' !== $selection['media'] ) {
 			$media            = $selection;
 			$media['plugins'] = array();
 			$media['themes']  = array();
@@ -557,7 +566,7 @@ final class CSM_Files {
 					$relative = $kind . '/' . substr( $file, strlen( $root ) + 1 );
 					self::safe_relative( $relative );
 					$resolved = self::source_path( $file, $relative, $selection );
-					if ( $resolved !== null ) {
+					if ( null !== $resolved ) {
 						yield array( $relative, $resolved );
 						++$count; }
 				}
@@ -566,7 +575,7 @@ final class CSM_Files {
 			}
 		}
 		$root = self::root( 'uploads' );
-		if ( $selection['media'] === 'compare' ) {
+		if ( 'compare' === $selection['media'] ) {
 			foreach ( CSM_Media::paths( $selection['media_delta'] ?? '', $selection ) as $entry ) {
 				if ( ! self::skipped( $entry[0], $selection ) ) {
 					yield $entry;
@@ -600,7 +609,7 @@ final class CSM_Files {
 		} elseif ( in_array( $selection['media'], array( 'all', 'changed' ), true ) ) {
 			foreach ( self::scan( $root, 'uploads', $selection ) as $file ) {
 				$relative = 'uploads/' . substr( $file, strlen( $root ) + 1 );
-				if ( $selection['media'] === 'changed' && filemtime( $file ) < $selection['since'] ) {
+				if ( 'changed' === $selection['media'] && filemtime( $file ) < $selection['since'] ) {
 					continue; }
 				// Exclude executables, hidden server configuration and common backup/cache directories.
 				if ( preg_match( '#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups|\.git)(/|$)#i', $relative ) ) {
@@ -639,10 +648,10 @@ final class CSM_Files {
 		if ( isset( $file['sha256'] ) ) {
 			return CSM_Support::verify_file( $target, $file['sha256'], $file['verification_receipt'] ); }
 		$stamp = self::file_stamp( $target );
-		if ( ! $stamp || $stamp !== ( $file['comparison_stamp'] ?? null ) ) {
+		if ( ! $stamp || ( $file['comparison_stamp'] ?? null ) !== $stamp ) {
 			return false; }
 		$hash = CSM_Support::hash_file( $target );
-		if ( $stamp !== self::file_stamp( $target ) ) {
+		if ( self::file_stamp( $target ) !== $stamp ) {
 			return false; }
 		$file['sha256'] = $hash;
 		unset( $file['comparison_stamp'] );
@@ -730,7 +739,7 @@ final class CSM_Files {
 				$remaining = $size;
 				while ( $remaining > 0 ) {
 					$bytes = fread( $fp, min( 65536, $remaining ) );
-					if ( $bytes === false || $bytes === '' ) {
+					if ( false === $bytes || '' === $bytes ) {
 						throw new RuntimeException( 'File changed or became unreadable during transfer.' ); }
 					$remaining -= strlen( $bytes );
 					hash_update( $filehash, $bytes );
@@ -855,21 +864,21 @@ final class CSM_Files {
 				$cursor['offset'] = -1;
 				yield $line;
 			}
-			if ( $cursor['stamp'] !== array( $stat['size'], $stat['mtime'], $stat['ctime'], $stat['ino'] ) ) {
+			if ( array( $stat['size'], $stat['mtime'], $stat['ctime'], $stat['ino'] ) !== $cursor['stamp'] ) {
 				throw new RuntimeException( 'Source file changed during packaging: ' . $relative ); }
 			$fp       = fopen( $path, 'rb' );
 			$offset   = max( 0, $cursor['offset'] );
-			$filehash = $offset === 0 ? hash_init( 'sha256' ) : ( isset( $cursor['file_hash'] ) ? CSM_Support::restore_hash( $cursor['file_hash'] ) : null );
+			$filehash = 0 === $offset ? hash_init( 'sha256' ) : ( isset( $cursor['file_hash'] ) ? CSM_Support::restore_hash( $cursor['file_hash'] ) : null );
 			if ( ! $fp || fseek( $fp, $offset ) !== 0 ) {
 				throw new RuntimeException( 'Cannot resume source file: ' . $relative ); }
 			try {
 				$buffer = null;
-				if ( $offset === 0 && $stat['size'] <= 2097152 && function_exists( 'openssl_digest' ) ) {
+				if ( 0 === $offset && $stat['size'] <= 2097152 && function_exists( 'openssl_digest' ) ) {
 					$buffer = '';
 					while ( strlen( $buffer ) < $stat['size'] ) {
 						CSM_Support::check_source_budget();
 						$part = fread( $fp, min( 262144, $stat['size'] - strlen( $buffer ) ) );
-						if ( $part === false || $part === '' ) {
+						if ( false === $part || '' === $part ) {
 							throw new RuntimeException( 'Source file is truncated: ' . $relative ); }
 						$buffer .= $part;
 					}
@@ -878,12 +887,12 @@ final class CSM_Files {
 				}
 				while ( $offset < $stat['size'] ) {
 					CSM_Support::check_cancel();
-					$bytes = $buffer !== null ? substr( $buffer, $offset, 262144 ) : fread( $fp, min( 262144, $stat['size'] - $offset ) );
-					if ( $bytes === false || $bytes === '' ) {
+					$bytes = null !== $buffer ? substr( $buffer, $offset, 262144 ) : fread( $fp, min( 262144, $stat['size'] - $offset ) );
+					if ( false === $bytes || '' === $bytes ) {
 						throw new RuntimeException( 'Source file is truncated: ' . $relative ); }
 					$offset          += strlen( $bytes );
 					$cursor['offset'] = $offset;
-					if ( $filehash !== null ) {
+					if ( null !== $filehash ) {
 						hash_update( $filehash, $bytes );
 						$cursor['file_hash'] = CSM_Support::save_hash( $filehash ); }
 					$component            = str_starts_with( $relative, 'uploads/' ) ? 'media' : explode( '/', $relative )[0];
@@ -896,7 +905,7 @@ final class CSM_Files {
 							'bytes'     => $offset,
 						)
 					);
-					if ( $filehash !== null && $offset === $stat['size'] ) {
+					if ( null !== $filehash && $offset === $stat['size'] ) {
 						$cursor['digest'] = hash_final( $filehash );
 						$filehash         = null; }
 					yield $bytes;
@@ -905,11 +914,11 @@ final class CSM_Files {
 				fclose( $fp ); }
 			clearstatcache( true, $path );
 			$after = stat( $path );
-			if ( $cursor['stamp'] !== array( $after['size'], $after['mtime'], $after['ctime'], $after['ino'] ) ) {
+			if ( array( $after['size'], $after['mtime'], $after['ctime'], $after['ino'] ) !== $cursor['stamp'] ) {
 				throw new RuntimeException( 'Source file changed during packaging: ' . $relative ); }
-			$digest = $cursor['digest'] ?? ( $filehash !== null ? hash_final( $filehash ) : ( $expected_hash ?? CSM_Support::hash_file( $path ) ) );
+			$digest = $cursor['digest'] ?? ( null !== $filehash ? hash_final( $filehash ) : ( $expected_hash ?? CSM_Support::hash_file( $path ) ) );
 			unset( $cursor['digest'], $cursor['file_hash'] );
-			if ( $expected_hash !== null && ! hash_equals( $expected_hash, $digest ) ) {
+			if ( null !== $expected_hash && ! hash_equals( $expected_hash, $digest ) ) {
 				throw new RuntimeException( 'Media changed after comparison: ' . $relative ); }
 			$line           = CSM_Support::json(
 				array(
@@ -988,7 +997,7 @@ final class CSM_Files {
 			if ( ! $state['current'] ) {
 				$record = CSM_Support::line( $fp );
 				$type   = $record['type'] ?? '';
-				if ( $type === 'end' ) {
+				if ( 'end' === $type ) {
 					if ( count( $job['files'] ) !== $record['files'] || ! hash_equals( $state['hash'], $record['sha256'] ) || fread( $fp, 1 ) !== '' ) {
 						throw new RuntimeException( 'Incomplete file stream or checksum failure.' ); }
 					foreach ( array( 'plugins', 'themes' ) as $kind ) {
@@ -1008,7 +1017,7 @@ final class CSM_Files {
 				$parts                            = explode( '/', $record['path'] );
 				$state['components'][ $parts[0] . '/' . $parts[1] ] = true;
 				$state['hash']                                      = CSM_Package::chain( $state['hash'], CSM_Support::json( $record ) );
-				if ( $type === 'file-same' ) {
+				if ( 'file-same' === $type ) {
 					$receipt = null;
 					if ( ( $record['metadata_only'] ?? false ) === true ) {
 						$job['files'][] = self::unchanged_record( $target, $record ); } else {
@@ -1055,10 +1064,10 @@ final class CSM_Files {
 				$reused = isset( $output['handle'] ) && is_resource( $output['handle'] );
 				if ( $reused ) {
 					$out = $output['handle'];
-					if ( $stat === null ) {
+					if ( null === $stat ) {
 						clearstatcache( true, $current['stage'] );
 						$stat = lstat( $current['stage'] ); }
-					if ( ( $output['path'] ?? '' ) !== $current['stage'] || ! $stat || array( $stat['dev'], $stat['ino'] ) !== $output['identity'] || $stat['nlink'] !== 1 || ftell( $out ) !== $current['written'] ) {
+					if ( ( $output['path'] ?? '' ) !== $current['stage'] || ! $stat || array( $stat['dev'], $stat['ino'] ) !== $output['identity'] || 1 !== $stat['nlink'] || ftell( $out ) !== $current['written'] ) {
 						throw new RuntimeException( 'Staged file changed between frames.' ); }
 				} else {
 					if ( $current['written'] > 0 && ( ! is_file( $current['stage'] ) || filesize( $current['stage'] ) < $current['written'] ) ) {
@@ -1076,7 +1085,7 @@ final class CSM_Files {
 						if ( $out ) {
 							fclose( $out );
 						} throw new RuntimeException( 'Cannot resume staged file.' ); }
-					if ( $output !== null ) {
+					if ( null !== $output ) {
 						$output = array(
 							'handle'   => $out,
 							'path'     => $current['stage'],
@@ -1094,11 +1103,11 @@ final class CSM_Files {
 						if ( $remaining <= 0 ) {
 							break; }
 						$bytes = fread( $fp, min( 262144, $remaining ) );
-						if ( $bytes === false || $bytes === '' ) {
+						if ( false === $bytes || '' === $bytes ) {
 							throw new RuntimeException( 'Truncated file stream.' ); }
 						CSM_Support::write( $out, $bytes );
 						$current['written'] += strlen( $bytes );
-						if ( $hash !== null ) {
+						if ( null !== $hash ) {
 							hash_update( $hash, $bytes ); }
 						CSM_Progress::update(
 							array(
@@ -1109,20 +1118,20 @@ final class CSM_Files {
 							)
 						);
 					} while ( $incremental || ! CSM_Support::due() );
-					if ( $hash !== null ) {
+					if ( null !== $hash ) {
 						$current['hash'] = CSM_Support::save_hash( $hash ); }
-					if ( $output === null && ! fflush( $out ) ) {
+					if ( null === $output && ! fflush( $out ) ) {
 						throw new RuntimeException( 'Cannot flush staged file.' ); }
 				} finally {
-					if ( $output === null ) {
+					if ( null === $output ) {
 						fclose( $out );
 					} CSM_Timing::add( 'stream.stage_write', $write_started ); }
 				$state['current'] = $current;
 				if ( $current['written'] === $record['size'] && ( ! $incremental || ftell( $fp ) < $available ) ) {
-					if ( $output !== null ) {
+					if ( null !== $output ) {
 						self::close_stage_output( $output ); }
 					$end = CSM_Support::line( $fp );
-					if ( ( $end['type'] ?? '' ) !== 'file-end' || ! hash_equals( $hash !== null ? hash_final( $hash ) : CSM_Support::hash_file( $current['stage'] ), $end['sha256'] ?? '' ) ) {
+					if ( ( $end['type'] ?? '' ) !== 'file-end' || ! hash_equals( null !== $hash ? hash_final( $hash ) : CSM_Support::hash_file( $current['stage'] ), $end['sha256'] ?? '' ) ) {
 						throw new RuntimeException( 'File checksum mismatch.' ); }
 					$state['hash']    = CSM_Package::chain( $state['hash'], CSM_Support::json( $end ) );
 					$job['files'][]   = array(
@@ -1132,7 +1141,7 @@ final class CSM_Files {
 						'mode'       => ! str_starts_with( $record['path'], 'uploads/' ) && ( ( $record['mode'] ?? 0644 ) & 0111 ) ? 0755 : 0644,
 						'stage'      => $current['stage'],
 						'sha256'     => $end['sha256'],
-						'media_part' => str_starts_with( $record['path'], 'uploads/' ) && $current['stage'] === self::media_part_path( $job, $record['path'] ),
+						'media_part' => str_starts_with( $record['path'], 'uploads/' ) && self::media_part_path( $job, $record['path'] ) === $current['stage'],
 					);
 					$state['current'] = null;
 				}
@@ -1234,7 +1243,7 @@ final class CSM_Files {
 			try {
 				while ( $remaining > 0 ) {
 					$bytes = fread( $fp, min( 65536, $remaining ) );
-					if ( $bytes === false || $bytes === '' ) {
+					if ( false === $bytes || '' === $bytes ) {
 						throw new RuntimeException( 'Truncated file stream.' ); }
 					CSM_Support::write( $out, $bytes );
 					hash_update( $filehash, $bytes );
@@ -1287,7 +1296,7 @@ final class CSM_Files {
 	public static function publish_media( array $job, array $file, string $target ): void {
 		$path = self::media_part_path( $job, $file['path'] );
 		clearstatcache( true, $path );
-		if ( $path !== $file['stage'] || $target !== self::destination( $file['path'], $job['selection'] ) || is_link( $path ) || ( @lstat( $path )['nlink'] ?? 1 ) > 1 ) {
+		if ( $path !== $file['stage'] || self::destination( $file['path'], $job['selection'] ) !== $target || is_link( $path ) || ( @lstat( $path )['nlink'] ?? 1 ) > 1 ) {
 			throw new RuntimeException( 'Media destination changed during receipt.' ); }
 		if ( is_file( $path ) ) {
 			if ( ! touch( $path, $file['mtime'] ) || ! rename( $path, $target ) ) {

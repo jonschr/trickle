@@ -1,18 +1,44 @@
 <?php
+/**
+ * Redacted migration diagnostics and bounded log storage.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 require_once __DIR__ . '/timing.php';
 
+/**
+ * Redacted migration diagnostics and bounded log storage.
+ */
 final class CSM_Log {
+	/**
+	 * Known credential bytes to redact before persisting diagnostics.
+	 *
+	 * @var array
+	 */
 	private static array $secrets = array();
 
+	/**
+	 * Register credential bytes that must be redacted from diagnostics.
+	 *
+	 * @param string $value Credential bytes to redact from subsequent diagnostic output.
+	 */
 	public static function secret( string $value ): void {
-		if ( $value !== '' ) {
+		if ( '' !== $value ) {
 			self::$secrets[] = $value; }
 	}
 
+	/**
+	 * Redact credentials, SQL details and response bodies from diagnostic text.
+	 *
+	 * @param string $text Diagnostic text that may contain sensitive values.
+	 *
+	 * @return string Bounded diagnostic text with sensitive values removed.
+	 */
 	public static function clean( string $text ): string {
 		foreach ( array_merge( self::$secrets, array( (string) get_option( '_csm_key', '' ) ) ) as $secret ) {
-			if ( $secret !== '' ) {
+			if ( '' !== $secret ) {
 				$text = str_replace( $secret, '[redacted]', $text ); }
 		}
 		// Error bodies and SQL values can contain credentials or customer data.
@@ -34,6 +60,13 @@ final class CSM_Log {
 		return wp_check_invalid_utf8( substr( wp_strip_all_tags( $text ), 0, 1200 ), true );
 	}
 
+	/**
+	 * Append a bounded, redacted event without interrupting migration recovery.
+	 *
+	 * @param string $level Diagnostic severity label.
+	 * @param string $event Event description to redact before writing.
+	 * @param array  $context Diagnostic fields restricted to the supported allowlist.
+	 */
 	public static function write( string $level, string $event, array $context = array() ): void {
 		$timing = hrtime( true );
 		try {
@@ -41,8 +74,8 @@ final class CSM_Log {
 			$performance = isset( $context['performance'] ) && is_array( $context['performance'] ) ? CSM_Timing::numeric( $context['performance'] ) : null;
 			$context     = array_intersect_key( $context, array_flip( $allowed ) );
 			foreach ( $context as $key => $value ) {
-				$context[ $key ] = is_string( $value ) ? self::clean( $value ) : ( is_scalar( $value ) || $value === null ? $value : '[omitted]' ); }
-			if ( $performance !== null ) {
+				$context[ $key ] = is_string( $value ) ? self::clean( $value ) : ( is_scalar( $value ) || null === $value ? $value : '[omitted]' ); }
+			if ( null !== $performance ) {
 				$context['performance'] = $performance; }
 			$entry = array(
 				'time'    => gmdate( 'c' ),
@@ -70,14 +103,23 @@ final class CSM_Log {
 			CSM_Timing::add( 'diagnostics.write', $timing, 0 ); }
 	}
 
+	/**
+	 * Build a diagnostics report with sensitive fields recursively redacted.
+	 *
+	 * @param array $details Diagnostic report data requiring recursive redaction.
+	 *
+	 * @return array Diagnostics with secret fields and embedded values redacted.
+	 *
+	 * @throws RuntimeException If validation or the protected operation fails.
+	 */
 	public static function report( array $details ): array {
 		$id = $details['transfer_id'] ?? '';
-		if ( ! is_string( $id ) || ( $id !== '' && ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) ) {
+		if ( ! is_string( $id ) || ( '' !== $id && ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) ) {
 			throw new RuntimeException( 'Invalid diagnostic transfer ID.' ); }
 		$fields  = array( 'transfer_id', 'direction', 'status', 'source', 'destination', 'transport', 'phase', 'elapsed_seconds', 'error', 'notice', 'remote_version', 'remote_wordpress', 'remote_php' );
 		$context = array_intersect_key( $details, array_flip( $fields ) );
 		foreach ( $context as $key => $value ) {
-			$context[ $key ] = is_string( $value ) ? self::clean( $value ) : ( is_scalar( $value ) || $value === null ? $value : '[omitted]' ); }
+			$context[ $key ] = is_string( $value ) ? self::clean( $value ) : ( is_scalar( $value ) || null === $value ? $value : '[omitted]' ); }
 		$clean   = static function ( $value ) use ( &$clean ) {
 			if ( is_string( $value ) ) {
 				return self::clean( $value ); }
@@ -103,13 +145,21 @@ final class CSM_Log {
 				'report_sapi' => PHP_SAPI,
 			),
 			'transfer'       => $context,
-			'progress'       => $clean( $id !== '' ? CSM_Progress::read( $id ) : array() ),
+			'progress'       => $clean( '' !== $id ? CSM_Progress::read( $id ) : array() ),
 			'entries'        => $clean( $entries ),
 			'performance'    => CSM_Timing::report( $entries ),
 			'log_scope'      => 'Retained controller logs, including recorded remote responses. Remote server logs are not included.',
 		);
 	}
 
+	/**
+	 * Read bounded diagnostic entries, optionally scoped to one transfer.
+	 *
+	 * @param string|null $transfer_id Optional transfer filter; null includes all retained transfers.
+	 * @param bool        $performance Whether to include numeric performance samples.
+	 *
+	 * @return array Retained matching diagnostic entries.
+	 */
 	public static function entries( ?string $transfer_id = null, bool $performance = false ): array {
 		$dir     = CSM_Support::private_dir();
 		$entries = array();
@@ -120,10 +170,10 @@ final class CSM_Log {
 				$entry = json_decode( $line, true );
 				if ( ! $performance && ( $entry['event'] ?? '' ) === 'Performance sample' ) {
 					continue; }
-				if ( is_array( $entry ) && ( $transfer_id === null || ( $entry['context']['transfer_id'] ?? '' ) === $transfer_id ) ) {
+				if ( is_array( $entry ) && ( null === $transfer_id || ( $entry['context']['transfer_id'] ?? '' ) === $transfer_id ) ) {
 					$entries[] = $entry; }
 			}
 		}
-		return $transfer_id === null ? array_slice( $entries, -200 ) : $entries;
+		return null === $transfer_id ? array_slice( $entries, -200 ) : $entries;
 	}
 }

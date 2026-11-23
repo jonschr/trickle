@@ -1,6 +1,15 @@
 <?php
+/**
+ * Reusable migration selections and global transfer preferences.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
+/**
+ * Reusable migration selections and global transfer preferences.
+ */
 final class CSM_Presets {
 	public static function catalog(): array {
 		return array(
@@ -51,15 +60,15 @@ final class CSM_Presets {
 		$preset = self::catalog()[ $name ] ?? null;
 		if ( ! $preset ) {
 			throw new RuntimeException( 'Unknown preset. Use wp trickle presets to list supported workflows.' ); }
-		$source      = $inventory[ $preset['direction'] === 'push' ? 'local' : 'remote' ];
-		$destination = $inventory[ $preset['direction'] === 'push' ? 'remote' : 'local' ];
+		$source      = $inventory[ 'push' === $preset['direction'] ? 'local' : 'remote' ];
+		$destination = $inventory[ 'push' === $preset['direction'] ? 'remote' : 'local' ];
 		$flags       = array(
 			'plugins' => '',
 			'themes'  => '',
 			'tables'  => '',
 			'media'   => 'none',
 		);
-		if ( $name === 'push-git' ) {
+		if ( 'push-git' === $name ) {
 			$code = self::version_controlled();
 			if ( ! $code['plugins'] && ! $code['themes'] ) {
 				throw new RuntimeException( 'No Git-backed plugin/theme folders found. Inspect wp trickle inventory or use an explicit push selection.' ); }
@@ -67,7 +76,7 @@ final class CSM_Presets {
 				$flags[ $kind ] = implode( ',', $code[ $kind ] ); }
 		} else {
 			$flags['tables'] = implode( ',', array_column( $source['tables'], 'id' ) );
-			if ( $name === 'pull-db-missing' ) {
+			if ( 'pull-db-missing' === $name ) {
 				$existing         = array_column( $destination['plugins'], 'id' );
 				$flags['plugins'] = implode( ',', array_column( array_filter( $source['plugins'], static fn( $item ) => empty( $item['protected'] ) && ! in_array( $item['id'], $existing, true ) ), 'id' ) );
 			}
@@ -77,8 +86,8 @@ final class CSM_Presets {
 
 	public static function plan( string $name, array $peer, array $inventory, array $selection, array $confirmed ): array {
 		$direction   = self::catalog()[ $name ]['direction'];
-		$source      = $inventory[ $direction === 'push' ? 'local' : 'remote' ];
-		$destination = $inventory[ $direction === 'push' ? 'remote' : 'local' ];
+		$source      = $inventory[ 'push' === $direction ? 'local' : 'remote' ];
+		$destination = $inventory[ 'push' === $direction ? 'remote' : 'local' ];
 		$blockers    = array();
 		$review      = array(
 			'git_folders'   => array(),
@@ -90,7 +99,7 @@ final class CSM_Presets {
 				'code'    => 'version_mismatch',
 				'message' => 'Both sites must run the same Trickle version.',
 			); }
-		if ( $direction === 'push' && empty( $inventory['remote']['can_receive'] ) ) {
+		if ( 'push' === $direction && empty( $inventory['remote']['can_receive'] ) ) {
 			$blockers[] = array(
 				'code'    => 'writes_disabled',
 				'message' => 'Enable incoming writes and use an administrator or read/write remote key.',
@@ -164,7 +173,7 @@ final class CSM_Presets {
 					'trickle_plugin' => $source['trickle_plugin'],
 				)
 			);
-			$desired                  = array_map( static fn( $file ) => $file === plugin_basename( CSM_FILE ) ? $destination['trickle_plugin'] : $file, $job['source_active_plugins'] );
+			$desired                  = array_map( static fn( $file ) => plugin_basename( CSM_FILE ) === $file ? $destination['trickle_plugin'] : $file, $job['source_active_plugins'] );
 			$installed                = $destination['installed_plugins'];
 			$selected                 = static fn( $file ) => in_array( str_contains( $file, '/' ) ? explode( '/', $file )[0] : $file, $selection['plugins'], true ) && ! CSM_Files::skipped( 'plugins/' . $file, $selection );
 			$installed                = array_values( array_filter( $installed, static fn( $file ) => ! $selected( $file ) ) );

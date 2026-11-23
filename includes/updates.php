@@ -1,10 +1,19 @@
 <?php
+/**
+ * Plugin build validation, packaging and authenticated installation.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
+/**
+ * Plugin build validation, packaging and authenticated installation.
+ */
 final class CSM_Updates {
 	public static function assert_version( $version ): void {
-		if ( ! is_string( $version ) || $version !== CSM_VERSION ) {
-			throw new RuntimeException( 'Trickle versions must match before transferring. This site: ' . CSM_VERSION . '; connected site: ' . ( is_string( $version ) && $version !== '' ? $version : 'unknown' ) . '. Update the older installation, then refresh versions.' );
+		if ( ! is_string( $version ) || CSM_VERSION !== $version ) {
+			throw new RuntimeException( 'Trickle versions must match before transferring. This site: ' . CSM_VERSION . '; connected site: ' . ( is_string( $version ) && '' !== $version ? $version : 'unknown' ) . '. Update the older installation, then refresh versions.' );
 		}
 	}
 
@@ -54,7 +63,7 @@ final class CSM_Updates {
 		} catch ( Throwable $e ) {
 			$reason = $e->getMessage(); }
 		return array(
-			'ready'          => $reason === '',
+			'ready'          => '' === $reason,
 			'blocked_reason' => $reason,
 		) + self::capabilities() + array(
 			'installed'          => CSM_VERSION,
@@ -83,7 +92,7 @@ final class CSM_Updates {
 	}
 
 	public static function install( string $target, string $from ): array {
-		if ( $from !== CSM_VERSION ) {
+		if ( CSM_VERSION !== $from ) {
 			throw new RuntimeException( 'The remote Trickle version changed. Refresh versions before updating.' ); }
 		if ( ! preg_match( '/^[0-9][0-9A-Za-z.+_-]{0,39}$/D', $target ) || version_compare( $target, CSM_VERSION, '<=' ) ) {
 			throw new RuntimeException( 'Remote updates must be upgrades. Update this controlling site first when the remote is newer.' ); }
@@ -132,7 +141,7 @@ final class CSM_Updates {
 		$hash = hash_init( 'sha256' );
 		foreach ( self::runtime_files( $root ) as $relative => $path ) {
 			$digest = hash_file( 'sha256', $path );
-			if ( $digest === false ) {
+			if ( false === $digest ) {
 				throw new RuntimeException( 'Cannot read the local Trickle build.' ); }
 			hash_update( $hash, $relative . "\n" . $digest . "\n" );
 		}
@@ -194,7 +203,7 @@ final class CSM_Updates {
 		} catch ( Throwable $e ) {
 			$reason = $e->getMessage();}
 		return array(
-			'ready'              => $reason === '',
+			'ready'              => '' === $reason,
 			'blocked_reason'     => $reason,
 			'installed'          => CSM_VERSION,
 			'file_modifications' => wp_is_file_mod_allowed( 'trickle' ),
@@ -215,11 +224,11 @@ final class CSM_Updates {
 				throw new RuntimeException( 'The package contains files outside Trickle.' );
 			}
 			$relative = rtrim( substr( $name, 8 ), '/' );
-			if ( $relative === '' ) {
+			if ( '' === $relative ) {
 				continue;
 			}
 			CSM_Files::safe_relative( $relative );
-			if ( CSM_Files::excluded( $relative ) || ( $relative !== 'trickle.php' && ! preg_match( '#^(includes|assets|vendor)(/|$)#', $relative ) ) ) {
+			if ( CSM_Files::excluded( $relative ) || ( 'trickle.php' !== $relative && ! preg_match( '#^(includes|assets|vendor)(/|$)#', $relative ) ) ) {
 				throw new RuntimeException( 'The package contains unrelated or protected files.' );
 			}
 			$expanded += (int) $entry['size'];
@@ -245,7 +254,7 @@ final class CSM_Updates {
 		if ( ! is_string( $data['package'] ?? null ) || strlen( $data['package'] ) > 940000 ) {
 			throw new RuntimeException( 'Invalid local Trickle package metadata.' ); }
 		$bytes = base64_decode( $data['package'], true );
-		if ( $bytes === false ) {
+		if ( false === $bytes ) {
 			throw new RuntimeException( 'Local Trickle package checksum mismatch.' ); }
 		return self::install_archive( $data, $bytes );
 	}
@@ -255,7 +264,7 @@ final class CSM_Updates {
 		if ( ! is_int( $data['size'] ?? null ) || $data['size'] < 1 || $data['size'] > 700000 ) {
 			throw new RuntimeException( 'Invalid Trickle ZIP size.' ); }
 		$bytes = stream_get_contents( $input, $data['size'] + 1 );
-		if ( $bytes === false || strlen( $bytes ) !== $data['size'] ) {
+		if ( false === $bytes || strlen( $bytes ) !== $data['size'] ) {
 			throw new RuntimeException( 'Trickle ZIP is truncated or exceeds its declared size.' ); }
 		return self::install_archive( $data, $bytes );
 	}
@@ -315,7 +324,7 @@ final class CSM_Updates {
 				return new WP_Error( 'trickle_package', 'The downloaded ZIP does not contain the expected Trickle version and directory.' ); }
 			if ( ( ! empty( $header['php'] ) && version_compare( PHP_VERSION, $header['php'], '<' ) ) || ( ! empty( $header['wp'] ) && version_compare( get_bloginfo( 'version' ), $header['wp'], '<' ) ) ) {
 				return new WP_Error( 'trickle_requirements', 'The downloaded Trickle package is incompatible with this site.' ); }
-			if ( $build !== null ) {
+			if ( null !== $build ) {
 				try {
 					if ( ! hash_equals( $build, self::fingerprint( untrailingslashit( $source ) ) ) ) {
 						return new WP_Error( 'trickle_build', 'The uploaded package does not match the local Trickle build.' ); }
@@ -353,7 +362,7 @@ final class CSM_Updates {
 			return array(
 				'installed' => $target,
 				'updated'   => true,
-			) + ( $build !== null ? array( 'trickle_build' => $build ) : array() );
+			) + ( null !== $build ? array( 'trickle_build' => $build ) : array() );
 		} finally {
 			update_option( 'active_plugins', $active );
 			if ( $isolation ) {

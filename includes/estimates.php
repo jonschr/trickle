@@ -1,4 +1,10 @@
 <?php
+/**
+ * Selection size estimates and migration work counters.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Cached allocation estimates: metadata only, never read or hash file contents. */
@@ -22,7 +28,7 @@ final class CSM_Estimates {
 					if ( ! is_dir( $root ) ) {
 						continue; }
 					foreach ( new FilesystemIterator( $root ) as $entry ) {
-						if ( $entry->isLink() || CSM_Files::excluded( $entry->getFilename() ) || ( $kind === 'plugins' && $entry->getFilename() === basename( dirname( CSM_FILE ) ) ) ) {
+						if ( $entry->isLink() || CSM_Files::excluded( $entry->getFilename() ) || ( 'plugins' === $kind && $entry->getFilename() === basename( dirname( CSM_FILE ) ) ) ) {
 							continue; }
 						$queue[] = array( $entry->getPathname(), $kind, $entry->getFilename(), $kind . '/' . $entry->getFilename() );
 					}
@@ -114,16 +120,16 @@ final class CSM_Estimates {
 	private static function excluded( string $path, string $kind ): bool {
 		if ( CSM_Files::excluded( $path ) ) {
 			return true; }
-		return $kind === 'media' && ( preg_match( '#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups)(/|$)#i', $path ) || str_starts_with( basename( $path ), '.' ) || preg_match( '/\.(php\d*|phtml|phar|cgi|pl|sh|htaccess|user\.ini)$/i', $path ) );
+		return 'media' === $kind && ( preg_match( '#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups)(/|$)#i', $path ) || str_starts_with( basename( $path ), '.' ) || preg_match( '/\.(php\d*|phtml|phar|cgi|pl|sh|htaccess|user\.ini)$/i', $path ) );
 	}
 
 	private static function add( array &$state, string $kind, string $component, int $bytes, string $relative ): void {
 		$state['bytes'][ $kind ] += $bytes;
-		if ( $kind === 'media' ) {
+		if ( 'media' === $kind ) {
 			$parts     = explode( '/', $relative, 3 );
 			$component = isset( $parts[2] ) && preg_match( '/^[0-9]{4}$/D', $parts[1] ) ? $parts[1] : '_other';
 		}
-		if ( $component !== '' ) {
+		if ( '' !== $component ) {
 			$state['items'][ $kind ][ $component ] = ( $state['items'][ $kind ][ $component ] ?? 0 ) + $bytes; }
 	}
 }

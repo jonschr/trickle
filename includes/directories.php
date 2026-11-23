@@ -1,10 +1,16 @@
 <?php
+/**
+ * Journaled component directory replacement and rollback.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Build complete components privately, then journal two directory renames. */
 final class CSM_Directories {
 	public static function backup_bytes( array $paths, array $selection, ?array &$state, bool $bounded = true ): ?int {
-		if ( $state === null ) {
+		if ( null === $state ) {
 			$roots = array();
 			foreach ( $paths as $relative => $path ) {
 				$parts          = explode( '/', $relative, 3 );
@@ -22,7 +28,7 @@ final class CSM_Directories {
 				throw new RuntimeException( 'Destination component contains a symbolic link.' ); }
 			if ( is_dir( $path ) ) {
 				$names = scandir( $path );
-				if ( $names === false ) {
+				if ( false === $names ) {
 					throw new RuntimeException( 'Cannot measure component backup.' ); }
 				foreach ( array_diff( $names, array( '.', '..' ) ) as $name ) {
 					$state['pending'][] = $path . '/' . $name; }
@@ -62,7 +68,7 @@ final class CSM_Directories {
 				$stage        = $job['component_staging'][ $relative ] ?? null;
 				// Keep the existing copy path when private staging and backup storage span devices.
 				$staged = $stage ? @stat( $stage ) : false;
-				if ( ! $staged || $staged['dev'] !== stat( $dir )['dev'] ) {
+				if ( ! $staged || stat( $dir )['dev'] !== $staged['dev'] ) {
 					$stage = $dir . '/incoming'; }
 				$state['building'] = array(
 					'path'         => $relative,
@@ -236,7 +242,7 @@ final class CSM_Directories {
 			'phase'   => 'destination',
 			'index'   => 0,
 		);
-		if ( $state['phase'] === 'destination' ) {
+		if ( 'destination' === $state['phase'] ) {
 			while ( $state['pending'] ) {
 				CSM_Support::check_cancel();
 				[$path, $relative, $preserved] = end( $state['pending'] );
@@ -253,7 +259,7 @@ final class CSM_Directories {
 						'preserved' => $preserved,
 					);
 					$names                       = scandir( $path );
-					if ( $names === false ) {
+					if ( false === $names ) {
 						throw new RuntimeException( 'Cannot list destination component: ' . $relative ); }
 					if ( $preserved && ! is_dir( $op['stage'] . $suffix ) && ! wp_mkdir_p( $op['stage'] . $suffix ) ) {
 						throw new RuntimeException( 'Cannot preserve destination folder.' ); }
@@ -284,7 +290,7 @@ final class CSM_Directories {
 					return false; }
 			}
 			foreach ( $op['expected'] ?? array() as $relative => $hash ) {
-				if ( $hash !== null && ! isset( $op['manifest'][ $relative ] ) ) {
+				if ( null !== $hash && ! isset( $op['manifest'][ $relative ] ) ) {
 					throw new RuntimeException( 'Destination file disappeared while staging component: ' . $relative ); }
 			}
 			$state['phase'] = 'source';
@@ -338,13 +344,13 @@ final class CSM_Directories {
 		CSM_Support::check_cancel();
 		$target = CSM_Files::destination( $op['path'], $selection );
 		$state  = self::journal( $op );
-		if ( $state['phase'] === 'ready' ) {
+		if ( 'ready' === $state['phase'] ) {
 			if ( file_exists( $target ) !== $op['existed'] ) {
 				throw new RuntimeException( 'Destination component changed before replacement: ' . $op['path'] ); }
 			$state = array( 'phase' => 'moving' );
 			CSM_Support::atomic_json( $op['journal'], $state );
 		}
-		if ( $state['phase'] === 'moving' ) {
+		if ( 'moving' === $state['phase'] ) {
 			if ( ! empty( $op['copy_backend'] ) ) {
 				if ( $op['existed'] && ! file_exists( $op['backup'] ) ) {
 					throw new RuntimeException( 'Complete component backup is missing: ' . $op['path'] ); }
@@ -355,7 +361,7 @@ final class CSM_Directories {
 			$state = array( 'phase' => 'installing' );
 			CSM_Support::atomic_json( $op['journal'], $state );
 		}
-		if ( $state['phase'] === 'installing' ) {
+		if ( 'installing' === $state['phase'] ) {
 			if ( empty( $op['remove_only'] ) ) {
 				if ( ! empty( $op['copy_backend'] ) ) {
 					if ( ! self::copy_tree(
@@ -420,7 +426,7 @@ final class CSM_Directories {
 		$temp    = $journal['copy']['file']['temp'] ?? null;
 		if ( $temp && is_file( $temp ) && ! unlink( $temp ) ) {
 			throw new RuntimeException( 'Cannot remove interrupted component copy.' ); }
-		if ( $phase === 'ready' || ( $phase === 'moving' && ! file_exists( $op['backup'] ) ) ) {
+		if ( 'ready' === $phase || ( 'moving' === $phase && ! file_exists( $op['backup'] ) ) ) {
 			return true; }
 		if ( $op['existed'] && ! file_exists( $op['backup'] ) ) {
 			throw new RuntimeException( 'Component backup is missing: ' . $op['path'] ); }

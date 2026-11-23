@@ -1,4 +1,10 @@
 <?php
+/**
+ * Media selection, comparison and attachment discovery.
+ *
+ * @package Trickle
+ */
+
 defined( 'ABSPATH' ) || exit;
 
 /** Media size/mtime metadata, compared in year → month → file order. */
@@ -106,11 +112,11 @@ final class CSM_Media {
 
 	public static function inventory( array $query ): array {
 		$level = $query['level'] ?? '';
-		if ( $level === 'years' ) {
+		if ( 'years' === $level ) {
 			$id = $query['selection']['comparison_id'] ?? '';
-			if ( ! is_string( $id ) || ( $id !== '' && ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) ) {
+			if ( ! is_string( $id ) || ( '' !== $id && ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) ) {
 				throw new RuntimeException( 'Invalid media metadata work ID.' ); }
-			$result_path = $id !== '' ? self::path() . '.comparison-' . $id . '.json' : '';
+			$result_path = '' !== $id ? self::path() . '.comparison-' . $id . '.json' : '';
 			if ( $result_path && is_file( $result_path ) ) {
 				$saved = json_decode( file_get_contents( $result_path ), true, 512, JSON_THROW_ON_ERROR );
 				if ( ( $saved['comparison'] ?? '' ) === 'size_mtime' ) {
@@ -141,7 +147,7 @@ final class CSM_Media {
 			if ( ! is_string( $year ) || ! isset( $index['years'][ $year ] ) ) {
 				throw new RuntimeException( 'Unknown media year.' ); }
 		}
-		if ( $level === 'months' ) {
+		if ( 'months' === $level ) {
 			$items = array();
 			foreach ( $years as $year ) {
 				foreach ( $index['years'][ $year ]['months'] as $month => $item ) {
@@ -154,11 +160,11 @@ final class CSM_Media {
 			}
 			return array( 'items' => $items );
 		}
-		if ( $level !== 'files' || ! is_string( $query['year'] ?? null ) || ! is_string( $query['month'] ?? null ) ) {
+		if ( 'files' !== $level || ! is_string( $query['year'] ?? null ) || ! is_string( $query['month'] ?? null ) ) {
 			throw new RuntimeException( 'Invalid media metadata query.' ); }
 		$files  = $index['years'][ $query['year'] ]['months'][ $query['month'] ]['files'] ?? null;
 		$offset = $query['offset'] ?? 0;
-		if ( $files === null || ! is_int( $offset ) || $offset < 0 ) {
+		if ( null === $files || ! is_int( $offset ) || $offset < 0 ) {
 			throw new RuntimeException( 'Unknown media month or invalid page.' ); }
 		$items = array();
 		foreach ( array_slice( $files, $offset, 500, true ) as $path => $file ) {
@@ -276,7 +282,7 @@ final class CSM_Media {
 				CSM_Transport::request( $peer, 'media_manifest', $query, null, $fp, 15, 32 * 1024 * 1024 );
 				rewind( $fp );
 				$raw  = gzdecode( stream_get_contents( $fp ), 32 * 1024 * 1024 );
-				$data = $raw === false ? null : json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
+				$data = false === $raw ? null : json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
 				if ( ! is_array( $data ) || ( $data['token'] ?? '' ) !== $query['token'] || ! is_array( $data['files'] ?? null ) ) {
 					throw new RuntimeException( 'Invalid media metadata manifest.' ); }
 				return $data['files'];
@@ -352,8 +358,8 @@ final class CSM_Media {
 		if ( strlen( $encoded ) > 700000 ) {
 			throw new RuntimeException( 'Invalid media comparison plan.' ); }
 		$compressed = base64_decode( $encoded, true );
-		$raw        = $compressed === false ? false : @gzdecode( $compressed, 32 * 1024 * 1024 );
-		$plan       = $raw === false ? null : json_decode( $raw, true );
+		$raw        = false === $compressed ? false : @gzdecode( $compressed, 32 * 1024 * 1024 );
+		$plan       = false === $raw ? null : json_decode( $raw, true );
 		if ( ! is_array( $plan ) || ! is_array( $plan['buckets'] ?? null ) || ! array_is_list( $plan['buckets'] ) || ! is_array( $plan['paths'] ?? null ) || ! array_is_list( $plan['paths'] ) ) {
 			throw new RuntimeException( 'Invalid media comparison plan.' ); }
 		$index    = self::snapshot( $plan['token'] ?? '' );
