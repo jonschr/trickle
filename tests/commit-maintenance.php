@@ -29,3 +29,9 @@ for($checkpoint=0;$checkpoint<2;$checkpoint++){
 if(array_column($calls,0)!==['version','commit','version','commit'])throw new RuntimeException('Checkpoint requested full inventory');
 if($calls[0][1]['id']!==$id||$calls[2][1]['id']!==$id)throw new RuntimeException('Version checks lack transfer correlation');
 echo "PASS Repeated push checkpoints use signed maintenance-safe version checks with transfer IDs\n";
+$control['combined_setup']=true;$calls=[];
+for($checkpoint=0;$checkpoint<2;$checkpoint++){
+ try{$method->invoke(null,'commit',['id'=>$id]);}catch(RuntimeException $error){if($error->getMessage()!=='Commit reached')throw $error;}
+}
+if(array_column($calls,0)!==['commit','commit'])throw new RuntimeException('Combined commit still requested a version preflight');
+echo "PASS Compatible pushes combine the build guard with each commit request\n";

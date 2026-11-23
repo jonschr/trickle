@@ -1,157 +1,304 @@
 <?php
-defined('ABSPATH') || exit;
+defined( 'ABSPATH' ) || exit;
 
 /** Size/mtime inventories; digests below cover metadata, never file contents. */
 final class CSM_Components {
-    private static function cache_path(array $selection): string {
-        return CSM_Support::private_dir() . '/components-' . substr(hash('sha256', CSM_Support::json([$selection['plugins'] ?? [], $selection['themes'] ?? [], $selection['skip_paths'] ?? [], $selection['git_overrides'] ?? [], $selection['follow_symlinks'] ?? []])), 0, 24) . '.json';
-    }
+	private static function cache_path( array $selection ): string {
+		return CSM_Support::private_dir() . '/components-' . substr( hash( 'sha256', CSM_Support::json( array( $selection['plugins'] ?? array(), $selection['themes'] ?? array(), $selection['skip_paths'] ?? array(), $selection['git_overrides'] ?? array(), $selection['follow_symlinks'] ?? array() ) ) ), 0, 24 ) . '.json';
+	}
 
-    private static function stamp(string $path): string {
-        clearstatcache(true, $path); $s = stat($path);
-        if (!$s || !is_file($path)) { throw new RuntimeException('Component file disappeared during comparison.'); }
-        return implode(':', array_map(static fn($key) => $s[$key], ['size', 'mtime', 'ctime', 'ino', 'dev', 'mode']));
-    }
+	private static function stamp( string $path ): string {
+		clearstatcache( true, $path );
+		$s = stat( $path );
+		if ( ! $s || ! is_file( $path ) ) {
+			throw new RuntimeException( 'Component file disappeared during comparison.' ); }
+		return implode( ':', array_map( static fn( $key ) => $s[ $key ], array( 'size', 'mtime', 'ctime', 'ino', 'dev', 'mode' ) ) );
+	}
 
-    private static function read(array $selection, string $token = ''): array {
-        return self::read_cache($token !== '' && preg_match('/^[a-f0-9]{64}$/D',$token) ? CSM_Support::private_dir().'/component-snapshot-'.$token.'.json' : self::cache_path($selection));
-    }
+	private static function read( array $selection, string $token = '' ): array {
+		return self::read_cache( $token !== '' && preg_match( '/^[a-f0-9]{64}$/D', $token ) ? CSM_Support::private_dir() . '/component-snapshot-' . $token . '.json' : self::cache_path( $selection ) );
+	}
 
-    private static function read_cache(string $path): array {
-        $raw = @file_get_contents($path);
-        $cache = $raw === false ? [] : json_decode($raw, true);
-        if (!is_array($cache) || !isset($cache['files'], $cache['token']) || ($cache['comparison'] ?? '') !== 'size_mtime' || !hash_equals($cache['token'], hash('sha256', CSM_Support::json($cache['files'])))) { return []; }
-        return $cache;
-    }
+	private static function read_cache( string $path ): array {
+		$raw   = @file_get_contents( $path );
+		$cache = $raw === false ? array() : json_decode( $raw, true );
+		if ( ! is_array( $cache ) || ! isset( $cache['files'], $cache['token'] ) || ( $cache['comparison'] ?? '' ) !== 'size_mtime' || ! hash_equals( $cache['token'], hash( 'sha256', CSM_Support::json( $cache['files'] ) ) ) ) {
+			return array(); }
+		return $cache;
+	}
 
-    public static function inventory(array $query): array {
-        $selection = $query['selection'] ?? []; $selection['media'] = 'none';
-        $source = !empty($query['source']); if (!$source) { unset($selection['follow_symlinks']); }
-        $path = self::cache_path($selection);
-        if (($query['level'] ?? '') === 'files') {
-            $cache = self::read($selection,$query['token'] ?? ''); $offset = $query['offset'] ?? 0;
-            if (!is_int($offset) || $offset < 0 || !is_string($query['token'] ?? null) || !hash_equals($cache['token'] ?? '', $query['token'])) { throw new RuntimeException('Component inventory changed. Retry preparation.'); }
-            return ['files' => array_slice($cache['files'], $offset, 500, true), 'more' => $offset + 500 < count($cache['files'])];
-        }
-        $work_id=$selection['comparison_id'] ?? '';
-        if (!is_string($work_id) || ($work_id!=='' && !preg_match('/^[a-f0-9]{32}$/D',$work_id))) { throw new RuntimeException('Invalid comparison work ID.'); }
-        $result_path=$work_id!==''?$path.'.comparison-'.$work_id.'.json':'';
-        if ($result_path && is_file($result_path)) {
-            $result=json_decode(file_get_contents($result_path),true,512,JSON_THROW_ON_ERROR);
-            if (($result['comparison'] ?? '')==='size_mtime') { return $result; }
-        }
-        $files = []; $groups = []; CSM_Support::step();
-        foreach (['plugins', 'themes'] as $kind) {
-            foreach ($selection[$kind] ?? [] as $id) {
-                CSM_Files::safe_relative($id);
-                if (str_contains($id, '/')) { throw new RuntimeException('Invalid component ID.'); }
-                $root = CSM_Files::root($kind, $id);
-                foreach (CSM_Files::scan($root . '/' . $id, $kind . '/' . $id, $selection, null, $source) as $file) {
-                    $relative = $kind . '/' . substr($file, strlen($root) + 1);
-                    $resolved = $source ? CSM_Files::source_path($file, $relative, $selection) : $file;
-                    if ($resolved === null) { continue; }
-                    $stamp=self::stamp($resolved); $stat=stat($resolved);
-                    $metadata=['size'=>$stat['size'],'mtime'=>$stat['mtime']];
-                    $files[$relative]=['hash'=>hash('sha256',CSM_Support::json($metadata)),'stamp'=>$stamp,'comparison'=>'size_mtime']+$metadata;
-                    CSM_Progress::update(['phase'=>'Comparing plugin and theme metadata','component'=>$relative,'count'=>count($files),'total'=>null,'unit'=>'files']);
-                }
-            }
-        }
-        ksort($files, SORT_STRING);
-        foreach ($files as $relative => $file) { $parts=explode('/',$relative); $groups[$parts[0].'/'.$parts[1]][$relative]=$file['hash']; }
-        $hashes=[]; foreach ($groups as $id=>$items) { $hashes[$id]=hash('sha256',CSM_Support::json($items)); }
-        $cache=['comparison'=>'size_mtime','files'=>$files,'token'=>hash('sha256',CSM_Support::json($files))];
-        CSM_Support::atomic_json($path,$cache);
-        CSM_Support::atomic_json(CSM_Support::private_dir().'/component-snapshot-'.$cache['token'].'.json',$cache);
-        $result=['comparison'=>'size_mtime','token'=>$cache['token'],'components'=>$hashes,'component_counts'=>array_map('count',$groups),'component_groups'=>1,'files'=>count($files),'hashed'=>0];
-        if ($result_path) { CSM_Support::atomic_json($result_path,$result); }
-        return $result;
-    }
+	public static function inventory( array $query ): array {
+		$selection          = $query['selection'] ?? array();
+		$selection['media'] = 'none';
+		$source             = ! empty( $query['source'] );
+		if ( ! $source ) {
+			unset( $selection['follow_symlinks'] ); }
+		$path = self::cache_path( $selection );
+		if ( ( $query['level'] ?? '' ) === 'files' ) {
+			$cache  = self::read( $selection, $query['token'] ?? '' );
+			$offset = $query['offset'] ?? 0;
+			if ( ! is_int( $offset ) || $offset < 0 || ! is_string( $query['token'] ?? null ) || ! hash_equals( $cache['token'] ?? '', $query['token'] ) ) {
+				throw new RuntimeException( 'Component inventory changed. Retry preparation.' ); }
+			return array(
+				'files' => array_slice( $cache['files'], $offset, 500, true ),
+				'more'  => $offset + 500 < count( $cache['files'] ),
+			);
+		}
+		$work_id = $selection['comparison_id'] ?? '';
+		if ( ! is_string( $work_id ) || ( $work_id !== '' && ! preg_match( '/^[a-f0-9]{32}$/D', $work_id ) ) ) {
+			throw new RuntimeException( 'Invalid comparison work ID.' ); }
+		$result_path = $work_id !== '' ? $path . '.comparison-' . $work_id . '.json' : '';
+		if ( $result_path && is_file( $result_path ) ) {
+			$result = json_decode( file_get_contents( $result_path ), true, 512, JSON_THROW_ON_ERROR );
+			if ( ( $result['comparison'] ?? '' ) === 'size_mtime' ) {
+				return $result; }
+		}
+		$files  = array();
+		$groups = array();
+		CSM_Support::step();
+		foreach ( array( 'plugins', 'themes' ) as $kind ) {
+			foreach ( $selection[ $kind ] ?? array() as $id ) {
+				CSM_Files::safe_relative( $id );
+				if ( str_contains( $id, '/' ) ) {
+					throw new RuntimeException( 'Invalid component ID.' ); }
+				$root = CSM_Files::root( $kind, $id );
+				foreach ( CSM_Files::scan( $root . '/' . $id, $kind . '/' . $id, $selection, null, $source ) as $file ) {
+					$relative = $kind . '/' . substr( $file, strlen( $root ) + 1 );
+					$resolved = $source ? CSM_Files::source_path( $file, $relative, $selection ) : $file;
+					if ( $resolved === null ) {
+						continue; }
+					$stamp              = self::stamp( $resolved );
+					$stat               = stat( $resolved );
+					$metadata           = array(
+						'size'  => $stat['size'],
+						'mtime' => $stat['mtime'],
+					);
+					$files[ $relative ] = array(
+						'hash'       => hash( 'sha256', CSM_Support::json( $metadata ) ),
+						'stamp'      => $stamp,
+						'comparison' => 'size_mtime',
+					) + $metadata;
+					CSM_Progress::update(
+						array(
+							'phase'     => 'Comparing plugin and theme metadata',
+							'component' => $relative,
+							'count'     => count( $files ),
+							'total'     => null,
+							'unit'      => 'files',
+						)
+					);
+				}
+			}
+		}
+		ksort( $files, SORT_STRING );
+		foreach ( $files as $relative => $file ) {
+			$parts = explode( '/', $relative );
+			$groups[ $parts[0] . '/' . $parts[1] ][ $relative ] = $file['hash']; }
+		$hashes = array();
+		foreach ( $groups as $id => $items ) {
+			$hashes[ $id ] = hash( 'sha256', CSM_Support::json( $items ) ); }
+		$cache = array(
+			'comparison' => 'size_mtime',
+			'files'      => $files,
+			'token'      => hash( 'sha256', CSM_Support::json( $files ) ),
+		);
+		CSM_Support::atomic_json( $path, $cache );
+		CSM_Support::atomic_json( CSM_Support::private_dir() . '/component-snapshot-' . $cache['token'] . '.json', $cache );
+		$result = array(
+			'comparison'       => 'size_mtime',
+			'token'            => $cache['token'],
+			'components'       => $hashes,
+			'component_counts' => array_map( 'count', $groups ),
+			'component_groups' => 1,
+			'files'            => count( $files ),
+			'hashed'           => 0,
+		);
+		if ( $result_path ) {
+			CSM_Support::atomic_json( $result_path, $result ); }
+		return $result;
+	}
 
-    public static function compare(array $peer, bool $pull, array $selection): array {
-        foreach (['plugins','themes'] as $kind) { if (!empty($selection['file_force']) || !empty($selection[$kind.'_force'])) { $selection[$kind]=[]; } }
-        if (empty($selection['plugins']) && empty($selection['themes'])) { return ['same'=>'','folders'=>'','matched'=>0,'fallback'=>false]; }
-        $remote = static function($query) use ($peer) { $result=CSM_Transport::request($peer,'component_hashes',$query+['progress_run'=>CSM_Progress::run()],null,null,15); if (!empty($result['continue'])) { throw new CSM_Yield('Remote component metadata checkpointed.'); } return $result; };
-        $local = static fn($query) => self::inventory($query);
-        $source = $pull ? $remote : $local; $destination = $pull ? $local : $remote;
-        $src = $source(['selection' => $selection, 'source' => true]); $dst = $destination(['selection' => $selection]);
-        if (($src['comparison'] ?? '')!=='size_mtime' || ($dst['comparison'] ?? '')!=='size_mtime') { throw new RuntimeException('Update Trickle on both sites before comparing file metadata.'); }
-        // Matching component digests let the source reuse its pinned inventory without paging it through the controller.
-        if ($src['components'] === $dst['components']) {
-            $plan = base64_encode(gzencode(CSM_Support::json(['component_token' => $src['token']]), 3));
-            return ['same' => $plan, 'folders' => $plan, 'matched' => $src['files'], 'fallback' => false];
-        }
-        $common = array_keys(array_intersect_key($src['components'], $dst['components'])); $same = []; $matching = [];
-        if (!empty($src['component_groups'])) {
-            foreach ($src['components'] as $id => $hash) { if (($dst['components'][$id] ?? null) === $hash) { $matching[] = $id; } }
-            $common = array_values(array_diff($common, $matching));
-        }
-        $matched = array_sum(array_intersect_key($src['component_counts'] ?? [], array_flip($matching)));
-        $encode = static fn(array $files) => base64_encode(gzencode(CSM_Support::json($matching ? ['component_token'=>$src['token'], 'components'=>$matching, 'files'=>$files] : $files), 3));
-        $folders = $matching ? $encode([]) : '';
-        $counts = static fn(array $index) => isset($index['component_counts']) ? array_sum(array_intersect_key($index['component_counts'], array_flip($common))) : $index['files'];
-        // Never drop matching folders when differing folders require a full-transfer fallback.
-        if (!$common || max($counts($src), $counts($dst)) > 100000) { return ['same'=>$folders, 'folders'=>$folders, 'matched'=>$matched, 'fallback'=>(bool)$common]; }
-        $query = ['selection'=>$selection, 'components'=>$common];
-        $read = static function (array $index) use ($peer, $query): array {
-            $fp = fopen('php://temp', 'w+b');
-            try {
-                CSM_Transport::request($peer, 'component_manifest', $query + ['token'=>$index['token']], null, $fp, 0, 32 * 1024 * 1024);
-                rewind($fp); $raw = gzdecode(stream_get_contents($fp), 32 * 1024 * 1024);
-                $data = $raw === false ? null : json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
-                if (!is_array($data) || ($data['token'] ?? '') !== $index['token'] || !is_array($data['files'] ?? null)) { throw new RuntimeException('Invalid component metadata manifest.'); }
-                return $data['files'];
-            } finally { fclose($fp); }
-        };
-        $local_files = self::manifest($query + ['token'=>($pull ? $dst : $src)['token']])['files'];
-        $remote_files = $read($pull ? $src : $dst);
-        $dest = $pull ? $local_files : $remote_files; $source_files = $pull ? $remote_files : $local_files;
-        foreach ($source_files as $path => $file) { if (($dest[$path]['hash'] ?? null) === $file['hash']) { $same[$path] = $file; } }
-        $plan = $encode($same);
-        // shortcut: oversized per-file plans resend differing folders; matching folder tokens remain compact.
-        if (strlen($plan) > 600000) { return ['same' => $folders, 'folders' => $folders, 'matched' => $matched, 'fallback' => true]; }
-        return ['same' => $plan, 'folders' => $folders, 'matched' => $matched + count($same), 'fallback' => false];
-    }
+	public static function compare( array $peer, bool $pull, array $selection ): array {
+		foreach ( array( 'plugins', 'themes' ) as $kind ) {
+			if ( ! empty( $selection['file_force'] ) || ! empty( $selection[ $kind . '_force' ] ) ) {
+				$selection[ $kind ] = array(); }
+		}
+		if ( empty( $selection['plugins'] ) && empty( $selection['themes'] ) ) {
+			return array(
+				'same'     => '',
+				'folders'  => '',
+				'matched'  => 0,
+				'fallback' => false,
+			); }
+		$remote      = static function ( $query ) use ( $peer ) {
+			$result = CSM_Transport::request( $peer, 'component_hashes', $query + array( 'progress_run' => CSM_Progress::run() ), null, null, 15 );
+			if ( ! empty( $result['continue'] ) ) {
+				throw new CSM_Yield( 'Remote component metadata checkpointed.' );
+			} return $result;
+		};
+		$local       = static fn( $query ) => self::inventory( $query );
+		$source      = $pull ? $remote : $local;
+		$destination = $pull ? $local : $remote;
+		$src         = $source(
+			array(
+				'selection' => $selection,
+				'source'    => true,
+			)
+		);
+		$dst         = $destination( array( 'selection' => $selection ) );
+		if ( ( $src['comparison'] ?? '' ) !== 'size_mtime' || ( $dst['comparison'] ?? '' ) !== 'size_mtime' ) {
+			throw new RuntimeException( 'Update Trickle on both sites before comparing file metadata.' ); }
+		// Matching component digests let the source reuse its pinned inventory without paging it through the controller.
+		if ( $src['components'] === $dst['components'] ) {
+			$plan = base64_encode( gzencode( CSM_Support::json( array( 'component_token' => $src['token'] ) ), 3 ) );
+			return array(
+				'same'     => $plan,
+				'folders'  => $plan,
+				'matched'  => $src['files'],
+				'fallback' => false,
+			);
+		}
+		$common   = array_keys( array_intersect_key( $src['components'], $dst['components'] ) );
+		$same     = array();
+		$matching = array();
+		if ( ! empty( $src['component_groups'] ) ) {
+			foreach ( $src['components'] as $id => $hash ) {
+				if ( ( $dst['components'][ $id ] ?? null ) === $hash ) {
+					$matching[] = $id; }
+			}
+			$common = array_values( array_diff( $common, $matching ) );
+		}
+		$matched = array_sum( array_intersect_key( $src['component_counts'] ?? array(), array_flip( $matching ) ) );
+		$encode  = static fn( array $files ) => base64_encode(
+			gzencode(
+				CSM_Support::json(
+					$matching ? array(
+						'component_token' => $src['token'],
+						'components'      => $matching,
+						'files'           => $files,
+					) : $files
+				),
+				3
+			)
+		);
+		$folders = $matching ? $encode( array() ) : '';
+		$counts  = static fn( array $index ) => isset( $index['component_counts'] ) ? array_sum( array_intersect_key( $index['component_counts'], array_flip( $common ) ) ) : $index['files'];
+		// Never drop matching folders when differing folders require a full-transfer fallback.
+		if ( ! $common || max( $counts( $src ), $counts( $dst ) ) > 100000 ) {
+			return array(
+				'same'     => $folders,
+				'folders'  => $folders,
+				'matched'  => $matched,
+				'fallback' => (bool) $common,
+			); }
+		$query        = array(
+			'selection'  => $selection,
+			'components' => $common,
+		);
+		$read         = static function ( array $index ) use ( $peer, $query ): array {
+			$fp = fopen( 'php://temp', 'w+b' );
+			try {
+				CSM_Transport::request( $peer, 'component_manifest', $query + array( 'token' => $index['token'] ), null, $fp, 0, 32 * 1024 * 1024 );
+				rewind( $fp );
+				$raw  = gzdecode( stream_get_contents( $fp ), 32 * 1024 * 1024 );
+				$data = $raw === false ? null : json_decode( $raw, true, 512, JSON_THROW_ON_ERROR );
+				if ( ! is_array( $data ) || ( $data['token'] ?? '' ) !== $index['token'] || ! is_array( $data['files'] ?? null ) ) {
+					throw new RuntimeException( 'Invalid component metadata manifest.' ); }
+				return $data['files'];
+			} finally {
+				fclose( $fp ); }
+		};
+		$local_files  = self::manifest( $query + array( 'token' => ( $pull ? $dst : $src )['token'] ) )['files'];
+		$remote_files = $read( $pull ? $src : $dst );
+		$dest         = $pull ? $local_files : $remote_files;
+		$source_files = $pull ? $remote_files : $local_files;
+		foreach ( $source_files as $path => $file ) {
+			if ( ( $dest[ $path ]['hash'] ?? null ) === $file['hash'] ) {
+				$same[ $path ] = $file; }
+		}
+		$plan = $encode( $same );
+		// shortcut: oversized per-file plans resend differing folders; matching folder tokens remain compact.
+		if ( strlen( $plan ) > 600000 ) {
+			return array(
+				'same'     => $folders,
+				'folders'  => $folders,
+				'matched'  => $matched,
+				'fallback' => true,
+			); }
+		return array(
+			'same'     => $plan,
+			'folders'  => $folders,
+			'matched'  => $matched + count( $same ),
+			'fallback' => false,
+		);
+	}
 
-    public static function selection(array $selection, array $comparison): array {
-        $selection['component_same'] = $comparison['same'];
-        // Large media plans may share this request; keep folder skips when per-file detail will not fit.
-        if (strlen(CSM_Support::json($selection)) > 950000) { $selection['component_same'] = $comparison['folders'] ?? ''; }
-        return $selection;
-    }
+	public static function selection( array $selection, array $comparison ): array {
+		$selection['component_same'] = $comparison['same'];
+		// Large media plans may share this request; keep folder skips when per-file detail will not fit.
+		if ( strlen( CSM_Support::json( $selection ) ) > 950000 ) {
+			$selection['component_same'] = $comparison['folders'] ?? ''; }
+		return $selection;
+	}
 
-    public static function manifest(array $query): array {
-        $selection = $query['selection'] ?? []; $cache = self::read($selection,$query['token'] ?? '');
-        if (!is_string($query['token'] ?? null) || !hash_equals($cache['token'] ?? '', $query['token'])) { throw new RuntimeException('Component inventory changed. Retry preparation.'); }
-        $components = $query['components'] ?? null; $allowed = [];
-        foreach (['plugins','themes'] as $kind) { foreach ($selection[$kind] ?? [] as $id) { $allowed[] = $kind . '/' . $id; } }
-        if (!is_array($components) || !array_is_list($components) || array_filter($components, static fn($id)=>!is_string($id)) || array_diff($components, $allowed)) { throw new RuntimeException('Invalid component manifest selection.'); }
-        $files = array_filter($cache['files'], static fn($path)=>in_array(implode('/', array_slice(explode('/', $path), 0, 2)), $components, true), ARRAY_FILTER_USE_KEY);
-        return ['token'=>$cache['token'], 'files'=>$files];
-    }
+	public static function manifest( array $query ): array {
+		$selection = $query['selection'] ?? array();
+		$cache     = self::read( $selection, $query['token'] ?? '' );
+		if ( ! is_string( $query['token'] ?? null ) || ! hash_equals( $cache['token'] ?? '', $query['token'] ) ) {
+			throw new RuntimeException( 'Component inventory changed. Retry preparation.' ); }
+		$components = $query['components'] ?? null;
+		$allowed    = array();
+		foreach ( array( 'plugins', 'themes' ) as $kind ) {
+			foreach ( $selection[ $kind ] ?? array() as $id ) {
+				$allowed[] = $kind . '/' . $id; }
+		}
+		if ( ! is_array( $components ) || ! array_is_list( $components ) || array_filter( $components, static fn( $id )=> ! is_string( $id ) ) || array_diff( $components, $allowed ) ) {
+			throw new RuntimeException( 'Invalid component manifest selection.' ); }
+		$files = array_filter( $cache['files'], static fn( $path )=>in_array( implode( '/', array_slice( explode( '/', $path ), 0, 2 ) ), $components, true ), ARRAY_FILTER_USE_KEY );
+		return array(
+			'token' => $cache['token'],
+			'files' => $files,
+		);
+	}
 
-    public static function unchanged(array $selection): array {
-        $plan = $selection['component_same'] ?? '';
-        if ($plan === '') { return []; }
-        if (!is_string($plan) || strlen($plan) > 600000) { throw new RuntimeException('Invalid unchanged-file plan.'); }
-        $bytes = base64_decode($plan, true); $raw = $bytes === false ? false : @gzdecode($bytes, 32 * 1024 * 1024);
-        $files = $raw === false ? null : json_decode($raw, true);
-        if (!is_array($files)) { throw new RuntimeException('Invalid unchanged-file plan.'); }
-        if (array_key_exists('component_token', $files)) {
-            if (array_diff(array_keys($files), ['component_token','components','files']) || !is_string($files['component_token']) || !preg_match('/^[a-f0-9]{64}$/D', $files['component_token'])) { throw new RuntimeException('Invalid component inventory token.'); }
-            $cache = self::read($selection,$files['component_token']);
-            if (!hash_equals($cache['token'] ?? '', $files['component_token'])) { throw new RuntimeException('Component inventory changed. Retry preparation.'); }
-            if (count($files) === 1) { return $cache['files']; }
-            $components = $files['components'] ?? null; $extra = $files['files'] ?? null; $allowed = [];
-            foreach (['plugins','themes'] as $kind) { foreach ($selection[$kind] ?? [] as $id) { $allowed[] = $kind . '/' . $id; } }
-            if (!is_array($components) || !array_is_list($components) || array_filter($components, static fn($id)=>!is_string($id)) || array_diff($components, $allowed) || !is_array($extra)) { throw new RuntimeException('Invalid unchanged component selection.'); }
-            foreach ($extra as $path => $file) { if (!is_string($path) || !isset($cache['files'][$path]) || $cache['files'][$path] !== $file) { throw new RuntimeException('Unchanged file does not match its source inventory.'); } }
-            return array_filter($cache['files'], static fn($path)=>in_array(implode('/', array_slice(explode('/', $path), 0, 2)), $components, true), ARRAY_FILTER_USE_KEY) + $extra;
-        }
-        return $files;
-    }
+	public static function unchanged( array $selection ): array {
+		$plan = $selection['component_same'] ?? '';
+		if ( $plan === '' ) {
+			return array(); }
+		if ( ! is_string( $plan ) || strlen( $plan ) > 600000 ) {
+			throw new RuntimeException( 'Invalid unchanged-file plan.' ); }
+		$bytes = base64_decode( $plan, true );
+		$raw   = $bytes === false ? false : @gzdecode( $bytes, 32 * 1024 * 1024 );
+		$files = $raw === false ? null : json_decode( $raw, true );
+		if ( ! is_array( $files ) ) {
+			throw new RuntimeException( 'Invalid unchanged-file plan.' ); }
+		if ( array_key_exists( 'component_token', $files ) ) {
+			if ( array_diff( array_keys( $files ), array( 'component_token', 'components', 'files' ) ) || ! is_string( $files['component_token'] ) || ! preg_match( '/^[a-f0-9]{64}$/D', $files['component_token'] ) ) {
+				throw new RuntimeException( 'Invalid component inventory token.' ); }
+			$cache = self::read( $selection, $files['component_token'] );
+			if ( ! hash_equals( $cache['token'] ?? '', $files['component_token'] ) ) {
+				throw new RuntimeException( 'Component inventory changed. Retry preparation.' ); }
+			if ( count( $files ) === 1 ) {
+				return $cache['files']; }
+			$components = $files['components'] ?? null;
+			$extra      = $files['files'] ?? null;
+			$allowed    = array();
+			foreach ( array( 'plugins', 'themes' ) as $kind ) {
+				foreach ( $selection[ $kind ] ?? array() as $id ) {
+					$allowed[] = $kind . '/' . $id; }
+			}
+			if ( ! is_array( $components ) || ! array_is_list( $components ) || array_filter( $components, static fn( $id )=> ! is_string( $id ) ) || array_diff( $components, $allowed ) || ! is_array( $extra ) ) {
+				throw new RuntimeException( 'Invalid unchanged component selection.' ); }
+			foreach ( $extra as $path => $file ) {
+				if ( ! is_string( $path ) || ! isset( $cache['files'][ $path ] ) || $cache['files'][ $path ] !== $file ) {
+					throw new RuntimeException( 'Unchanged file does not match its source inventory.' ); }
+			}
+			return array_filter( $cache['files'], static fn( $path )=>in_array( implode( '/', array_slice( explode( '/', $path ), 0, 2 ) ), $components, true ), ARRAY_FILTER_USE_KEY ) + $extra;
+		}
+		return $files;
+	}
 
-    public static function verify(string $path, array $file): bool {
-        return is_string($file['hash'] ?? null) && preg_match('/^[a-f0-9]{64}$/D', $file['hash']) && self::stamp($path) === ($file['stamp'] ?? '');
-    }
+	public static function verify( string $path, array $file ): bool {
+		return is_string( $file['hash'] ?? null ) && preg_match( '/^[a-f0-9]{64}$/D', $file['hash'] ) && self::stamp( $path ) === ( $file['stamp'] ?? '' );
+	}
 }

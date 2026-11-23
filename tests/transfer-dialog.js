@@ -5,11 +5,13 @@ const document={activeElement:null,body:{classList:{add:n=>classes.add(n),remove
 function node(id){return nodes[id]??=( {id,hidden:true,children:[],focus(){document.activeElement=this;},append(...items){for(const item of items)item.parentElement=this;this.children.push(...items);},prepend(item){item.parentElement=this;this.children.unshift(item);},insertBefore(item){item.parentElement=this;},getClientRects(){return this.hidden?[]:[{}];},closest(){return this.hidden?{}:null;}} );}
 const dialog=node('transfer-dialog');dialog.open=false;dialog.showModal=function(){this.open=true;};dialog.close=function(){this.open=false;};
 const actionHome=node('action-home');
-const c={transferMeter:{clear(){}},$:node,transferView:false,session:null,busy:false,actionHome,document,updateSelection(){c.syncTransferDialog();}};
+const c={transferMeter:{clear(){}},$:node,transferView:false,session:null,busy:false,migrateVisible:true,actionHome,document,updateSelection(){c.syncTransferDialog();}};
 c.renderSkippedFolders=()=>{};
 vm.createContext(c);vm.runInContext(source.slice(source.indexOf('    function syncTransferDialog('),source.indexOf('    function filterComponents(')),c);
 c.syncTransferDialog();assert(!dialog.open);
 c.session={id:'retained'};c.syncTransferDialog();assert(dialog.open);assert(classes.has('csm-transfer-open'));assert.equal(node('error').parentElement,node('transfer-notices'));assert.equal(node('stage').parentElement,node('transfer-controls'));assert.equal(document.activeElement,node('action-title'));assert(node('close-transfer').hidden);
+c.migrateVisible=false;document.activeElement=node('settings');c.syncTransferDialog();assert(!dialog.open,'Settings remains accessible while a job is retained');assert.equal(document.activeElement,node('settings'),'Hidden transfer does not steal settings focus');
+c.migrateVisible=true;c.syncTransferDialog();assert(dialog.open,'Returning to Migrate restores the retained transfer dialog');
 c.closeTransferView();assert(dialog.open,'Active transfer cannot be dismissed');
 c.session=null;c.busy=true;c.transferView=true;c.closeTransferView();assert(dialog.open,'Initial preparation also cannot be dismissed');
 c.busy=false;node('completion').hidden=false;c.syncTransferDialog();assert(!node('close-transfer').hidden);

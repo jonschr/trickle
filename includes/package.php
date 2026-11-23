@@ -1,121 +1,261 @@
 <?php
-defined('ABSPATH') || exit;
-require_once __DIR__.'/timing.php';
+defined( 'ABSPATH' ) || exit;
+require_once __DIR__ . '/timing.php';
 
 /** Small, independently verified gzip frames; saved cursors never depend on a PHP process surviving. */
 final class CSM_Package {
-    private static ?bool $openssl = null;
+	private static ?bool $openssl = null;
 
-    /** Same SHA-256 bytes, using the accelerated provider for large blocks when available. */
-    public static function digest(string $bytes, bool $binary = false): string {
-        $started=hrtime(true); $backend='checksum.block_native';
-        try {
-            if (strlen($bytes)>=4096 && (self::$openssl ??= function_exists('openssl_digest'))) {
-                try { $digest=@openssl_digest($bytes,'sha256',$binary); }
-                catch (Throwable $error) { $digest=false; }
-                if (is_string($digest) && strlen($digest)===($binary?32:64)) { $backend='checksum.block_openssl'; return $digest; }
-                self::$openssl=false;
-            }
-            return hash('sha256',$bytes,$binary);
-        } finally { CSM_Timing::add($backend,$started,strlen($bytes)); }
-    }
+	/** Same SHA-256 bytes, using the accelerated provider for large blocks when available. */
+	public static function digest( string $bytes, bool $binary = false ): string {
+		$started = hrtime( true );
+		$backend = 'checksum.block_native';
+		try {
+			if ( strlen( $bytes ) >= 4096 && ( self::$openssl ??= function_exists( 'openssl_digest' ) ) ) {
+				try {
+					$digest = @openssl_digest( $bytes, 'sha256', $binary ); } catch ( Throwable $error ) {
+					$digest = false; }
+					if ( is_string( $digest ) && strlen( $digest ) === ( $binary ? 32 : 64 ) ) {
+						$backend = 'checksum.block_openssl';
+						return $digest; }
+					self::$openssl = false;
+			}
+			return hash( 'sha256', $bytes, $binary );
+		} finally {
+			CSM_Timing::add( $backend, $started, strlen( $bytes ) ); }
+	}
 
-    public static function chain(string $hash, string $record): string { return hash('sha256', $hash . $record); }
-    public static function frame(string $part, bool $control = false): string {
-        if ($part==='' || strlen($part)>262144) { throw new RuntimeException('Invalid frame payload size.'); }
-        CSM_Support::check_source_budget();
-        $sample=substr($part,max(0,intdiv(strlen($part)-8192,2)),8192);
-        $level=strlen($sample)===8192 && strlen(gzdeflate($sample,1))>=strlen($sample)*.98?0:3;
-        $gzip=gzencode($part,$level);
-        return pack('N',strlen($gzip) | ($control?0x80000000:0)).self::digest($gzip,true).$gzip;
-    }
+	public static function chain( string $hash, string $record ): string {
+		return hash( 'sha256', $hash . $record ); }
+	public static function frame( string $part, bool $control = false ): string {
+		if ( $part === '' || strlen( $part ) > 262144 ) {
+			throw new RuntimeException( 'Invalid frame payload size.' ); }
+		CSM_Support::check_source_budget();
+		$sample = substr( $part, max( 0, intdiv( strlen( $part ) - 8192, 2 ) ), 8192 );
+		$level  = strlen( $sample ) === 8192 && strlen( gzdeflate( $sample, 1 ) ) >= strlen( $sample ) * .98 ? 0 : 3;
+		$gzip   = gzencode( $part, $level );
+		return pack( 'N', strlen( $gzip ) | ( $control ? 0x80000000 : 0 ) ) . self::digest( $gzip, true ) . $gzip;
+	}
 
-    public static function put($fp, string $bytes): void {
-        foreach (str_split($bytes,262144) as $part) { CSM_Support::write($fp,self::frame($part)); }
-    }
+	public static function put( $fp, string $bytes ): void {
+		foreach ( str_split( $bytes, 262144 ) as $part ) {
+			CSM_Support::write( $fp, self::frame( $part ) ); }
+	}
 
-    public static function build(string $path, string $kind, array $selection): array {
-        $checkpoint = $path . '.build';
-        $state = is_file($checkpoint) ? json_decode(file_get_contents($checkpoint), true, 512, JSON_THROW_ON_ERROR) : ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0],'range_tracking'=>true,'ranges'=>[]];
-        if (!empty($state['complete']) && is_file($path) && filesize($path)===$state['offset']) { return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
-        if ($state['offset']>0 && (!is_file($path.'.part') || filesize($path.'.part')<$state['offset'])) { throw new RuntimeException('Source package checkpoint is missing or truncated.'); }
-        $fp = fopen($path . '.part', 'c+b');
-        if (!$fp || !ftruncate($fp, $state['offset']) || fseek($fp, $state['offset']) !== 0) { throw new RuntimeException('Cannot resume source packaging.'); }
-        CSM_Support::step();
-        try {
-            if ($kind === 'database') {
-                // Keep one consistent snapshot, with read locks for nontransactional tables. Its hard budget fails safely rather than mixing snapshots from different requests.
-                $state = ['offset'=>0,'cursor'=>[],'components'=>['database'=>0,'plugins'=>0,'themes'=>0,'media'=>0],'range_tracking'=>true,'ranges'=>[]];
-                ftruncate($fp, 0); rewind($fp);
-                $buffer='';
-                foreach (CSM_Database::stream($selection,true) as $bytes) { $buffer.=$bytes; $state['components']['database']+=strlen($bytes); while (strlen($buffer)>=262144) { self::put($fp,substr($buffer,0,262144)); $buffer=substr($buffer,262144); } }
-                if ($buffer!=='') { self::put($fp,$buffer); }
-                $done = true;
-            } else {
-                $buffer=''; $component=null;
-                $flush = static function (bool $all) use ($fp,&$buffer,&$component,&$state): void {
-                    while (strlen($buffer)>=262144 || ($all && $buffer!=='')) {
-                        $part=substr($buffer,0,262144); $buffer=substr($buffer,strlen($part)); $start=ftell($fp);
-                        self::put($fp,$part);
-                        if (!empty($state['range_tracking']) && in_array($component,['plugins','themes','media'],true)) {
-                            $state['ranges'][$component] ??= ['start'=>$start,'end'=>$start];
-                            $state['ranges'][$component]['end']=ftell($fp);
-                        }
-                    }
-                };
-                $generator = CSM_Files::stream_step($selection, $state['cursor'], $state['components']);
-                foreach ($generator as $bytes) {
-                    $next=$state['cursor']['component'] ?? null;
-                    if ($next!==$component) { $flush(true); $component=$next; }
-                    $buffer.=$bytes; $flush(false);
-                    // A checkpoint only acknowledges generator units whose entire output is durable.
-                    if (CSM_Support::due()) {
-                        $flush(true); fflush($fp); $state['offset']=ftell($fp);
-                        CSM_Support::atomic_json($checkpoint,$state);
-                        return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null];
-                    }
-                }
-                $flush(true);
-                $done = !empty($state['cursor']['done']);
-                if (!$done) { fflush($fp); $state['offset']=ftell($fp); CSM_Support::atomic_json($checkpoint,$state); return ['continue'=>true,'packaged'=>$state['offset'],'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null]; }
-            }
-            fflush($fp); $state['offset'] = ftell($fp); $state['complete']=true; CSM_Support::atomic_json($checkpoint, $state);
-        } finally { fclose($fp); }
-        if ($done && !rename($path . '.part', $path)) { throw new RuntimeException('Cannot publish source snapshot.'); }
-        return ['format'=>2,'size'=>$state['offset'],'sha256'=>CSM_Support::hash_file($path),'components'=>$state['components'],'component_ranges'=>!empty($state['range_tracking'])?$state['ranges']:null];
-    }
+	public static function build( string $path, string $kind, array $selection ): array {
+		$checkpoint = $path . '.build';
+		$state      = is_file( $checkpoint ) ? json_decode( file_get_contents( $checkpoint ), true, 512, JSON_THROW_ON_ERROR ) : array(
+			'offset'         => 0,
+			'cursor'         => array(),
+			'components'     => array(
+				'database' => 0,
+				'plugins'  => 0,
+				'themes'   => 0,
+				'media'    => 0,
+			),
+			'range_tracking' => true,
+			'ranges'         => array(),
+		);
+		if ( ! empty( $state['complete'] ) && is_file( $path ) && filesize( $path ) === $state['offset'] ) {
+			return array(
+				'format'           => 2,
+				'size'             => $state['offset'],
+				'sha256'           => CSM_Support::hash_file( $path ),
+				'components'       => $state['components'],
+				'component_ranges' => ! empty( $state['range_tracking'] ) ? $state['ranges'] : null,
+			); }
+		if ( $state['offset'] > 0 && ( ! is_file( $path . '.part' ) || filesize( $path . '.part' ) < $state['offset'] ) ) {
+			throw new RuntimeException( 'Source package checkpoint is missing or truncated.' ); }
+		$fp = fopen( $path . '.part', 'c+b' );
+		if ( ! $fp || ! ftruncate( $fp, $state['offset'] ) || fseek( $fp, $state['offset'] ) !== 0 ) {
+			throw new RuntimeException( 'Cannot resume source packaging.' ); }
+		CSM_Support::step();
+		try {
+			if ( $kind === 'database' ) {
+				// Keep one consistent snapshot, with read locks for nontransactional tables. Its hard budget fails safely rather than mixing snapshots from different requests.
+				$state = array(
+					'offset'         => 0,
+					'cursor'         => array(),
+					'components'     => array(
+						'database' => 0,
+						'plugins'  => 0,
+						'themes'   => 0,
+						'media'    => 0,
+					),
+					'range_tracking' => true,
+					'ranges'         => array(),
+				);
+				ftruncate( $fp, 0 );
+				rewind( $fp );
+				$buffer = '';
+				foreach ( CSM_Database::stream( $selection, true ) as $bytes ) {
+					$buffer                          .= $bytes;
+					$state['components']['database'] += strlen( $bytes );
+					while ( strlen( $buffer ) >= 262144 ) {
+						self::put( $fp, substr( $buffer, 0, 262144 ) );
+						$buffer = substr( $buffer, 262144 ); }
+				}
+				if ( $buffer !== '' ) {
+					self::put( $fp, $buffer ); }
+				$done = true;
+			} else {
+				$buffer    = '';
+				$component = null;
+				$flush     = static function ( bool $all ) use ( $fp, &$buffer, &$component, &$state ): void {
+					while ( strlen( $buffer ) >= 262144 || ( $all && $buffer !== '' ) ) {
+						$part   = substr( $buffer, 0, 262144 );
+						$buffer = substr( $buffer, strlen( $part ) );
+						$start  = ftell( $fp );
+						self::put( $fp, $part );
+						if ( ! empty( $state['range_tracking'] ) && in_array( $component, array( 'plugins', 'themes', 'media' ), true ) ) {
+							$state['ranges'][ $component ]      ??= array(
+								'start' => $start,
+								'end'   => $start,
+							);
+							$state['ranges'][ $component ]['end'] = ftell( $fp );
+						}
+					}
+				};
+				$generator = CSM_Files::stream_step( $selection, $state['cursor'], $state['components'] );
+				foreach ( $generator as $bytes ) {
+					$next = $state['cursor']['component'] ?? null;
+					if ( $next !== $component ) {
+						$flush( true );
+						$component = $next; }
+					$buffer .= $bytes;
+					$flush( false );
+					// A checkpoint only acknowledges generator units whose entire output is durable.
+					if ( CSM_Support::due() ) {
+						$flush( true );
+						fflush( $fp );
+						$state['offset'] = ftell( $fp );
+						CSM_Support::atomic_json( $checkpoint, $state );
+						return array(
+							'continue'         => true,
+							'packaged'         => $state['offset'],
+							'components'       => $state['components'],
+							'component_ranges' => ! empty( $state['range_tracking'] ) ? $state['ranges'] : null,
+						);
+					}
+				}
+				$flush( true );
+				$done = ! empty( $state['cursor']['done'] );
+				if ( ! $done ) {
+					fflush( $fp );
+					$state['offset'] = ftell( $fp );
+					CSM_Support::atomic_json( $checkpoint, $state );
+					return array(
+						'continue'         => true,
+						'packaged'         => $state['offset'],
+						'components'       => $state['components'],
+						'component_ranges' => ! empty( $state['range_tracking'] ) ? $state['ranges'] : null,
+					); }
+			}
+			fflush( $fp );
+			$state['offset']   = ftell( $fp );
+			$state['complete'] = true;
+			CSM_Support::atomic_json( $checkpoint, $state );
+		} finally {
+			fclose( $fp ); }
+		if ( $done && ! rename( $path . '.part', $path ) ) {
+			throw new RuntimeException( 'Cannot publish source snapshot.' ); }
+		return array(
+			'format'           => 2,
+			'size'             => $state['offset'],
+			'sha256'           => CSM_Support::hash_file( $path ),
+			'components'       => $state['components'],
+			'component_ranges' => ! empty( $state['range_tracking'] ) ? $state['ranges'] : null,
+		);
+	}
 
-    public static function unpack(string $path, array $bundle, bool $continuing = false): bool {
-        CSM_Support::step(8, $continuing);
-        $checkpoint = $path . '.unpack';
-        $state = is_file($checkpoint) ? json_decode(file_get_contents($checkpoint), true, 32, JSON_THROW_ON_ERROR) : ['in'=>0,'out'=>0];
-        if ($state['out']>0 && (!is_file($path.'.raw') || filesize($path.'.raw')<$state['out'])) { throw new RuntimeException('Verified frame checkpoint is missing or truncated.'); }
-        if ($state['in']===$bundle['size']) {
-            if (!empty($state['verified'])) { return true; }
-            if (CSM_Support::due()) { return false; }
-            CSM_Progress::update(['phase'=>'Verifying snapshot checksum','component'=>'','count'=>0,'total'=>$bundle['size'],'unit'=>'bytes','bytes'=>0],true);
-            if (!hash_equals($bundle['sha256'],CSM_Support::hash_file($path,static fn($bytes)=>CSM_Progress::update(['count'=>$bytes,'bytes'=>$bytes])))) { throw new RuntimeException('Completed snapshot checksum mismatch.'); }
-            $state['verified']=true; CSM_Support::atomic_json($checkpoint,$state); return true;
-        }
-        $in = fopen($path, 'rb'); $out = fopen($path . '.raw', 'c+b');
-        if (!$in || !$out || fseek($in, $state['in']) !== 0 || !ftruncate($out, $state['out']) || fseek($out, $state['out']) !== 0) { throw new RuntimeException('Cannot resume frame verification.'); }
-        try {
-            while ($state['in'] < $bundle['size']) {
-                CSM_Support::check_cancel();
-                $header = fread($in, 36);
-                if (strlen($header) !== 36) { throw new RuntimeException('Truncated frame header.'); }
-                $length = unpack('N', substr($header, 0, 4))[1];
-                if ($length < 1 || $length > 300000 || $state['in']+36+$length > $bundle['size']) { throw new RuntimeException('Invalid frame length.'); }
-                $gzip = ''; while (strlen($gzip) < $length) { $part = fread($in, $length-strlen($gzip)); if ($part === false || $part === '') { throw new RuntimeException('Truncated frame.'); } $gzip .= $part; }
-                if (!hash_equals(substr($header,4), self::digest($gzip,true))) { throw new RuntimeException('Frame checksum mismatch.'); }
-                $raw = gzdecode($gzip, 262144);
-                if ($raw === false) { throw new RuntimeException('Invalid compressed frame.'); }
-                CSM_Support::write($out,$raw); $state = ['in'=>ftell($in),'out'=>ftell($out)];
-                CSM_Progress::update(['phase'=>'Verifying snapshot frames','component'=>'','count'=>$state['in'],'total'=>$bundle['size'],'unit'=>'bytes']);
-                if (CSM_Support::due()) { break; }
-            }
-            fflush($out); CSM_Support::atomic_json($checkpoint,$state);
-        } finally { fclose($in); fclose($out); }
-        return $state['in']===$bundle['size'] && !CSM_Support::due() && self::unpack($path,$bundle,true);
-    }
+	public static function unpack( string $path, array $bundle, bool $continuing = false ): bool {
+		CSM_Support::step( 8, $continuing );
+		$checkpoint = $path . '.unpack';
+		$state      = is_file( $checkpoint ) ? json_decode( file_get_contents( $checkpoint ), true, 32, JSON_THROW_ON_ERROR ) : array(
+			'in'  => 0,
+			'out' => 0,
+		);
+		if ( $state['out'] > 0 && ( ! is_file( $path . '.raw' ) || filesize( $path . '.raw' ) < $state['out'] ) ) {
+			throw new RuntimeException( 'Verified frame checkpoint is missing or truncated.' ); }
+		if ( $state['in'] === $bundle['size'] ) {
+			if ( ! empty( $state['verified'] ) ) {
+				return true; }
+			if ( CSM_Support::due() ) {
+				return false; }
+			CSM_Progress::update(
+				array(
+					'phase'     => 'Verifying snapshot checksum',
+					'component' => '',
+					'count'     => 0,
+					'total'     => $bundle['size'],
+					'unit'      => 'bytes',
+					'bytes'     => 0,
+				),
+				true
+			);
+			if ( ! hash_equals(
+				$bundle['sha256'],
+				CSM_Support::hash_file(
+					$path,
+					static fn( $bytes )=>CSM_Progress::update(
+						array(
+							'count' => $bytes,
+							'bytes' => $bytes,
+						)
+					)
+				)
+			) ) {
+				throw new RuntimeException( 'Completed snapshot checksum mismatch.' ); }
+			$state['verified'] = true;
+			CSM_Support::atomic_json( $checkpoint, $state );
+			return true;
+		}
+		$in  = fopen( $path, 'rb' );
+		$out = fopen( $path . '.raw', 'c+b' );
+		if ( ! $in || ! $out || fseek( $in, $state['in'] ) !== 0 || ! ftruncate( $out, $state['out'] ) || fseek( $out, $state['out'] ) !== 0 ) {
+			throw new RuntimeException( 'Cannot resume frame verification.' ); }
+		try {
+			while ( $state['in'] < $bundle['size'] ) {
+				CSM_Support::check_cancel();
+				$header = fread( $in, 36 );
+				if ( strlen( $header ) !== 36 ) {
+					throw new RuntimeException( 'Truncated frame header.' ); }
+				$length = unpack( 'N', substr( $header, 0, 4 ) )[1];
+				if ( $length < 1 || $length > 300000 || $state['in'] + 36 + $length > $bundle['size'] ) {
+					throw new RuntimeException( 'Invalid frame length.' ); }
+				$gzip = '';
+				while ( strlen( $gzip ) < $length ) {
+					$part = fread( $in, $length - strlen( $gzip ) );
+					if ( $part === false || $part === '' ) {
+						throw new RuntimeException( 'Truncated frame.' );
+					} $gzip .= $part; }
+				if ( ! hash_equals( substr( $header, 4 ), self::digest( $gzip, true ) ) ) {
+					throw new RuntimeException( 'Frame checksum mismatch.' ); }
+				$raw = gzdecode( $gzip, 262144 );
+				if ( $raw === false ) {
+					throw new RuntimeException( 'Invalid compressed frame.' ); }
+				CSM_Support::write( $out, $raw );
+				$state = array(
+					'in'  => ftell( $in ),
+					'out' => ftell( $out ),
+				);
+				CSM_Progress::update(
+					array(
+						'phase'     => 'Verifying snapshot frames',
+						'component' => '',
+						'count'     => $state['in'],
+						'total'     => $bundle['size'],
+						'unit'      => 'bytes',
+					)
+				);
+				if ( CSM_Support::due() ) {
+					break; }
+			}
+			fflush( $out );
+			CSM_Support::atomic_json( $checkpoint, $state );
+		} finally {
+			fclose( $in );
+			fclose( $out ); }
+		return $state['in'] === $bundle['size'] && ! CSM_Support::due() && self::unpack( $path, $bundle, true );
+	}
 }

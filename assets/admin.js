@@ -10,6 +10,7 @@
     const bytes = n => n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KiB` : n < 1073741824 ? `${(n / 1048576).toFixed(1)} MiB` : `${(n / 1073741824).toFixed(1)} GiB`;
     const transferMeter = new CSMTransferProgress($('transfer-meter'));
     let transferView = false, diagnosticRoute = null;
+    let migrateVisible = !['settings','diagnostics'].includes(new URLSearchParams(location.search).get('view'));
     const actionHome = $('stage').parentElement;
     const tableSort = {key:'source_bytes', descending:true};
     const componentKinds = ['tables', 'plugins', 'themes', 'media'];
@@ -166,13 +167,13 @@
                 pollNotBefore=Math.max(pollNotBefore,Date.now()+1000*(error.retryAfter || 0));
                 if (!stopped) { $('activity').hidden = false; $('activity').textContent = 'Live progress is unavailable. The transfer may still be running; waiting for its result.'; }
             }
-            if (!stopped) timer = setTimeout(poll, Math.max(3000,pollNotBefore-Date.now()));
+            if (!stopped) timer = setTimeout(poll, Math.max(5000,pollNotBefore-Date.now()));
         };
         const action = transferAction();
         transferMeter.operation?.(op, data.kind);
         $('action-title').textContent = ['commit','transfer'].includes(op) ? (action === 'Push' ? 'Pushing…' : 'Pulling…') : op === 'rollback' ? 'Restoring destination…' : `Preparing ${action.toLowerCase()}…`;
         $('activity').hidden = false; $('activity').textContent = 'Waiting for progress from the server…';
-        timer = setTimeout(poll, 2000);
+        timer = setTimeout(poll, 5000);
         try {
             let result, retries = 0;
             do {
@@ -418,7 +419,7 @@
     }
     function syncTransferDialog() {
         const dialog = $('transfer-dialog');
-        const active = transferView || !!session || !$('completion').hidden;
+        const active = migrateVisible && (transferView || !!session || !$('completion').hidden);
         $('close-transfer').hidden = busy || !!session;
         $('completion-elapsed').hidden = $('transfer-meter').hidden || !$('completion-elapsed').textContent;
         if (active && !dialog.open) {
@@ -432,7 +433,7 @@
             actionHome.prepend($('stage'));
             dialog.close();
             document.body.classList.remove('csm-transfer-open');
-            ($('stage').disabled ? $('enable-tables') : $('stage')).focus({preventScroll:true});
+            if (migrateVisible) ($('stage').disabled ? $('enable-tables') : $('stage')).focus({preventScroll:true});
         }
     }
     function closeTransferView() {
@@ -562,11 +563,11 @@
     }
     let estimateTimer=null, estimateGeneration=0;
     async function loadEstimates(generation=++estimateGeneration) {
-        if (!presetsAvailable() || session || generation!==estimateGeneration) return;
+        if (!migrateVisible || !presetsAvailable() || session || generation!==estimateGeneration) return;
         const site=$('remote-site').value;
         try {
             const result=await api('estimates',{site});
-            if (session || generation!==estimateGeneration || site!==$('remote-site').value) return;
+            if (!migrateVisible || session || generation!==estimateGeneration || site!==$('remote-site').value) return;
             for (const key of ['local','remote']) { sites[key].estimates=result[key]; }
             renderComponentSizes();
             if (!result.local.complete || result.local.refreshing || !result.remote.complete || result.remote.refreshing) estimateTimer=setTimeout(()=>loadEstimates(generation),3000);
@@ -690,7 +691,7 @@
         await comparisonPromise.catch(()=>{});
     }
     function startComparisons() {
-        if(!presetsAvailable() || session || busy || transferView || sites.local.bounded_work!==2 || sites.remote.bounded_work!==2 || !sites.local.metadata_compare || !sites.remote.metadata_compare)return;
+        if(!migrateVisible || !presetsAvailable() || session || busy || transferView || sites.local.bounded_work!==2 || sites.remote.bounded_work!==2 || !sites.local.metadata_compare || !sites.remote.metadata_compare)return;
         if(!comparisonState || comparisonState.generation!==comparisonGeneration || comparisonState.inventory!==sites || comparisonState.direction!==direction()) {
             comparisonState={generation:comparisonGeneration,inventory:sites,direction:direction(),site:$('remote-site').value,id:crypto.randomUUID().replaceAll('-',''),done:new Set(),failed:new Set(),running:false};
         }
@@ -914,8 +915,8 @@
         if (session) {
             $('direction').value = session.direction;
             summary = await api('status', {id:session.id});
-            labelRoute();
-            $('workspace').hidden = false; $('source').textContent = session.source; $('destination').textContent = session.destination;
+            $('workspace').hidden = false;
+            renderEndpoints();
             if (['applied','restored'].includes(summary.status)) { const route = {...session}; await finishTransfer(summary, route); return; }
             if (['applying','restoring'].includes(summary.status)) { summary = await transferRequest('recover', {id:session.id}); const route = {...session}; await finishTransfer(summary, route); return; }
             showSummary();
@@ -1162,6 +1163,7 @@
     }));
     async function installLocalBuild() {
         if (!sites?.remote.remote_build_update || !sites.remote.can_update_trickle || session) return;
+        await pauseComparisons();
         $('site-menu').open=false;feedback('Syncing remote Trickle…');
         try { await api('update_remote',{site:$('remote-site').value}); }
         catch(error) {
@@ -1201,6 +1203,7 @@
         if (sites?.remote.remote_build_update) { await installLocalBuild(); return; }
         if (!remoteUpdate?.can_update_to_target) return;
         if (!confirm(`Update Trickle on ${sites.remote.url} from ${sites.remote.plugin_version} to ${sites.local.plugin_version}? This updates the migration plugin before any transfer begins.`)) return;
+        await pauseComparisons();
         feedback('Updating remote Trickle through its configured JSON feed…');
         await api('update_remote', {site:$('remote-site').value});
         await load(true); feedback('Remote Trickle updated. Versions match; choose what to transfer.');
@@ -1242,18 +1245,24 @@
         $('direction').value=direction()==='pull'?'push':'pull';$('direction').dispatchEvent(new Event('change'));
     });
     $('direction').addEventListener('change', () => { try{localStorage.setItem('trickle-last-direction',direction());}catch{} invalidateComparisons();presetRequest++;presetLoading=false;presetChosen=false;activePreset='';$('media-mode').value='none';$('replace').checked=true;$('recent').value='';if(sites)render();else{renderPresetChoices();renderEndpoints();updateSetup();}renderRecentMigrations();startComparisons(); });
-    let savedTransferSettings = {transport:$('transport').value};
-    for (const id of ['transport']) $(id).addEventListener('change', () => run(async () => {
+    const transferPreferences=()=>({transport:$('transport').value,request_interval:Number($('request-interval').value),setup_request_interval:Number($('setup-request-interval').value)});
+    let savedTransferSettings = transferPreferences();
+    for (const [id,key] of [['transport','transport'],['request-interval','request_interval'],['setup-request-interval','setup_request_interval']]) $(id).addEventListener('change', () => {
+        if (!$(id).reportValidity()) return;
+        const value=key==='transport'?$(id).value:Number($(id).value);
+        run(async () => {
         $('transfer-settings-status').textContent = 'Saving…';
         try {
-            savedTransferSettings = await api('transfer_settings', {transport:$('transport').value});
+            const saved=await api('transfer_settings', {[key]:value});
+            savedTransferSettings[key]=saved[key];
             $('transfer-settings-status').textContent = 'Saved.';
         } catch (error) {
-            $('transport').value = savedTransferSettings.transport;
+            $(id).value = savedTransferSettings[key];
             $('transfer-settings-status').textContent = 'Save failed. Previous preferences restored.';
             throw error;
         }
-    }));
+        });
+    });
     for (const id of ['transport', 'ignore-active-plugins']) $(id).addEventListener('change', () => { $('recent').value = ''; });
     $('media-mode').addEventListener('change', () => { mediaAnchor = null; renderMedia(); });
     for (const kind of ['plugins','themes']) $(kind + '-force')?.addEventListener('change', () => { $('recent').value = ''; updateSelection(); });
@@ -1489,21 +1498,32 @@
         link.href = url; link.download = `trickle-diagnostics-${new Date().toISOString().slice(0,10)}.json`;
         document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     }));
+    window.addEventListener('trickle:viewchange',event=>{
+        migrateVisible=event.detail.view==='migrate';
+        syncTransferDialog();
+        if(!migrateVisible){clearTimeout(estimateTimer);pauseComparisons();return;}
+        if(session && !sites && !inventoryLoading && !busy)run(()=>load());
+        else if(!sites && !inventoryLoading && connectionState.selected && !session)startInventoryLoad();
+        else if(!session){
+            startComparisons();
+            if(sites && !inventoryLoading && (!sites.local.estimates?.complete || !sites.remote.estimates?.complete || sites.local.estimates?.refreshing || sites.remote.estimates?.refreshing))loadEstimates();
+        }
+    });
     $('direction').value = session?.direction || (()=>{try{return localStorage.getItem('trickle-last-direction');}catch{return null;}})() || connectionState.recents.find(item => ['push','pull'].includes(item.direction))?.direction || 'pull';
-    renderConnections(connectionState);renderPresetChoices();updateSelection();
+    renderConnections(connectionState);renderPresetChoices();lockSelection();updateSelection();
     if (CSM.state.recovery_error) { fail(new Error(`Recovery needs attention: ${CSM.state.recovery_error}. The site remains protected. Check Diagnostics, then retry recovery.`)); const retry=document.createElement('button'); retry.type='button'; retry.className='button'; retry.textContent='Retry recovery'; retry.addEventListener('click',()=>run(async()=>{ let result; do { result=await api('recover_destination'); } while (result.continue); location.reload(); })); ($('error').querySelector('.csm-error-actions') || $('error')).append(retry); }
     else if (CSM.state.destination_recovery) run(async () => {
         feedback('Recovering…'); let result; do { result=await api('recover_destination'); } while (result.continue);
         if (connectionState.selected || session) await load();
         else feedback('Destination restored.');
     });
-    else if(session)run(()=>load());
-    else if(connectionState.selected)startInventoryLoad();
+    else if(session && migrateVisible)run(()=>load());
+    else if(connectionState.selected && migrateVisible)startInventoryLoad();
     setInterval(() => transferMeter.render(), 1000);
-    setInterval(() => { if (!busy && session?.automatic && Date.now() >= (session.retryAt || 0) && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
+    setInterval(() => { if (migrateVisible && !busy && session?.automatic && Date.now() >= (session.retryAt || 0) && versionsMatch() && transferVersionMatches()) run(migrate); }, 15000);
     let checkingProgress = false;
     setInterval(async () => {
-        if (busy || checkingProgress || !session || summary?.progress?.state !== 'running') return;
+        if (!migrateVisible || busy || checkingProgress || !session || summary?.progress?.state !== 'running') return;
         checkingProgress = true;
         const id = session.id;
         try {

@@ -30,9 +30,9 @@ const tick=()=>new Promise(setImmediate);
  assert.equal((await success.c.CSMRequest('state')).answer,42);assert.equal(success.c.CSM.nonce,'fixture','Transport cannot mutate nonce before cancellation guards');assert.equal(success.timers.size,0);
  const failure=setup(async()=>({status:400,text:async()=>JSON.stringify({ok:false,error:'Busy',busy:true,retryable:true,retry_exhausted:true,retry_after:3})}));
  await assert.rejects(failure.c.CSMRequest('restore_backup'),e=>e.busy&&e.retryable&&e.retryExhausted&&e.retryAfter===3);
- for(const [body,header,expected]of[['firewall','60',60],[JSON.stringify({ok:false,error:'Limited'}),'45',45],['firewall',null,30],['firewall','invalid',30],[JSON.stringify({ok:false,error:'Limited',retry_after:90}),'45',90]]){
-  const limited=setup(async()=>({status:429,headers:{get:()=>header},text:async()=>body}));
-  await assert.rejects(limited.c.CSMRequest('compare_component'),e=>e.retryable&&e.retryAfter===expected);
+ for(const status of [429,430])for(const [body,header,expected]of[['firewall','60',60],[JSON.stringify({ok:false,error:'Limited'}),'45',45],['firewall',null,30],['firewall','invalid',30],[JSON.stringify({ok:false,error:'Limited',retry_after:90}),'45',90]]){
+  const limited=setup(async()=>({status,headers:{get:()=>header},text:async()=>body}));
+  await assert.rejects(limited.c.CSMRequest('compare_component'),e=>e.retryable&&e.retryExhausted&&e.retryAfter===expected);
  }
  console.log('PASS Request deadlines cover headers and bodies; Backups unlocks on timeout; nonce ownership and retry flags are preserved.');
 })().catch(error=>{console.error(error);process.exit(1);});

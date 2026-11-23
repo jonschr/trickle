@@ -6,9 +6,11 @@ const local={bounded_work:2,media_compare:1,metadata_compare:1,plugins:[{id:'one
 const pending=[],inputs=[{value:'one',checked:true},{value:'two',checked:false}],waits=[];let active=0,maxActive=0;
 const c={$,AbortController,presetsAvailable:()=>true,sites:{local,remote},session:null,busy:false,transferView:false,inventoryLoading:false,inventoryError:'',presetChosen:false,comparisonGeneration:0,comparisonState:null,comparisonPromise:Promise.resolve(),direction:()=> 'push',crypto:{randomUUID:()=> 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'},components(){},lockSelection(){},updateSelection(){},document:{querySelectorAll:s=>s.includes('plugins')?inputs.filter(i=>!s.includes(':checked')||i.checked):[]},api(op,data,generation,controller){active++;maxActive=Math.max(maxActive,active);let settled=false;return new Promise((resolve,reject)=>{const finish=(fn,value)=>{if(!settled){settled=true;active--;fn(value);}};controller.signal.addEventListener('abort',()=>finish(reject,Error('Aborted')));pending.push({op,data,controller,resolve:v=>finish(resolve,v),reject:e=>finish(reject,e)});});}};
 c.setTimeout=(fn,ms)=>{waits.push(ms);Promise.resolve().then(fn);return 1;};c.clearTimeout=()=>{};
+c.migrateVisible=true;
 vm.createContext(c);vm.runInContext(code.slice(code.indexOf('    function comparisonRelevant('),code.indexOf('    function renderConnections(')),c);
 const tick=async()=>{for(let i=0;i<20;i++)await Promise.resolve();};
 (async()=>{
+ c.migrateVisible=false;c.startComparisons();await tick();assert.equal(pending.length,0,'Hidden migration selection does not issue background peer calls');c.migrateVisible=true;
  c.presetsAvailable=()=>false;c.startComparisons();await tick();assert.equal(pending.length,0,'Endpoint errors and version conflicts block background requests');c.presetsAvailable=()=>true;
  remote.metadata_compare=0;c.startComparisons();await tick();assert.equal(pending.length,0,'Old hash-comparison peers receive no background file requests');remote.metadata_compare=1;
  c.startComparisons();c.startComparisons();await tick();assert.equal(pending.length,1,'Only one worker may run');assert.equal(pending[0].data.component,'one','Metadata comparisons start before a preset is chosen');

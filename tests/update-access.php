@@ -8,12 +8,13 @@ require __DIR__.'/../includes/access.php';require __DIR__.'/../includes/updates.
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 foreach([[],['pull'=>false,'push'=>false],['pull'=>false,'push'=>false,'updates'=>false]] as $settings){
     foreach([['master'=>true,'read'=>true,'write'=>true],['read'=>true,'write'=>true],['read'=>false,'write'=>true]] as $key){
-        foreach(['version','update_info','build_info','update_trickle','update_trickle_build'] as $action)CSM_Access::authorize($key,$action);
+        foreach(['version','update_info','build_info','update_trickle','update_trickle_build','update_trickle_zip'] as $action)CSM_Access::authorize($key,$action);
         $cap=CSM_Updates::capabilities();check($cap['remote_updates_allowed']&&$cap['can_update_trickle'],'Write credential permits updates without the old toggle or migration permissions');
     }
     $read=['read'=>true,'write'=>false];$denied=false;try{CSM_Access::authorize($read,'update_trickle');}catch(RuntimeException $e){$denied=$e->getCode()===403;}
     check($denied,'Read-only credential cannot install code');
     $denied=false;try{CSM_Access::authorize($read,'update_trickle_build');}catch(RuntimeException $e){$denied=$e->getCode()===403;}check($denied,'Read-only credential cannot install a local build');
+    $denied=false;try{CSM_Access::authorize($read,'update_trickle_zip');}catch(RuntimeException $e){$denied=$e->getCode()===403;}check($denied,'Read-only credential cannot install a binary ZIP');
     $GLOBALS['_csm_credential']=$read;check(!CSM_Updates::capabilities()['can_update_trickle'],'Read-only inventory does not advertise update capability');
 }
 $settings=['pull'=>false,'push'=>false];$denied=false;try{CSM_Access::authorize(['read'=>true,'write'=>true],'prepare');}catch(RuntimeException $e){$denied=$e->getCode()===403;}

@@ -13,13 +13,13 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PHP_FIXTURES = """
 activation-missing activation-redirect ajax-diagnostics change-backups
-commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
-deferred-cleanup diagnostic-report directory-replacement force-retransfer
+commit-authentication commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
+database-prefix deferred-cleanup diagnostic-report directory-replacement force-retransfer
 file-digest framed-package http-auth http-auth-connections live-access live-checkpoints live-stream media-publication installed-verification loader-endpoint loader-maintenance loader-refresh
-package-digest performance performance-timing prepare-policy private-storage progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
+package-digest performance performance-timing post-cron prepare-policy private-storage request-pacing progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
 setup-hash-reuse site-names source-budget source-symlinks symlink-inventory
 timeline-estimates transfer-checkpoints transfer-fast-path transfer-settings
-ui-presets update-access verification-progress
+ui-presets update-access update-authentication verification-progress
 """.split()
 
 

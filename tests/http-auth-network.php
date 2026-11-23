@@ -1,14 +1,14 @@
 <?php
 // Used only by http-auth-network.py against its disposable loopback HTTP server.
 define('ABSPATH','/fixture/');define('WPINC','wp-includes');define('CSM_VERSION','fixture');
-function apply_filters($name,$value,...$args){return $name==='csm_ca_bundle'?'':$value;}
+function apply_filters($name,$value,...$args){return $name==='csm_ca_bundle'?'':($name==='csm_request_interval'?.01:($name==='csm_setup_request_interval'?0:$value));}
 function wp_parse_url($url,$component=-1){return parse_url($url,$component);}
 function add_query_arg($key,$value,$url){return $url.'?'.urlencode($key).'='.urlencode($value);}
 $options=[];function get_option($key,$default=false){return $GLOBALS['options'][$key]??$default;}
 function update_option($key,$value,$autoload=false){$GLOBALS['options'][$key]=$value;}
 function do_action(...$args){}
 class CSM_Log{static function secret($v){}static function write(...$args){}static function clean($v){return $v;}}
-class CSM_Support{static function json($v){return json_encode($v);}static function check_cancel(){$GLOBALS['cancel_checks']=($GLOBALS['cancel_checks']??0)+1;if(!empty($GLOBALS['cancel_fixture']))throw new RuntimeException('Cancelled fixture');}}
+class CSM_Support{static function private_dir(){return $GLOBALS['argv'][2];}static function json($v){return json_encode($v);}static function check_cancel(){$GLOBALS['cancel_checks']=($GLOBALS['cancel_checks']??0)+1;if(!empty($GLOBALS['cancel_fixture']))throw new RuntimeException('Cancelled fixture');}}
 class CSM_Access{static function id($key){return substr(hash('sha256',$key),0,16);}}
 class CSM_Progress{static function update(...$args){}}
 require __DIR__.'/../includes/transport.php';
@@ -37,7 +37,7 @@ $redirect=$peer;$redirect['url'].='/redirect';$rejected=false;
 try{CSM_Transport::request($redirect,'manifest');}catch(RuntimeException $e){$rejected=str_contains($e->getMessage(),'HTTP 302');}
 check($rejected,'Redirects cannot forward Basic Auth credentials');
 
-$paused=false;try{CSM_Transport::request($peer,'progress');}catch(CSM_Network_Error $e){$paused=$e->retry_after===60;}
+usleep(20000);$paused=false;try{CSM_Transport::request($peer,'progress');}catch(CSM_Network_Error $e){$paused=$e->retry_after===60;}
 check($paused,'Service-unavailable Retry-After is retained for the affected endpoint');
 check(CSM_Transport::request($peer,'manifest')['received']===2,'A paused progress endpoint does not block transfer or cleanup endpoints');
 $paused=false;try{CSM_Transport::request($peer,'progress');}catch(CSM_Network_Error $e){$paused=$e->retry_after>0;}

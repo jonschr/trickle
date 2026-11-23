@@ -1,0 +1,14 @@
+const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
+const code=fs.readFileSync(__dirname+'/../assets/admin.js','utf8');let viewChange,loads=0,comparisons=0,estimates=0,pauses=0;
+let retainedLoads=0;
+const c={window:{addEventListener(name,fn){assert.equal(name,'trickle:viewchange');viewChange=fn;}},migrateVisible:false,sites:null,session:null,busy:false,inventoryLoading:false,connectionState:{selected:'peer'},estimateTimer:null,clearTimeout(){},syncTransferDialog(){},run(fn){c.busy=true;fn();},load(){retainedLoads++;},pauseComparisons(){pauses++;},startInventoryLoad(){loads++;c.inventoryLoading=true;},startComparisons(){comparisons++;},loadEstimates(){estimates++;}};
+vm.createContext(c);const start=code.indexOf("    window.addEventListener('trickle:viewchange'");vm.runInContext(code.slice(start,code.indexOf("    $('direction').value = session",start)),c);
+viewChange({detail:{view:'settings'}});viewChange({detail:{view:'diagnostics'}});assert.equal(loads,0);assert.equal(comparisons,0);assert.equal(estimates,0);assert.equal(pauses,2);
+viewChange({detail:{view:'migrate'}});assert.equal(loads,1);assert.equal(c.migrateVisible,true);
+viewChange({detail:{view:'migrate'}});assert.equal(loads,1,'An inventory already loading is not requested again');
+c.sites={local:{},remote:{}};c.inventoryLoading=false;viewChange({detail:{view:'migrate'}});assert.equal(loads,1);assert.equal(estimates,1,'Returning to populated selection resumes background data');
+c.sites.local.estimates={complete:true};c.sites.remote.estimates={complete:true};viewChange({detail:{view:'migrate'}});assert.equal(estimates,1,'Complete estimates need no additional peer request');
+c.session={id:'retained'};viewChange({detail:{view:'settings'}});viewChange({detail:{view:'migrate'}});assert.equal(loads,1,'View changes do not start a second active transfer');
+c.sites=null;viewChange({detail:{view:'settings'}});assert.equal(retainedLoads,0,'Settings does not resume a retained job');
+viewChange({detail:{view:'migrate'}});viewChange({detail:{view:'migrate'}});assert.equal(retainedLoads,1,'Returning to Migrate loads a retained job only once');
+console.log('PASS Settings/Diagnostics defer peer discovery; Migrate loads once and resumes existing selection');

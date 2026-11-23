@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Exercise real native cURL Basic Auth, health, uploads, downloads and redirects locally."""
-import base64,json,subprocess,threading,time,sys
+import base64,json,subprocess,threading,time,sys,tempfile
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 seen=[]
@@ -31,7 +31,8 @@ server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
 thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
 try:
  php=['php']+(['-d','disable_functions=curl_multi_init']if'--no-multi'in sys.argv else[])
- result=subprocess.run(php+[str(Path(__file__).with_suffix('.php')),f'http://127.0.0.1:{server.server_port}'],capture_output=True,text=True)
+ with tempfile.TemporaryDirectory(prefix='test-trickle-http-auth-') as storage:
+  result=subprocess.run(php+[str(Path(__file__).with_suffix('.php')),f'http://127.0.0.1:{server.server_port}',storage],capture_output=True,text=True)
  print(result.stdout,end='');print(result.stderr,end='')
  if result.returncode:raise SystemExit(result.returncode)
  assert len(seen)==12 and not any(x[0].startswith('/leak') for x in seen),seen

@@ -30,6 +30,7 @@ function wp_salt($scheme){return 'isolated-test-salt';}
 function add_filter($k,$fn,$priority){$GLOBALS['filters'][$k][]=$fn;}
 $_GET=$scenario['get']??[];$_POST=$scenario['post']??[];$_REQUEST=$scenario['request']??array_merge($_GET,$_POST);
 $_SERVER['SCRIPT_FILENAME']=$wp.'/'.($scenario['script']??'wp-login.php');
+$_SERVER['REQUEST_URI']='/'.($scenario['script']??'wp-login.php');
 $_SERVER['REQUEST_METHOD']=$scenario['method']??'GET';$_SERVER['DOCUMENT_ROOT']=dirname($wp);
 require $repo.'/includes/support.php';require $repo.'/includes/access.php';require $repo.'/includes/transport.php';
 if (isset($scenario['signed'])) {

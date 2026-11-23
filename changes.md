@@ -1,6 +1,12 @@
 # Changes
 
-## Unreleased
+## 0.1.37 — 2026-11-23
+
+- Pace all peer requests through a host-wide serial scheduler, including health checks and progress polls. Default to no enforced quiet gap for pushes and pulls, with an optional configurable interval and five-second polling; retain HTTP 429/430 cooldowns across workers without immediate retries. Include initial checkpoints in prepare and verify compatible push builds inside commit to reduce setup requests.
+- Add global Settings controls for startup/update spacing (default 0.5 seconds) and optional quiet time after every request (default 0), shared by pushes, pulls and Trickle updates. Combine update readiness with version checks and send signed binary ZIPs to compatible receivers, retaining older JSON compatibility and installed-build verification.
+- Limit database-prefix changes to WordPress's role option and per-site usermeta keys. Preserve plugin option names and post metadata to prevent collisions when pulling between different database prefixes.
+- When replacing posts, remove stale WordPress ZIP-cleanup and publication events and rebuild future-post schedules from the imported posts. Preserve unrelated destination cron jobs and restore original post schedules during recovery or backup restoration.
+- Allow global request spacing to be changed while a transfer is retained. Settings and Diagnostics leave retained jobs paused; returning to Migrate preserves the saved-site menu and resumes the existing job view.
 
 - Reuse one request-local receiving file handle across live frames, flushing and closing before checkpoint persistence and at file completion. Preserve bounded replay, path checks and installed verification.
 - Accept concurrently created private staging directories while retaining path and permission checks, preventing a WordPress startup failure after hosting restores or restarts.
@@ -11,6 +17,8 @@
 - Accelerate bounded small-file source and verification SHA-256 through the existing optional provider; retain the streaming path for larger files and exact checksum fallback.
 - Compare plugins, themes and media by file size and modification time, including cold inventories. Remove pre-transfer content hashing and rehash preferences.
 - Keep stream checksums, private database/code staging, recovery and installed-file verification. Establish skipped component recovery checksums after receipt.
+
+Validation: 100 isolated/core checks and real loopback authentication, pacing, cancellation and cooldown checks passed on the reviewed candidate. Medium/full push and pull round trips on Flywheel and SiteDistrict independently matched selected files and nine normalized content tables on earlier working builds; the final formatted candidate passed local full-size push/pull and backup restoration checks. Hosted timings do not describe this exact release package. Full WordPress coding standards compliance and final 1.0 validation remain outstanding; this is a 0.1.x release.
 
 ## 0.1.36 — 2026-11-21
 - Cache the validated cancellation-marker path within a request while checking marker existence and ownership at every existing cancellation boundary.

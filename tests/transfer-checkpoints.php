@@ -44,3 +44,8 @@ foreach(['sha256'=>str_repeat('c',64),'offset'=>41,'size'=>41]as$key=>$value){
 $control=['id'=>str_repeat('d',32),'created'=>microtime(true),'direction'=>'pull','selection'=>['media'=>'all','transport'=>'stream'],'peer'=>['url'=>'https://remote.fixture'],'exports'=>['files'=>['media'=>'all']]];
 $calls=[];$r=advance($control);check($calls===['bundle']&&$r['continue']===true,'Large source packaging completes without starting a download in the same request');
 $control=$options['_csm_control'];$calls=[];advance($control);check($calls===['download'],'The next request downloads the saved bundle instead of rebuilding it');
+$control=['id'=>str_repeat('e',32),'created'=>microtime(true),'direction'=>'push','selection'=>['media'=>'none','transport'=>'stream'],'peer'=>[],'bundles'=>['files'=>$bundle],'initial_checkpoints'=>['files'=>['offset'=>0]]];
+$offset=0;$calls=[];advance($control);$next=$options['_csm_control'];
+check($calls===['stream_data']&&!isset($next['initial_checkpoints']['files']),'A fresh prepare receipt supplies the first snapshot offset without discovery');
+$control['checkpoint_pending']['files']=true;$calls=[];advance($control);
+check($calls===['segment_state','stream_data'],'An uncertain snapshot upload discovers accepted bytes even with an initial receipt');

@@ -13,6 +13,7 @@
             if(active)link.setAttribute('aria-current','page');else link.removeAttribute('aria-current');
         });
         if(navigate)history.pushState(null,'',links.find(link=>link.dataset.csmTab===view).href);
+        window.dispatchEvent(new CustomEvent('trickle:viewchange',{detail:{view}}));
         if(view==='diagnostics'){
             const logs=document.getElementById('csm-diagnostics');
             logs.open=true;logs.dispatchEvent(new Event('toggle'));

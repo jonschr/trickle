@@ -34,7 +34,7 @@ function context(options={}) {
 }
 (async()=>{
  let releasePoll;let x=context({handler(op){if(op==='transfer')return new Promise(resolve=>releasePoll=resolve);if(op==='progress')return {poll_retry_after:20};}});
- const pending=x.c.transferRequest('transfer',{id:'paced'});assert.equal(x.timers[0].ms,2000,'Fast operations finish before progress polling starts');
+ const pending=x.c.transferRequest('transfer',{id:'paced'});assert.equal(x.timers[0].ms,5000,'Fast operations finish before progress polling starts');
  await x.timers[0].fn();assert(x.timers.at(-1).ms>=19000,'Progress polling honors remote cooldowns');releasePoll({status:'staging',pending:[]});await pending;
  x=context({handler(op){if(op==='commit')throw Object.assign(Error('Rate limited'),{retryAfter:30,retryable:true});}});
  await assert.rejects(x.c.transferRequest('commit',{id:'limited'}),e=>e.pending);assert.deepEqual(x.calls,['commit'],'Cooldown does not trigger immediate status or recovery traffic');

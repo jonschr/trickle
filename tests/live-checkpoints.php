@@ -46,3 +46,8 @@ foreach(['selection'=>str_repeat('f',64),'seq'=>-1,'bytes'=>-1,'offset'=>-1,'don
 $remote['offset']=17;$bad=$control;$bad['live_pending']=true;$calls=[];$control=advance($bad);
 check($calls===['live_state','live_receive']&&$control['live_checkpoint']['offset']===17,'Discovered partial-frame offsets survive acknowledgement reuse');
 $calls=[];$control=advance($control);check($calls===['live_receive'],'An acknowledged partial offset does not require another discovery');
+$fresh=$control;unset($fresh['live_checkpoint'],$fresh['live_pending']);$fresh['initial_checkpoints']=['files'=>['offset'=>0]];
+$remote=['seq'=>0,'bytes'=>0,'chain'=>'','done'=>false,'selection'=>hash('sha256',json_encode($selection))];$calls=[];
+$control=advance($fresh);check($calls===['live_receive']&&!isset($control['initial_checkpoints']['files']),'A fresh prepare receipt supplies the first live checkpoint without discovery');
+$fresh['live_pending']=true;$calls=[];advance($fresh);
+check($calls===['live_state','live_receive'],'An uncertain first upload never reuses the initial prepare receipt');

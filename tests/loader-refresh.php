@@ -1,7 +1,7 @@
 <?php
 // Real boot and generated loader, entirely inside an isolated temporary directory.
 define('ABSPATH', '/fixture/'); define('CSM_FILE', dirname(__DIR__).'/trickle.php');
-preg_match("/define\\('CSM_VERSION', '([^']+)'\\)/",file_get_contents(CSM_FILE),$match);define('CSM_VERSION',$match[1]);
+preg_match("/define\\(\\s*'CSM_VERSION'\\s*,\\s*'([^']+)'\\s*\\)/",file_get_contents(CSM_FILE),$match);define('CSM_VERSION',$match[1]);
 define('WPMU_PLUGIN_DIR',sys_get_temp_dir().'/trickle-loader-refresh-'.bin2hex(random_bytes(6)));
 $options=['_csm_key'=>'fixture-key'];$allowed=true;
 function get_option($key,$default=false){return $GLOBALS['options'][$key]??$default;}

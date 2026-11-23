@@ -376,6 +376,7 @@
 .csm-settings-transfer h3 { margin:var(--csm-space-6) 0 var(--csm-space-2); font-size:var(--csm-text-body); }
 .csm-settings-transfer .csm-note { max-width:80ch; }
 .csm-settings-transfer #csm-transport { display:block; margin:var(--csm-space-1) 0; }
+.csm-settings-transfer input[type="number"] { display:block; margin:var(--csm-space-1) 0; }
 .csm-tabs { display:flex; flex-wrap:wrap; gap:var(--csm-space-1); }
 .csm-tabs .nav-tab { margin-left:0; }
 

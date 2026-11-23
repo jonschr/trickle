@@ -28,5 +28,11 @@ async function assertBlocked(){
  const synced=c.load();requests[4].resolve(inventory('synced'));await synced;assert.equal(c.presetsAvailable(),true,'Successful sync/reload restores preset access');assert.equal($('inventory-retry').hidden,true);
  const pendingLabel=c.load();c.connectionRevision++;c.connectionSnapshot={label:'new'};requests[5].resolve({...inventory('label-load'),state:{label:'old'}});await pendingLabel;assert.equal(c.connectionSnapshot.label,'new','Late inventory cannot overwrite locally edited connection metadata');
  c.session={plugin_version:'old'};assert.equal(c.presetsAvailable(),false,'Retained transfer version conflicts remain gated');
+ let menuPresent=true;
+ for(const id of ['source','destination'])Object.defineProperty($(id),'textContent',{set(){menuPresent=false;}});
+ c.labelRoute=()=>{};c.renderEndpoints=c.showSummary=()=>assert(menuPresent,'Reloading a retained transfer must preserve its nested saved-site menu');
+ c.session={id:'retained',direction:'push',selection:{},automatic:false};
+ c.api=async op=>op==='status'?{id:'retained',status:'staging'}:inventory('retained');
+ await c.load();assert(menuPresent,'Retained transfer can load its inventory without deleting route controls');
  console.log('PASS Preset validation gate, version/build conflicts, stale-site replies, endpoint retry and successful sync recovery.');
 })().catch(e=>{console.error(e);process.exitCode=1;});
