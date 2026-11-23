@@ -313,6 +313,7 @@ final class CSM_Plugin {
                 foreach ($job['database'] as $table) { CSM_Support::query('DROP TABLE IF EXISTS ' . CSM_Support::ident($table['stage'])); }
                 CSM_Database::stage($fp, $job);
             } else {
+                CSM_Files::cleanup_media_parts($job);
                 CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id']);
                 CSM_Files::stage($fp, $job);
             }
@@ -669,15 +670,19 @@ final class CSM_Plugin {
                 CSM_Progress::update(['phase' => isset($new[$relative]) ? 'Replacing file' : 'Removing obsolete file', 'component' => $relative, 'count' => $completed, 'total' => count($paths), 'unit' => 'files']);
                 if (isset($new[$relative])) {
                     $file = $new[$relative];
-                    $done = self::install_file_step($file['stage'], $target, $file['mtime'], $file['mode'], $work['install'], static function($state) use ($cursor_path, &$work) {
-                        CSM_Support::atomic_json($cursor_path, ['cursor'=>$work['cursor'], 'install'=>$state]);
-                    });
-                    if (!$done) {
-                        CSM_Support::atomic_json($cursor_path, ['cursor'=>$work['cursor'], 'install'=>$work['install']]);
-                        CSM_Jobs::save($job);
-                        return false;
+                    if (!empty($file['media_part'])) {
+                        CSM_Files::publish_media($job,$file,$target);
+                    } else {
+                        $done = self::install_file_step($file['stage'], $target, $file['mtime'], $file['mode'], $work['install'], static function($state) use ($cursor_path, &$work) {
+                            CSM_Support::atomic_json($cursor_path, ['cursor'=>$work['cursor'], 'install'=>$state]);
+                        });
+                        if (!$done) {
+                            CSM_Support::atomic_json($cursor_path, ['cursor'=>$work['cursor'], 'install'=>$work['install']]);
+                            CSM_Jobs::save($job);
+                            return false;
+                        }
+                        unset($work['install']);
                     }
-                    unset($work['install']);
                 } elseif (is_file($target) && !unlink($target)) {
                     throw new RuntimeException('Could not remove obsolete file.');
                 }
@@ -890,6 +895,7 @@ final class CSM_Plugin {
         $authentication = self::retain_controller($actor, $job, $authenticated_session ?: null);
         if (!self::restore_files($job, $ops)) { return self::summary($job) + ['continue'=>true] + $authentication; }
         CSM_Activation::restore($job);
+        CSM_Files::cleanup_media_parts($job);
         self::end_maintenance($job['id']);
         wp_clear_scheduled_hook('trickle_recover', [$job['id']]);
         $job['status'] = 'restored'; CSM_Jobs::save($job); CSM_Backups::forget($job['id']);
@@ -930,6 +936,7 @@ final class CSM_Plugin {
     public static function discard(array $job): void {
         if ((get_option('_csm_backup_restore', [])['backup_id'] ?? '') === $job['id']) { throw new RuntimeException('Recovery is using this backup. It cannot be discarded yet.'); }
         if (in_array($job['status'], ['applying', 'backup_copy', 'restoring'], true)) { throw new RuntimeException('Recovery is in progress. Its backup cannot be discarded.'); }
+        CSM_Files::cleanup_media_parts($job);
         CSM_Segments::cleanup($job['id']);
         CSM_Database::drop_private_tables(array_merge(array_column($job['database'], 'stage'), array_column($job['database'], 'backup')));
         CSM_Support::remove_tree(CSM_Support::private_dir() . '/' . $job['id']);

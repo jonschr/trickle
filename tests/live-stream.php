@@ -11,6 +11,7 @@ function wp_get_theme($id){return new class{function get($key){return '';}functi
 function plugin_basename($p){return 'trickle/trickle.php';}function get_option($key,$default=false){return $default;}
 function get_plugins(){return ['demo/main.php'=>['Name'=>'Demo','Version'=>'1','PluginURI'=>'']];}function get_site_transient($name){return false;}function get_template(){return 'default';}function get_stylesheet(){return 'default';}function esc_url_raw($url,...$args){return $url;}
 function get_theme_roots(){return [];}function wp_get_themes(){return [];}
+function wp_is_file_mod_allowed($context){return true;}
 class CSM_Activation {static function current(){return [];}static function source(&$job,$header){}}
 class CSM_Progress {static function update(...$args){CSM_Support::check_cancel();if(!empty($GLOBALS['slowSmall'])&&($args[0]['phase']??'')==='Packaging file'&&($args[0]['component']??'')==='plugins/demo/fast.bin'&&($args[0]['bytes']??0)===262144){$GLOBALS['slowSmall']=false;usleep(20000);}}static function read($id){return [];}static function run(){return 'fixture';}}
 class CSM_Jobs {static function save($job){$GLOBALS['saved'][$job['id']]=json_decode(json_encode($job),true);}}
@@ -26,6 +27,14 @@ function selection(){return ['plugins'=>['demo'],'themes'=>[],'tables'=>[],'medi
 function window($id,$selection,$seq){return implode('',iterator_to_array(CSM_Live_Stream::source($id,$selection,$seq)));}
 function deliver(&$job,$selection,$bytes){$writer=new CSM_Live_Stream($job,hash('sha256',CSM_Support::json($selection)));foreach(str_split($bytes,997)as$part)$writer->write($part);$writer->finish();}
 function rejects($fn,$fragment){try{$fn();}catch(Throwable$e){return str_contains($e->getMessage(),$fragment);}return false;}
+class FailedStageFlush {public $context;function stream_open($path,$mode,$options,&$opened){return true;}function stream_flush(){return false;}function stream_close(){}}
+stream_wrapper_register('tricklefailedflush',FailedStageFlush::class);
+$flushJob=newJob();$flushWriter=new CSM_Live_Stream($flushJob,hash('sha256',CSM_Support::json(selection())));
+$flushHandle=fopen('tricklefailedflush://output','wb');$outputProperty=new ReflectionProperty(CSM_Live_Stream::class,'file_output');$outputProperty->setValue($flushWriter,['handle'=>$flushHandle]);
+check(rejects(fn()=>$flushWriter->finish(),'Cannot flush')&&!isset($saved[$flushJob['id']])&&!isset($flushJob['live_files'])&&!is_resource($flushHandle),'A failed flush closes the handle and cannot publish a completion checkpoint');
+$flushWriter=new CSM_Live_Stream($flushJob,hash('sha256',CSM_Support::json(selection())));$flushHandle=fopen('tricklefailedflush://output','wb');$outputProperty->setValue($flushWriter,['handle'=>$flushHandle]);
+check(rejects(fn()=>$flushWriter->save_partial(),'Cannot flush')&&!isset($saved[$flushJob['id']])&&!is_resource($flushHandle),'A failed flush cannot publish a partial checkpoint');
+unset($flushWriter);stream_wrapper_unregister('tricklefailedflush');
 function window_chain($encoded,$format){$chain='';$header=null;$checkpoint=null;$dataFrames=0;for($p=0;$p<strlen($encoded);){$field=unpack('N',substr($encoded,$p,4))[1];$n=36+($field&0x7fffffff);$frame=substr($encoded,$p,$n);$p+=$n;if($field&0x80000000){$r=json_decode(gzdecode(substr($frame,36)),true);if($r['type']==='window')$header=$r;else$checkpoint=$r;}else{$chain=hash('sha256',$chain.($format===2?substr($frame,0,36):hash('sha256',$frame)));$dataFrames++;}}return[$header,$checkpoint,$chain,$dataFrames];}
 $private=CSM_Support::private_dir();$data=random_bytes(6*1024*1024+123);
 file_put_contents(WP_PLUGIN_DIR.'/demo/main.php','<?php /* Plugin Name: Demo */');file_put_contents(WP_PLUGIN_DIR.'/demo/large.bin',$data);file_put_contents(WP_PLUGIN_DIR.'/demo/empty','');file_put_contents(WP_PLUGIN_DIR.'/demo/.env','secret');
@@ -149,6 +158,14 @@ try{
  $changedJob=newJob();$bytes=window($changedJob['id'],$selection,0);deliver($changedJob,$selection,$bytes);$path=WP_PLUGIN_DIR.'/demo/large.bin';file_put_contents($path,'changed');
  $failed=false;for($i=1;$i<20;$i++){try{$bytes=window($changedJob['id'],$selection,$i);deliver($changedJob,$selection,$bytes);}catch(RuntimeException$e){$failed=str_contains($e->getMessage(),'Source stream failed');break;}}
  check($failed,'Source mutation produces a specific source error before installation');
+ $mediaSelection=['plugins'=>[],'themes'=>[],'tables'=>[],'media'=>'all','file_policy'=>1];$media=newJob();$media['selection']=$mediaSelection;
+ $mediaPath=WP_CONTENT_DIR.'/uploads/image.jpg';file_put_contents($mediaPath,$data);$encoded=window($media['id'],$mediaSelection,0);
+ $writer=new CSM_Live_Stream($media,hash('sha256',CSM_Support::json($mediaSelection)));$writer->write(substr($encoded,0,-9));
+ check($writer->save_partial(),'An interrupted media window retains its verified frame prefix');$media=$saved[$media['id']];$offset=$media['live_partial']['offset'];
+ $tail=implode('',iterator_to_array(CSM_Live_Stream::source($media['id'],$mediaSelection,0,$offset)));deliver($media,$mediaSelection,$tail);$media=$saved[$media['id']];$seq=1;
+ while(empty($media['live_files']['done'])){deliver($media,$mediaSelection,window($media['id'],$mediaSelection,$seq++));$media=$saved[$media['id']];if($seq>200)throw new RuntimeException('Media replay stalled');}
+ $mediaFile=$media['files'][0];check($mediaFile['media_part']&&dirname($mediaFile['stage'])===dirname($mediaPath)&&hash_file('sha256',$mediaFile['stage'])===hash('sha256',$data)&&file_get_contents($mediaPath)===$data,'Media frame-prefix replay completes in an adjacent part without modifying the original');
+ CSM_Files::cleanup_media_parts($media);check(!file_exists($mediaFile['stage']),'Live media cleanup removes the replayed part');
  if(in_array('--large',$argv,true)){
   $budget=8;$size=1024*1024*1024+17;$fp=fopen(WP_PLUGIN_DIR.'/demo/large.bin','wb');ftruncate($fp,$size);fclose($fp);
   $large=newJob();$seq=0;do{$writer=new CSM_Live_Stream($large,hash('sha256',CSM_Support::json($selection)));foreach(CSM_Live_Stream::source($large['id'],$selection,$seq)as$frame)$writer->write($frame);$writer->finish();$large=$saved[$large['id']];$seq++;if($seq>100)throw new RuntimeException('Large stream stalled');}while(empty($large['live_files']['done']));

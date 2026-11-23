@@ -3,6 +3,7 @@ defined('ABSPATH') || exit;
 
 final class CSM_Files {
     public static function excluded(string $relative): bool {
+        if (preg_match('/^\.trickle-[a-f0-9]{32}-[a-f0-9]{20}\.part$/D', basename($relative))) { return true; }
         foreach (explode('/', strtolower($relative)) as $part) {
             if (in_array($part, ['.git', '.gitignore', '.gitattributes', '.gitmodules', '.gitkeep', '.github', '.svn', '.hg', '.bzr', 'node_modules', '.idea', '.vscode', '.ds_store', 'thumbs.db', '.ssh', '.aws', '.gnupg', '.docker', '.kube', '.htpasswd', '.my.cnf', '.git-credentials', 'wp-config.php', '.npmrc', '.pypirc', '.netrc', 'auth.json', 'id_rsa', 'id_ed25519', 'id_dsa', 'id_ecdsa'], true) || str_starts_with($part, '.env') || preg_match('/\.env($|[._~-])/', $part)) { return true; }
         }
@@ -531,7 +532,17 @@ final class CSM_Files {
         yield CSM_Support::json(['type'=>'end','files'=>$cursor['index'],'started'=>$cursor['started'],'sha256'=>$cursor['hash']]);
     }
 
-    public static function stage_step($fp, array &$job, bool $continuing = false, bool $incremental = false): bool {
+    public static function close_stage_output(array &$output): void {
+        $handle=$output['handle'] ?? null; $output=[];
+        if (!is_resource($handle)) { return; }
+        $started=hrtime(true);
+        try {
+            if (!fflush($handle)) { throw new RuntimeException('Cannot flush staged file.'); }
+        } finally { $closed=fclose($handle); CSM_Timing::add('stream.stage_flush',$started); }
+        if (!$closed) { throw new RuntimeException('Cannot close staged file.'); }
+    }
+
+    public static function stage_step($fp, array &$job, bool $continuing = false, bool $incremental = false, ?array &$output = null): bool {
         $state = $job['imports']['files'] ?? null;
         if (!$state) {
             $header = CSM_Support::line($fp);
@@ -571,7 +582,7 @@ final class CSM_Files {
                     }
                 } else {
                     if (!is_int($record['size'] ?? null) || $record['size']<0) { throw new RuntimeException('Invalid file size.'); }
-                    $stage=$dir.'/'.count($job['files']);
+                    $stage=str_starts_with($record['path'],'uploads/') ? self::media_stage($job,$record['path']) : $dir.'/'.count($job['files']);
                     if (in_array($parts[0],['plugins','themes'],true)) {
                         $component=$parts[0].'/'.$parts[1];
                         $job['component_staging'][$component]=$dir.'/components/'.$component;
@@ -582,10 +593,31 @@ final class CSM_Files {
                 }
             }
             if ($current=$state['current']) {
-                $open_started=hrtime(true);
-                $record=$current['record']; if ($current['written']>0 && (!is_file($current['stage']) || filesize($current['stage'])<$current['written'])) { throw new RuntimeException('Staged file checkpoint is missing or truncated.'); } $out=fopen($current['stage'],'c+b');
-                if (!$out || !ftruncate($out,$current['written']) || fseek($out,$current['written'])!==0) { throw new RuntimeException('Cannot resume staged file.'); }
-                CSM_Timing::add('stream.stage_open',$open_started);
+                $open_started=hrtime(true); $stat=null;
+                if (str_starts_with($current['record']['path'],'uploads/')) {
+                    self::destination($current['record']['path'],$job['selection']);
+                    clearstatcache(true,$current['stage']);
+                    $stat=@lstat($current['stage']);
+                    if (is_link($current['stage']) || ($stat['nlink'] ?? 1)>1) { throw new RuntimeException('Unsafe media part.'); }
+                }
+                $record=$current['record'];
+                $reused=isset($output['handle']) && is_resource($output['handle']);
+                if ($reused) {
+                    $out=$output['handle'];
+                    if ($stat===null) { clearstatcache(true,$current['stage']); $stat=lstat($current['stage']); }
+                    if (($output['path'] ?? '')!==$current['stage'] || !$stat || [$stat['dev'],$stat['ino']]!==$output['identity'] || $stat['nlink']!==1 || ftell($out)!==$current['written']) { throw new RuntimeException('Staged file changed between frames.'); }
+                } else {
+                    if ($current['written']>0 && (!is_file($current['stage']) || filesize($current['stage'])<$current['written'])) { throw new RuntimeException('Staged file checkpoint is missing or truncated.'); }
+                    $out=fopen($current['stage'],'c+b');
+                }
+                if ($out && str_starts_with($record['path'],'uploads/') && (fileperms($current['stage'])&0777)!==0600 && !chmod($current['stage'],0600)) { fclose($out); throw new RuntimeException('Cannot set media part permissions.'); }
+                if (!$reused) {
+                    $opened=$out?fstat($out):null; $staged_size=$opened['size'] ?? -1;
+                    // Normal frames append at the checkpoint; truncate only unacknowledged replay bytes.
+                    if (!$out || $staged_size<$current['written'] || ($staged_size>$current['written'] && !ftruncate($out,$current['written'])) || fseek($out,$current['written'])!==0) { if ($out) { fclose($out); } throw new RuntimeException('Cannot resume staged file.'); }
+                    if ($output!==null) { $output=['handle'=>$out,'path'=>$current['stage'],'identity'=>[$opened['dev'],$opened['ino']]]; }
+                }
+                CSM_Timing::add($reused?'stream.stage_reuse':'stream.stage_open',$open_started);
                 $write_started=hrtime(true);
                 $hash=isset($current['hash'])?CSM_Support::restore_hash($current['hash']):null;
                 try {
@@ -600,14 +632,15 @@ final class CSM_Files {
                         CSM_Progress::update(['phase'=>'Staging file','component'=>$record['path'],'count'=>count($job['files']),'bytes'=>$current['written']]);
                     } while ($incremental || !CSM_Support::due());
                     if ($hash!==null) { $current['hash']=CSM_Support::save_hash($hash); }
-                    fflush($out);
-                } finally { fclose($out); CSM_Timing::add('stream.stage_write',$write_started); }
+                    if ($output===null && !fflush($out)) { throw new RuntimeException('Cannot flush staged file.'); }
+                } finally { if ($output===null) { fclose($out); } CSM_Timing::add('stream.stage_write',$write_started); }
                 $state['current']=$current;
                 if ($current['written']===$record['size'] && (!$incremental || ftell($fp)<$available)) {
+                    if ($output!==null) { self::close_stage_output($output); }
                     $end=CSM_Support::line($fp);
                     if (($end['type'] ?? '')!=='file-end' || !hash_equals($hash!==null?hash_final($hash):CSM_Support::hash_file($current['stage']),$end['sha256'] ?? '')) { throw new RuntimeException('File checksum mismatch.'); }
                     $state['hash']=CSM_Package::chain($state['hash'],CSM_Support::json($end));
-                    $job['files'][]=['path'=>$record['path'],'mtime'=>(int)$record['mtime'],'size'=>$record['size'],'mode'=>!str_starts_with($record['path'],'uploads/') && (($record['mode'] ?? 0644)&0111)?0755:0644,'stage'=>$current['stage'],'sha256'=>$end['sha256']];
+                    $job['files'][]=['path'=>$record['path'],'mtime'=>(int)$record['mtime'],'size'=>$record['size'],'mode'=>!str_starts_with($record['path'],'uploads/') && (($record['mode'] ?? 0644)&0111)?0755:0644,'stage'=>$current['stage'],'sha256'=>$end['sha256'],'media_part'=>str_starts_with($record['path'],'uploads/') && $current['stage']===self::media_part_path($job,$record['path'])];
                     $state['current']=null;
                 }
             }
@@ -656,9 +689,10 @@ final class CSM_Files {
             CSM_Progress::update(['phase' => 'Receiving and verifying file', 'component' => $record['path'], 'count' => count($files), 'total' => null, 'unit' => 'files', 'bytes' => 0]);
             $parts = explode('/', $record['path']); $components[$parts[0] . '/' . $parts[1]] = true;
             $seen[$record['path']] = true; hash_update($hash, CSM_Support::json($record));
-            $index = count($files); $staged = $dir . '/' . $index;
+            $index = count($files); $staged = str_starts_with($record['path'],'uploads/') ? self::media_stage($job,$record['path']) : $dir . '/' . $index;
             $out = fopen($staged, 'xb');
             if (!$out) { throw new RuntimeException('Cannot stage incoming file.'); }
+            if (str_starts_with($record['path'],'uploads/') && !chmod($staged,0600)) { fclose($out); throw new RuntimeException('Cannot set media part permissions.'); }
             $remaining = $record['size']; $filehash = hash_init('sha256');
             try {
                 while ($remaining > 0) {
@@ -671,8 +705,51 @@ final class CSM_Files {
             $end = CSM_Support::line($fp);
             if (($end['type'] ?? '') !== 'file-end' || !hash_equals(hash_final($filehash), $end['sha256'])) { throw new RuntimeException('File checksum mismatch.'); }
             hash_update($hash, CSM_Support::json($end));
-            $files[] = ['path' => $record['path'], 'mtime' => (int)$record['mtime'], 'size' => $record['size'], 'mode' => !str_starts_with($record['path'], 'uploads/') && (($record['mode'] ?? 0644) & 0111) ? 0755 : 0644, 'stage' => $staged, 'sha256' => $end['sha256']];
+            $files[] = ['path' => $record['path'], 'mtime' => (int)$record['mtime'], 'size' => $record['size'], 'mode' => !str_starts_with($record['path'], 'uploads/') && (($record['mode'] ?? 0644) & 0111) ? 0755 : 0644, 'stage' => $staged, 'sha256' => $end['sha256'], 'media_part'=>str_starts_with($record['path'],'uploads/')];
             CSM_Progress::update(['count' => count($files)]);
+        }
+    }
+
+    private static function media_part_path(array $job, string $relative): string {
+        if (!preg_match('/^[a-f0-9]{32}$/D',$job['id']) || !str_starts_with($relative,'uploads/')) { throw new RuntimeException('Invalid media part.'); }
+        $target=self::destination($relative,$job['selection']);
+        return dirname($target).'/.trickle-'.$job['id'].'-'.substr(hash('sha256',$relative),0,20).'.part';
+    }
+
+    private static function media_stage(array $job, string $relative): string {
+        if (!wp_is_file_mod_allowed('trickle')) { throw new RuntimeException('WordPress configuration disallows media file modifications.'); }
+        $path=self::media_part_path($job,$relative);
+        clearstatcache(true,$path);
+        if (is_link($path) || (@lstat($path)['nlink'] ?? 1)>1 || (file_exists($path) && !is_file($path))) { throw new RuntimeException('Unsafe media part.'); }
+        if (!is_dir(dirname($path)) && !wp_mkdir_p(dirname($path))) { throw new RuntimeException('Cannot create media destination directory.'); }
+        // Register before creation so a crash before the next job checkpoint cannot orphan public-directory parts.
+        $registry=CSM_Support::private_dir().'/'.$job['id'].'/media-parts';
+        if (!is_dir($registry) && !mkdir($registry,0700)) { throw new RuntimeException('Cannot create media part cleanup registry.'); }
+        CSM_Support::atomic_bytes($registry.'/'.hash('sha256',$relative).'.json',CSM_Support::json($relative));
+        return $path;
+    }
+
+    public static function publish_media(array $job, array $file, string $target): void {
+        $path=self::media_part_path($job,$file['path']);
+        clearstatcache(true,$path);
+        if ($path!==$file['stage'] || $target!==self::destination($file['path'],$job['selection']) || is_link($path) || (@lstat($path)['nlink'] ?? 1)>1) { throw new RuntimeException('Media destination changed during receipt.'); }
+        if (is_file($path)) {
+            if (!touch($path,$file['mtime']) || !rename($path,$target)) { throw new RuntimeException('Cannot publish media part.'); }
+        } else {
+            // Publication may have succeeded just before its apply cursor was persisted.
+            $receipt=null;
+            if (!CSM_Support::verify_file($target,$file['sha256'],$receipt)) { throw new RuntimeException('Published media is missing or changed.'); }
+        }
+        if (!chmod($target,$file['mode'])) { throw new RuntimeException('Cannot set media permissions.'); }
+    }
+
+    public static function cleanup_media_parts(array $job): void {
+        $registry=CSM_Support::private_dir().'/'.$job['id'].'/media-parts';
+        foreach (glob($registry.'/*.json') ?: [] as $record) {
+            $relative=json_decode(file_get_contents($record),true,512,JSON_THROW_ON_ERROR);
+            if (!is_string($relative)) { throw new RuntimeException('Invalid media part cleanup record.'); }
+            $path=self::media_part_path($job,$relative);
+            if (is_link($path) || (file_exists($path) && (!is_file($path) || !unlink($path)))) { throw new RuntimeException('Cannot remove media part.'); }
         }
     }
 }

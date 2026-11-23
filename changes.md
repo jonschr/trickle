@@ -2,12 +2,15 @@
 
 ## Unreleased
 
+- Reuse one request-local receiving file handle across live frames, flushing and closing before checkpoint persistence and at file completion. Preserve bounded replay, path checks and installed verification.
+- Accept concurrently created private staging directories while retaining path and permission checks, preventing a WordPress startup failure after hosting restores or restarts.
+- Receive media into destination-adjacent `.part` files and rename them during apply, avoiding a second media copy. Retain private code staging, rollback backups, stream and installed checksums, replay-safe publication, and registered cleanup of interrupted parts.
 - Include recorded performance samples in diagnostic downloads, with an optional retained-transfer filter.
 - Keep transport cancellation working on PHP 8.1 through its older cURL progress callback option.
 - Prepare one following file window during successful push response waits, retaining the current replay until acknowledged. Keep uploads serial and fall back when cURL multi is unavailable.
 - Accelerate bounded small-file source and verification SHA-256 through the existing optional provider; retain the streaming path for larger files and exact checksum fallback.
 - Compare plugins, themes and media by file size and modification time, including cold inventories. Remove pre-transfer content hashing and rehash preferences.
-- Keep stream checksums, private staging, recovery and installed-file verification. Establish skipped component recovery checksums after receipt.
+- Keep stream checksums, private database/code staging, recovery and installed-file verification. Establish skipped component recovery checksums after receipt.
 
 ## 0.1.36 — 2026-11-21
 - Cache the validated cancellation-marker path within a request while checking marker existence and ownership at every existing cancellation boundary.

@@ -190,8 +190,11 @@ final class CSM_Support {
         $base = rtrim(sys_get_temp_dir(), '/\\');
         $path = $base . '/trickle-' . substr(hash_hmac('sha256', ABSPATH, wp_salt('auth')), 0, 24);
         clearstatcache(true, $path);
-        if (!is_dir($path) && !mkdir($path, 0700, true)) {
-            throw new RuntimeException('Cannot create private staging storage.');
+        if (!is_dir($path)) {
+            // Another request may create the directory between the check and mkdir.
+            @mkdir($path, 0700, true);
+            clearstatcache(true, $path);
+            if (!is_dir($path)) { throw new RuntimeException('Cannot create private staging storage.'); }
         }
         if (is_link($path) || !is_writable($path)) { throw new RuntimeException('Unsafe staging directory.'); }
         // Hash and cancellation loops revisit this directory; do not rewrite its metadata each time.

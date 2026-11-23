@@ -12,6 +12,7 @@ final class CSM_Backups {
         if (get_option('_csm_active_job') === $job['id']) { delete_option('_csm_active_job'); }
         // Cleanup failure must not turn a successful migration into a rollback.
         try {
+            CSM_Files::cleanup_media_parts($job);
             foreach (CSM_Plugin::recovery_operations($job) as $op) {
                 if (!empty($op['directory']) && !empty($op['copy_backend'])) { CSM_Support::remove_tree($op['stage']); }
             }

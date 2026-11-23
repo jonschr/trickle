@@ -16,6 +16,12 @@ final class CSM_Live_Stream {
     private int $received = 0;
     private string $selection;
     private int $chain_format = 1;
+    private array $file_output = [];
+
+    public function __destruct() {
+        // An abandoned request publishes no checkpoint; its trailing bytes are replayed on retry.
+        if (isset($this->file_output['handle']) && is_resource($this->file_output['handle'])) { fclose($this->file_output['handle']); }
+    }
 
     public function __construct(array &$job, string $selection) {
         CSM_Updates::assert_job($job);
@@ -183,7 +189,7 @@ final class CSM_Live_Stream {
             try {
                 CSM_Support::write($fp,$unit); rewind($fp);
                 if (isset($this->job['imports']['files'])) { $this->job['imports']['files']['offset']=0; }
-                if (CSM_Files::stage_step($fp,$this->job,true,true)) { $this->job['import_done']['files']=true; }
+                if (CSM_Files::stage_step($fp,$this->job,true,true,$this->file_output)) { $this->job['import_done']['files']=true; }
             } finally { fclose($fp); }
             $this->position+=strlen($frame);
             CSM_Progress::update(['bytes'=>$this->bytes]);
@@ -191,6 +197,7 @@ final class CSM_Live_Stream {
     }
 
     public function finish(): void {
+        CSM_Files::close_stage_output($this->file_output);
         if (!$this->started || $this->checkpoint===null || $this->buffer!=='') { throw new CSM_Network_Error('Incomplete stream window. Resume its saved checkpoint.'); }
         $this->job['live_files']=['seq'=>$this->sequence+1,'chain'=>$this->chain,'bytes'=>$this->bytes,'selection'=>$this->selection,'done'=>$this->checkpoint['done'],'components'=>$this->checkpoint['components']];
         unset($this->job['live_partial']);
@@ -198,6 +205,7 @@ final class CSM_Live_Stream {
     }
 
     public function save_partial(): bool {
+        CSM_Files::close_stage_output($this->file_output);
         if (!$this->started || $this->checkpoint!==null || $this->position<=$this->initialPosition) { return false; }
         $this->job['live_partial']=['offset'=>$this->position,'chain'=>$this->chain,'bytes'=>$this->bytes,'selection'=>$this->selection,'chain_format'=>$this->chain_format];
         CSM_Jobs::save($this->job);
