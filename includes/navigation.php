@@ -6,6 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
+// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Read-only navigation uses a strict allowlist/literal branch; no mutation or arbitrary include path is accepted.
 $view = in_array( $_GET['view'] ?? '', array( 'settings', 'backups', 'diagnostics' ), true ) ? $_GET['view'] : 'migrate';
 ?>
 <nav class="nav-tab-wrapper csm-tabs" aria-label="Trickle pages">

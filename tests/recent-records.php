@@ -4,7 +4,7 @@ define('ABSPATH','/fixture/');$options=[];
 function get_option($key,$default=false){return $GLOBALS['options'][$key]??$default;}
 function update_option($key,$value,$autoload=false){$GLOBALS['options'][$key]=$value;}
 class CSM_Transport {static function url($url){return $url;}}
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $remember=new ReflectionMethod(CSM_Controller::class,'remember');
 $control=['id'=>'fixture','peer'=>['url'=>'https://remote.test','name'=>'Remote'],'direction'=>'push','created'=>123,'selection'=>['tables'=>['wp_posts'],'plugins'=>['example'],'themes'=>[],'media'=>'all','git_overrides'=>['private'],'skip_paths'=>['private'],'follow_symlinks'=>['private']],'scope'=>['plugins'=>[['id'=>'example','name'=>'Example plugin','version'=>'1.2']]]];
 $remember->invoke(null,$control,['status'=>'applied','applied'=>456,'tables'=>1,'files'=>12,'unchanged_files'=>8,'bytes'=>900,'rows'=>100,'secret'=>'not history']);

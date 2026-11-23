@@ -1,7 +1,7 @@
 <?php
 // PHP's version comparator drives both transfer directions; no WordPress or network.
 define('ABSPATH','/fixture/');
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $method=new ReflectionMethod(CSM_Controller::class,'compare_components');$checks=0;
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);++$GLOBALS['checks'];echo "PASS $label\n";}
 foreach([

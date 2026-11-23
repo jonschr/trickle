@@ -19,7 +19,7 @@ function get_metadata($type,$id,$key='',$single=false){if($key==='wp_capabilitie
 function get_user_by($field,$value){return new WP_User((object)['ID'=>1,'user_login'=>'admin','user_pass'=>'$P$Btest1234abcdefghijk','user_email'=>'admin@example.test','user_url'=>'','display_name'=>'Admin']);}
 function wp_cache_get($key,$group=''){if($group==='users')return (object)['ID'=>1,'user_login'=>'admin','user_pass'=>'$P$Btest1234abcdefghijk','user_email'=>'admin@example.test','user_url'=>'','display_name'=>'Admin'];return false;}
 
-require $core.'plugin.php'; require $core.'load.php'; require $core.'user.php';require $core.'capabilities.php';require $core.'class-wp-user.php';require $core.'class-wp-roles.php';require $core.'class-wp-role.php';require $core.'class-wp-session-tokens.php';require $core.'class-wp-user-meta-session-tokens.php';require $core.'default-constants.php';require $core.'pluggable.php';
+require $core.'http.php'; require $core.'plugin.php'; require $core.'load.php'; require $core.'user.php';require $core.'capabilities.php';require $core.'class-wp-user.php';require $core.'class-wp-roles.php';require $core.'class-wp-role.php';require $core.'class-wp-session-tokens.php';require $core.'class-wp-user-meta-session-tokens.php';require $core.'default-constants.php';require $core.'pluggable.php';
 define('WP_PLUGIN_DIR',dirname($core).'/wp-content/plugins');define('__CSM_PLUGIN__','trickle/trickle.php');
 add_filter('determine_current_user','wp_validate_auth_cookie');add_filter('determine_current_user','wp_validate_logged_in_cookie',20);
 $_SERVER['REQUEST_METHOD']='POST';

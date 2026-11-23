@@ -10,7 +10,7 @@ class CSM_Database {static function table_exists($name){return in_array($name,$G
 class CSM_Activation {static function current(){return $GLOBALS['active'];}}
 class CSM_Progress {static function update(...$args){}}
 function plugin_basename($p){return 'trickle/trickle.php';}
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-plugin.php';
 $check=new ReflectionMethod(CSM_Plugin::class,'verify_installed_step');
 function verify(array &$job){return $GLOBALS['check']->invokeArgs(null,[&$job]);}
 function pass($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}

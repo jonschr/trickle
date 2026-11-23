@@ -13,7 +13,7 @@ function wp_set_current_user($id){$GLOBALS['current_user']=$id;}
 function wp_set_auth_cookie($id,$remember,$secure,$token){$GLOBALS['cookie_token']=$token;}
 function wp_generate_auth_cookie($id,$expiration,$scheme,$token){return $id.'|'.$token;}
 function wp_create_nonce($action){return 'fixture-nonce';}
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-plugin.php';
 $method=new ReflectionMethod(CSM_Plugin::class,'retain_controller');$actor=new WP_User(7);$job=['database'=>[['target'=>'wp_users'],['target'=>'wp_usermeta']]];
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";};
 foreach([7,21] as $id){

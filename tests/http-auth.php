@@ -5,8 +5,8 @@ function get_option($key,$default=''){return $default;}
 function wp_parse_url($url){return parse_url($url);}
 function wp_check_invalid_utf8($text,$strip=false){return $text;}
 function wp_strip_all_tags($text){return strip_tags($text);}
-require __DIR__.'/../includes/log.php';
-require __DIR__.'/../includes/transport.php';
+require __DIR__.'/../includes/class-csm-log.php';
+require __DIR__.'/../includes/class-csm-transport.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 check(CSM_Transport::http_auth([])===[],'Unprotected connections send no Basic Auth');
 $a=['username'=>'demo-user','password'=>'secret:with spaces'];

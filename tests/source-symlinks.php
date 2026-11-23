@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Source aliases -> packaged regular files -> staged and installed destination bytes. No sites/network.
 $baseline=in_array('--baseline',$argv,true);$root=$baseline?($argv[2]??''):dirname(__DIR__);$dir=sys_get_temp_dir().'/trickle-perf-'.bin2hex(random_bytes(6));mkdir($dir,0700);
 define('ABSPATH',$dir.'/public/');define('WP_CONTENT_DIR',ABSPATH.'wp-content');define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins');define('CSM_FILE',$root.'/trickle.php');
@@ -10,7 +11,7 @@ function wp_salt($name){return 'performance-fixture';}function wp_mkdir_p($p){re
 class CSM_Activation{static function current(){return [];}static function source(&$j,$h){}}
 class CSM_Progress{static function update(...$a){}static function read($id){return [];}}
 class CSM_Jobs{static function save($job){$GLOBALS['saved'][$job['id']]=$job;}}
-foreach(['support','files','components','package','plugin']as$part)require $root.'/includes/'.$part.'.php';
+foreach(['support','files','components','package','plugin']as$part)require $root.'/includes/class-csm-'.$part.'.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function countFrames($path){$fp=fopen($path,'rb');$count=0;while(!feof($fp)){ $h=fread($fp,36);if($h==='')break;if(strlen($h)!==36)throw new RuntimeException('bad frame');$len=unpack('N',substr($h,0,4))[1];fseek($fp,$len,SEEK_CUR);++$count;}fclose($fp);return $count;}
 function packFixture($path,$selection){$steps=0;do{$bundle=CSM_Package::build($path,'files',$selection);if(++$steps>400)throw new RuntimeException('packaging did not advance');$state=json_decode(file_get_contents($path.'.build'),true);$roundtrip=json_decode(json_encode($state),true);if($state!==$roundtrip)throw new RuntimeException('Checkpoint not serializable');}while(!empty($bundle['continue']));return [$bundle,$steps];}

@@ -1,6 +1,6 @@
 <?php
 /**
- * Reusable administration controls and component markup.
+ * Plugin and theme metadata inventories and cascading comparisons.
  *
  * @package Trickle
  */
@@ -9,10 +9,21 @@ defined( 'ABSPATH' ) || exit;
 
 /** Size/mtime inventories; digests below cover metadata, never file contents. */
 final class CSM_Components {
+	/**
+	 * Derive the private component inventory cache path for this selection.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 */
 	private static function cache_path( array $selection ): string {
 		return CSM_Support::private_dir() . '/components-' . substr( hash( 'sha256', CSM_Support::json( array( $selection['plugins'] ?? array(), $selection['themes'] ?? array(), $selection['skip_paths'] ?? array(), $selection['git_overrides'] ?? array(), $selection['follow_symlinks'] ?? array() ) ) ), 0, 24 ) . '.json';
 	}
 
+	/**
+	 * Read the complete comparison metadata stamp for a component file.
+	 *
+	 * @param string $path Filesystem path checked or operated on by this helper.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function stamp( string $path ): string {
 		clearstatcache( true, $path );
 		$s = stat( $path );
@@ -21,11 +32,23 @@ final class CSM_Components {
 		return implode( ':', array_map( static fn( $key ) => $s[ $key ], array( 'size', 'mtime', 'ctime', 'ino', 'dev', 'mode' ) ) );
 	}
 
+	/**
+	 * Resolve a selection's current or token-pinned component inventory cache.
+	 *
+	 * @param array  $selection Approved database, component and media selection with transfer policies.
+	 * @param string $token Inventory snapshot digest pinning this comparison to stable metadata.
+	 */
 	private static function read( array $selection, string $token = '' ): array {
 		return self::read_cache( '' !== $token && preg_match( '/^[a-f0-9]{64}$/D', $token ) ? CSM_Support::private_dir() . '/component-snapshot-' . $token . '.json' : self::cache_path( $selection ) );
 	}
 
+	/**
+	 * Validate cached metadata and its inventory digest before reuse.
+	 *
+	 * @param string $path Filesystem path checked or operated on by this helper.
+	 */
 	private static function read_cache( string $path ): array {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Missing local input is checked immediately and rejected or treated as an absent cache. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		$raw   = @file_get_contents( $path );
 		$cache = false === $raw ? array() : json_decode( $raw, true );
 		if ( ! is_array( $cache ) || ! isset( $cache['files'], $cache['token'] ) || ( $cache['comparison'] ?? '' ) !== 'size_mtime' || ! hash_equals( $cache['token'], hash( 'sha256', CSM_Support::json( $cache['files'] ) ) ) ) {
@@ -33,6 +56,12 @@ final class CSM_Components {
 		return $cache;
 	}
 
+	/**
+	 * Build or page a resumable plugin/theme metadata inventory.
+	 *
+	 * @param array $query Validated inventory request with level, token and paging fields.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function inventory( array $query ): array {
 		$selection          = $query['selection'] ?? array();
 		$selection['media'] = 'none';
@@ -55,6 +84,7 @@ final class CSM_Components {
 			throw new RuntimeException( 'Invalid comparison work ID.' ); }
 		$result_path = '' !== $work_id ? $path . '.comparison-' . $work_id . '.json' : '';
 		if ( $result_path && is_file( $result_path ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$result = json_decode( file_get_contents( $result_path ), true, 512, JSON_THROW_ON_ERROR );
 			if ( ( $result['comparison'] ?? '' ) === 'size_mtime' ) {
 				return $result; }
@@ -124,6 +154,14 @@ final class CSM_Components {
 		return $result;
 	}
 
+	/**
+	 * Compare source and destination component metadata without pre-transfer content hashing.
+	 *
+	 * @param array $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param bool  $pull Whether the remote is the source rather than the destination.
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function compare( array $peer, bool $pull, array $selection ): array {
 		foreach ( array( 'plugins', 'themes' ) as $kind ) {
 			if ( ! empty( $selection['file_force'] ) || ! empty( $selection[ $kind . '_force' ] ) ) {
@@ -156,6 +194,7 @@ final class CSM_Components {
 			throw new RuntimeException( 'Update Trickle on both sites before comparing file metadata.' ); }
 		// Matching component digests let the source reuse its pinned inventory without paging it through the controller.
 		if ( $src['components'] === $dst['components'] ) {
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 			$plan = base64_encode( gzencode( CSM_Support::json( array( 'component_token' => $src['token'] ) ), 3 ) );
 			return array(
 				'same'     => $plan,
@@ -175,6 +214,7 @@ final class CSM_Components {
 			$common = array_values( array_diff( $common, $matching ) );
 		}
 		$matched = array_sum( array_intersect_key( $src['component_counts'] ?? array(), array_flip( $matching ) ) );
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 		$encode  = static fn( array $files ) => base64_encode(
 			gzencode(
 				CSM_Support::json(
@@ -202,6 +242,7 @@ final class CSM_Components {
 			'components' => $common,
 		);
 		$read         = static function ( array $index ) use ( $peer, $query ): array {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 			$fp = fopen( 'php://temp', 'w+b' );
 			try {
 				CSM_Transport::request( $peer, 'component_manifest', $query + array( 'token' => $index['token'] ), null, $fp, 0, 32 * 1024 * 1024 );
@@ -212,6 +253,7 @@ final class CSM_Components {
 					throw new RuntimeException( 'Invalid component metadata manifest.' ); }
 				return $data['files'];
 			} finally {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $fp ); }
 		};
 		$local_files  = self::manifest( $query + array( 'token' => ( $pull ? $dst : $src )['token'] ) )['files'];
@@ -239,6 +281,12 @@ final class CSM_Components {
 		);
 	}
 
+	/**
+	 * Attach approved component comparison results to the transfer selection.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @param array $comparison Recorded component metadata comparison result.
+	 */
 	public static function selection( array $selection, array $comparison ): array {
 		$selection['component_same'] = $comparison['same'];
 		// Large media plans may share this request; keep folder skips when per-file detail will not fit.
@@ -247,6 +295,12 @@ final class CSM_Components {
 		return $selection;
 	}
 
+	/**
+	 * Build the component manifest requested by a peer comparison.
+	 *
+	 * @param array $query Validated inventory request with level, token and paging fields.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function manifest( array $query ): array {
 		$selection = $query['selection'] ?? array();
 		$cache     = self::read( $selection, $query['token'] ?? '' );
@@ -267,13 +321,21 @@ final class CSM_Components {
 		);
 	}
 
+	/**
+	 * Resolve the files eligible for skipping under the recorded comparison decision.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function unchanged( array $selection ): array {
 		$plan = $selection['component_same'] ?? '';
 		if ( '' === $plan ) {
 			return array(); }
 		if ( ! is_string( $plan ) || strlen( $plan ) > 600000 ) {
 			throw new RuntimeException( 'Invalid unchanged-file plan.' ); }
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 		$bytes = base64_decode( $plan, true );
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Malformed bounded gzip input is checked as false and rejected by the following validation.
 		$raw   = false === $bytes ? false : @gzdecode( $bytes, 32 * 1024 * 1024 );
 		$files = false === $raw ? null : json_decode( $raw, true );
 		if ( ! is_array( $files ) ) {
@@ -304,6 +366,12 @@ final class CSM_Components {
 		return $files;
 	}
 
+	/**
+	 * Confirm that a component file still matches its recorded comparison metadata.
+	 *
+	 * @param string $path Filesystem path checked or operated on by this helper.
+	 * @param array  $file Recorded file metadata and expected content digest.
+	 */
 	public static function verify( string $path, array $file ): bool {
 		return is_string( $file['hash'] ?? null ) && preg_match( '/^[a-f0-9]{64}$/D', $file['hash'] ) && self::stamp( $path ) === ( $file['stamp'] ?? '' );
 	}

@@ -15,7 +15,7 @@ class CSM_Transport {
     static function url($url){return rtrim($url,'/');}
     static function request(...$args){throw new LogicException('Connection management must stay local.');}
 }
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $operate=new ReflectionMethod(CSM_Controller::class,'operate');
 $call=static fn($op,$data)=>$operate->invoke(null,$op,$data);
 $check=static function($ok,$message){if(!$ok)throw new LogicException($message);};

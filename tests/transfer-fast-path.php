@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real upload, unpacking, staging and preview in private fixtures. No WordPress or network.
 $root=sys_get_temp_dir().'/trickle-fast-'.bin2hex(random_bytes(6));
 define('ABSPATH',$root.'/public/');define('WP_CONTENT_DIR',ABSPATH.'wp-content');define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins');define('CSM_FILE',dirname(__DIR__).'/trickle.php');define('CSM_VERSION','fixture');
@@ -23,7 +24,7 @@ class CSM_Progress {
     static function update($data,...$args){if($GLOBALS['slow']&&($data['phase']??'')==='Verifying snapshot frames'){$GLOBALS['slow']=false;usleep(30000);}}
     static function read($id){return [];}static function finish(...$args){}static function run(){return '';}
 }
-foreach(['support','updates','files','package','plugin','segments']as$part)require_once __DIR__.'/../includes/'.$part.'.php';
+foreach(['support','updates','files','package','plugin','segments']as$part)require_once __DIR__.'/../includes/class-csm-'.$part.'.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function upload($job,$bundle,$path){$fp=fopen($path,'rb');try{return CSM_Segments::receive_stream($job,'files',$bundle,0,$fp,$bundle['size']);}finally{fclose($fp);}}
 $private=CSM_Support::private_dir();

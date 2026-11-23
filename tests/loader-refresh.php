@@ -12,7 +12,7 @@ function wp_next_scheduled(...$args){return true;}
 function plugin_basename($file){return 'trickle/trickle.php';}
 function wp_mkdir_p($path){return is_dir($path)||mkdir($path,0700,true);}
 class CSM_Log {public static array $errors=[];public static function write($level,$event,$context){self::$errors[]=$event;}}
-require __DIR__.'/../includes/support.php';require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-support.php';require __DIR__.'/../includes/class-csm-plugin.php';
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label."\n";};
 try{
  mkdir(WPMU_PLUGIN_DIR,0700);$path=WPMU_PLUGIN_DIR.'/0-trickle-loader.php';file_put_contents($path,'<?php // TRICKLE_LOADER old');

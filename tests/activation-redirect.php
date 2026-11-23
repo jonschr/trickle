@@ -14,7 +14,7 @@ class RedirectCaptured extends RuntimeException{}
 function wp_safe_redirect($url){throw new RedirectCaptured($url);}
 function plugin_basename($path){return 'trickle/trickle.php';}function wp_mkdir_p($path){return is_dir($path)||mkdir($path,0700,true);}
 class CSM_Support {static function atomic_bytes($path,$bytes,$mode){file_put_contents($path,$bytes);}}
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-plugin.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 try{
  if(defined('WP_CLI')){CSM_Plugin::activate();check(CSM_Plugin::loader_ready()&&!$transients,'CLI installs the recovery loader without scheduling a browser redirect');CSM_Plugin::activation_redirect();return;}

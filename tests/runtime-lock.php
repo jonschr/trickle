@@ -2,7 +2,7 @@
 // Offline, separate-process checks of the real request-draining lock.
 define('ABSPATH', $argv[1] ?? '/trickle-runtime-'.bin2hex(random_bytes(8)).'/');
 function wp_salt($scheme){return 'runtime-fixture';}
-require __DIR__.'/../includes/support.php';
+require __DIR__.'/../includes/class-csm-support.php';
 $mode=$argv[2] ?? 'parent';
 if($mode!=='parent'){
  $ok=CSM_Support::runtime_lock($mode==='exclusive');echo $ok?"yes\n":"no\n";flush();

@@ -1,10 +1,10 @@
 <?php
 // Real update authorization and capabilities; no network, WordPress or file writes.
 define('ABSPATH', '/fixture/');define('CSM_FILE',dirname(__DIR__).'/trickle.php');
-require __DIR__.'/../includes/files.php';
+require __DIR__.'/../includes/class-csm-files.php';
 $settings=[];
 function get_option($key,$default=false){return $key==='_csm_settings'?$GLOBALS['settings']:$default;}
-require __DIR__.'/../includes/access.php';require __DIR__.'/../includes/updates.php';
+require __DIR__.'/../includes/class-csm-access.php';require __DIR__.'/../includes/class-csm-updates.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 foreach([[],['pull'=>false,'push'=>false],['pull'=>false,'push'=>false,'updates'=>false]] as $settings){
     foreach([['master'=>true,'read'=>true,'write'=>true],['read'=>true,'write'=>true],['read'=>false,'write'=>true]] as $key){

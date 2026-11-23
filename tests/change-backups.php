@@ -18,7 +18,7 @@ class CSM_Files{
  static function scan($path,...$a){++$GLOBALS['scans'];if(is_dir($path)){foreach(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($path,FilesystemIterator::SKIP_DOTS))as$f)if($f->isFile())yield $f->getPathname();}}
 }
 function current_user_can($cap){return false;}function wp_is_file_mod_allowed($context){return true;}function get_option($k,$default=false){return $GLOBALS['options'][$k]??$default;}function update_option($k,$v,...$args){$GLOBALS['options'][$k]=$v;}function plugin_basename($p){return 'trickle/trickle.php';}function site_url(){return 'https://fixture.test';}function wp_mkdir_p($p){return is_dir($p)||mkdir($p,0700,true);}
-require __DIR__.'/../includes/plugin.php';require __DIR__.'/../includes/backups.php';
+require __DIR__.'/../includes/class-csm-plugin.php';require __DIR__.'/../includes/class-csm-backups.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);++$GLOBALS['checks'];echo "PASS $label\n";}
 function put($path,$text){wp_mkdir_p(dirname($path));file_put_contents($path,$text);}
 function captured($fn){try{$fn();}catch(Captured$c){return $c->job;}throw new RuntimeException('Expected checkpoint capture');}

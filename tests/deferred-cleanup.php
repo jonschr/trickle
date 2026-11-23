@@ -13,7 +13,7 @@ function wp_parse_url($url,$component=-1){return parse_url($url,$component);}
 function site_url(){return 'https://local.test';} function home_url(){return site_url();}
 class CSM_Transport{static function url($url){return $url;}static function request(...$args){$GLOBALS['calls']++;if($GLOBALS['fail'])throw new RuntimeException('Source is busy');return [];}}
 class CSM_Log{static function write(...$args){}}
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $id=str_repeat('a',32);$peer=['url'=>'https://source.test'];$pid=CSM_Controller::site_id($peer['url']);
 $options['_csm_peers']=[$pid=>$peer];

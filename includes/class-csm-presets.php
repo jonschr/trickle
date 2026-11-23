@@ -11,6 +11,9 @@ defined( 'ABSPATH' ) || exit;
  * Reusable migration selections and global transfer preferences.
  */
 final class CSM_Presets {
+	/**
+	 * Describe the supported migration preset selections.
+	 */
 	public static function catalog(): array {
 		return array(
 			'pull-db'         => array(
@@ -34,6 +37,9 @@ final class CSM_Presets {
 		);
 	}
 
+	/**
+	 * List eligible local Git-backed plugin and theme folders.
+	 */
 	public static function version_controlled(): array {
 		$inventory = CSM_Files::inventory();
 		$selection = array( 'media' => 'none' );
@@ -56,6 +62,13 @@ final class CSM_Presets {
 		return $result;
 	}
 
+	/**
+	 * Resolve a named preset against the current component inventory.
+	 *
+	 * @param string $name Validated name or human-readable selection label.
+	 * @param array  $inventory Current component inventory used to resolve the preset.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function resolve( string $name, array $inventory ): array {
 		$preset = self::catalog()[ $name ] ?? null;
 		if ( ! $preset ) {
@@ -84,6 +97,15 @@ final class CSM_Presets {
 		return $flags;
 	}
 
+	/**
+	 * Build a preset plan with activation effects, explicit approvals and blockers.
+	 *
+	 * @param string $name Validated name or human-readable selection label.
+	 * @param array  $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param array  $inventory Current component inventory used to resolve the preset.
+	 * @param array  $selection Approved database, component and media selection with transfer policies.
+	 * @param array  $confirmed Explicit Git-folder approvals supplied for this selection.
+	 */
 	public static function plan( string $name, array $peer, array $inventory, array $selection, array $confirmed ): array {
 		$direction   = self::catalog()[ $name ]['direction'];
 		$source      = $inventory[ 'push' === $direction ? 'local' : 'remote' ];

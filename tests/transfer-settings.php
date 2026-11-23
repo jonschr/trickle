@@ -5,7 +5,7 @@ $options = [];
 function get_option($key, $default = false) { return $GLOBALS['options'][$key] ?? $default; }
 function update_option($key, $value, $autoload = null) { $GLOBALS['options'][$key] = $value; }
 function wp_cache_delete(...$args){}
-require __DIR__ . '/../includes/controller.php';
+require __DIR__ . '/../includes/class-csm-controller.php';
 $operate = new ReflectionMethod(CSM_Controller::class, 'operate');
 $check = static function ($ok) { if (!$ok) throw new RuntimeException('Preference check failed'); };
 $defaults = $operate->invoke(null, 'transfer_settings', ['transport' => 'chunks', 'file_verify' => true]);

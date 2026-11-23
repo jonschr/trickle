@@ -1,4 +1,5 @@
 <?php
+function wp_parse_url($url,$component=-1){return parse_url($url,$component);}
 // Offline loader checks: no plugin-specific fixtures and no real WordPress/database.
 $mode=$argv[1]??'admin';
 $root=sys_get_temp_dir().'/trickle-maintenance-'.bin2hex(random_bytes(6));

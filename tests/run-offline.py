@@ -13,10 +13,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 PHP_FIXTURES = """
 activation-missing activation-redirect ajax-diagnostics change-backups
-commit-authentication commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
+class-loading commit-authentication commit-maintenance comparison-cleanup connection-management component-comparison component-versions controller-session
 database-prefix deferred-cleanup diagnostic-report directory-replacement force-retransfer
-file-digest framed-package http-auth http-auth-connections live-access live-checkpoints live-stream media-publication installed-verification loader-endpoint loader-maintenance loader-refresh
-package-digest performance performance-timing post-cron prepare-policy private-storage request-pacing progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
+file-digest framed-package http-auth http-auth-connections live-access live-checkpoints live-stream media-snapshots media-publication installed-verification loader-endpoint loader-maintenance loader-refresh
+package-digest performance performance-timing post-cron prepare-policy private-storage request-data request-pacing progress-activity progress-cancellation recent-records replacement-copy replacement-progress runtime-lock
 setup-hash-reuse site-names source-budget source-symlinks symlink-inventory
 timeline-estimates transfer-checkpoints transfer-fast-path transfer-settings
 ui-presets update-access update-authentication verification-progress
@@ -44,6 +44,7 @@ def main():
         commands.append(["php", "tests/controller-cookies.php", str(core)])
         commands += [["php", "tests/security-core.php", str(core), mode]
                      for mode in ["admin", "ajax", "anonymous", "invalid", "bad-nonce"]]
+    commands.append([sys.executable, "tests/security.py"])
     failures = []
     for command in commands:
         label = " ".join(command)

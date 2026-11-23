@@ -1,5 +1,12 @@
 # Changes
 
+## 1.0.0 — 2026-11-23
+
+- Complete the first-party WordPress standards pass with documented migration API exceptions, class-file organization, and smaller escaped settings markup.
+- Validate signed/structured request data without altering protocol bytes; handle damaged progress records and quoted public-root paths safely.
+- Recover expired pinned media inventories from a matching validated cache, or report controlled expiry. Execute the standalone security suite in the regular regression runner.
+- Validate the working candidate with 104 isolated/core checks, local medium/full push/pull verification, native restore/update fault tests, and SiteDistrict browser round trips. Exact build and timing boundaries are recorded in the project QA report.
+
 ## 0.1.37 — 2026-11-23
 
 - Pace all peer requests through a host-wide serial scheduler, including health checks and progress polls. Default to no enforced quiet gap for pushes and pulls, with an optional configurable interval and five-second polling; retain HTTP 429/430 cooldowns across workers without immediate retries. Include initial checkpoints in prepare and verify compatible push builds inside commit to reduce setup requests.

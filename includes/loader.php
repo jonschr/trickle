@@ -17,24 +17,30 @@ $csm_active = get_option( 'active_plugins', array() );
 $csm_request = $csm_recovery_cron;
 if ( in_array( $csm_plugin, $csm_active, true ) && ! $csm_request ) {
 	$csm_request = ( static function () use ( $csm_plugin ): bool {
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Early server routing is resolved or compared to exact allowed paths/methods before isolation.
 		$script = realpath( $_SERVER['SCRIPT_FILENAME'] ?? '' );
-		$post   = ( $_SERVER['REQUEST_METHOD'] ?? '' ) === 'POST';
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Early server routing is resolved or compared to exact allowed paths/methods before isolation.
+		$post = ( $_SERVER['REQUEST_METHOD'] ?? '' ) === 'POST';
 		// Managed hosts may keep WordPress core outside their public front controller.
-		$path      = parse_url( $_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH );
-		$base_path = rtrim( (string) parse_url( (string) get_option( 'siteurl' ), PHP_URL_PATH ), '/' );
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Early server routing is resolved or compared to exact allowed paths/methods before isolation.
+		$path      = wp_parse_url( $_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH );
+		$base_path = rtrim( (string) wp_parse_url( (string) get_option( 'siteurl' ), PHP_URL_PATH ), '/' );
 		$endpoint  = is_string( $path ) && str_starts_with( $path, '/' ) && in_array( rtrim( $path, '/' ), array( $base_path, $base_path . '/index.php' ), true );
 		if ( $post && $endpoint && is_string( $_GET['trickle'] ?? null ) && 'manifest' !== $_GET['trickle'] ) {
 			$base = WP_PLUGIN_DIR . '/' . dirname( $csm_plugin ) . '/includes/';
 			foreach ( array( 'support', 'access', 'transport' ) as $part ) {
-				require_once $base . $part . '.php'; }
+				require_once $base . 'class-csm-' . $part . '.php'; }
 			try {
+				// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Before magic quotes: string action is authenticated by the signed HMAC and connection scope.
 				CSM_Transport::signed_credential( $_GET['trickle'] );
 				return true; } catch ( Throwable $error ) {
 				return false; }
 		}
 		$ajax = $post && defined( 'DOING_AJAX' ) && DOING_AJAX && realpath( ABSPATH . 'wp-admin/admin-ajax.php' ) === $script
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Before magic quotes: exact route/action comparisons only; administrator capability and nonce checks follow.
 			&& ( $_POST['action'] ?? '' ) === 'csm_admin' && ( $_REQUEST['action'] ?? '' ) === 'csm_admin'
 			&& ! in_array( $_POST['op'] ?? '', array( 'manifest', 'connect' ), true );
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Before magic quotes: exact route/action comparisons only; administrator capability and nonce checks follow.
 		$page = ! $post && realpath( ABSPATH . 'wp-admin/tools.php' ) === $script && ( $_GET['page'] ?? '' ) === 'trickle';
 		if ( ! $ajax && ! $page ) {
 			return false; }
@@ -43,6 +49,7 @@ if ( in_array( $csm_plugin, $csm_active, true ) && ! $csm_request ) {
 		require_once ABSPATH . WPINC . '/pluggable.php';
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return false; }
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Before magic quotes: the string nonce is verified with the administrator capability check above.
 		return $page || ( is_string( $_POST['nonce'] ?? null ) && wp_verify_nonce( $_POST['nonce'], 'csm_admin' ) !== false );
 	} )();
 }
@@ -50,7 +57,7 @@ $csm_runtime_busy = false;
 if ( in_array( $csm_plugin, $csm_active, true ) && ! $csm_request && ! ( defined( 'WP_CLI' ) && WP_CLI ) ) {
 	require_once ABSPATH . WPINC . '/pluggable.php';
 	if ( ! class_exists( 'CSM_Support', false ) ) {
-		require_once WP_PLUGIN_DIR . '/' . dirname( $csm_plugin ) . '/includes/support.php'; }
+		require_once WP_PLUGIN_DIR . '/' . dirname( $csm_plugin ) . '/includes/class-csm-support.php'; }
 	$csm_runtime_busy = ! CSM_Support::runtime_lock( false );
 }
 // Read maintenance after taking the shared lock, so apply cannot race ordinary plugin startup.
@@ -65,6 +72,7 @@ if ( in_array( $csm_plugin, $csm_active, true ) && ! $csm_request && ! ( defined
 		try {
 			spawn_cron();
 		} catch ( Throwable $error ) {
+			// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Emergency server-side failure reporting is required when the response stream or recovery startup cannot report safely.
 			error_log( 'Trickle recovery cron could not start: ' . $error->getMessage() ); }
 	}
 	status_header( 503 );

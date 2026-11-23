@@ -20,7 +20,7 @@ class CSM_Transport {
   throw new RuntimeException('Unexpected endpoint');
  }
 }
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $method=new ReflectionMethod(CSM_Controller::class,'operate');
 for($checkpoint=0;$checkpoint<2;$checkpoint++){
  try{$method->invoke(null,'commit',['id'=>$id]);throw new RuntimeException('Commit not reached');}

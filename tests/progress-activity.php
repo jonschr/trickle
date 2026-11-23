@@ -9,10 +9,16 @@ class CSM_Support {
     static function check_source_budget(){}
 }
 class CSM_Log {static array $entries=[];static function write($level,$event,$context){self::$entries[]=$context;}}
-require __DIR__.'/../includes/progress.php';
+require __DIR__.'/../includes/class-csm-progress.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $id=str_repeat('a',32);
 try{
+    check(CSM_Progress::read($id)===[],'Missing progress is empty');
+    foreach(['true','42','"damaged"','null','{bad'] as $raw){
+        file_put_contents($fixture.'/'.$id.'-progress.json',$raw);
+        check(CSM_Progress::read($id)===[],'Malformed or scalar progress is empty: '.$raw);
+    }
+    unlink($fixture.'/'.$id.'-progress.json');
     CSM_Progress::start($id,'Building source stream');
     foreach(['plugins/first','plugins/second','themes/child','uploads/2025/01','uploads/2025/02','uploads/2026/01']as$component){
         for($i=0;$i<500;$i++)CSM_Progress::update(['phase'=>'Packaging file','component'=>$component.'/'.$i.'.php']);

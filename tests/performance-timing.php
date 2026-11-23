@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real progress, checksums and diagnostic storage; isolated private files, no site/network.
 $root=sys_get_temp_dir().'/trickle-timing-'.bin2hex(random_bytes(6));
 define('ABSPATH',$root.'/public/'); define('CSM_VERSION','fixture');
@@ -10,9 +11,9 @@ function wp_check_invalid_utf8($text,$strip=false){return $text;}
 function wp_strip_all_tags($text){return strip_tags($text);}
 function site_url(){return 'https://fixture.test';}
 function get_bloginfo($key){return 'fixture';}
-foreach (['support','log','progress'] as $part) { require __DIR__.'/../includes/'.$part.'.php'; }
+foreach (['support','log','progress'] as $part) { require __DIR__.'/../includes/class-csm-'.$part.'.php'; }
 class CSM_Files { static function destination($path,$selection){return $GLOBALS['dir'].'/'.basename($path);} }
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-plugin.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label.PHP_EOL;}
 $dir=CSM_Support::private_dir(); $id=str_repeat('c',32);
 try {

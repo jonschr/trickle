@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real incremental media receipt, replay and publication on an isolated filesystem.
 $root=sys_get_temp_dir().'/trickle-media-'.bin2hex(random_bytes(6));
 define('ABSPATH',$root.'/public/');define('WP_CONTENT_DIR',ABSPATH.'wp-content');define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins');define('CSM_FILE',dirname(__DIR__).'/trickle.php');
@@ -11,7 +12,7 @@ function wp_is_file_mod_allowed($context){return true;}
 class CSM_Activation {static function source(&$job,$header){}}
 class CSM_Progress {static function update(...$args){}}
 class CSM_Jobs {static function save($job){}}
-foreach(['support','package','files']as$part)require __DIR__.'/../includes/'.$part.'.php';
+foreach(['support','package','files']as$part)require __DIR__.'/../includes/class-csm-'.$part.'.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function rejects($fn){try{$fn();}catch(Throwable $e){return true;}return false;}
 function job(){return ['id'=>bin2hex(random_bytes(16)),'files'=>[],'selection'=>['media'=>'all','plugins'=>[],'themes'=>[]]];}

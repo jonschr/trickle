@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Used only by http-auth-network.py against its disposable loopback HTTP server.
 define('ABSPATH','/fixture/');define('WPINC','wp-includes');define('CSM_VERSION','fixture');
 function apply_filters($name,$value,...$args){return $name==='csm_ca_bundle'?'':($name==='csm_request_interval'?.01:($name==='csm_setup_request_interval'?0:$value));}
@@ -11,7 +12,7 @@ class CSM_Log{static function secret($v){}static function write(...$args){}stati
 class CSM_Support{static function private_dir(){return $GLOBALS['argv'][2];}static function json($v){return json_encode($v);}static function check_cancel(){$GLOBALS['cancel_checks']=($GLOBALS['cancel_checks']??0)+1;if(!empty($GLOBALS['cancel_fixture']))throw new RuntimeException('Cancelled fixture');}}
 class CSM_Access{static function id($key){return substr(hash('sha256',$key),0,16);}}
 class CSM_Progress{static function update(...$args){}}
-require __DIR__.'/../includes/transport.php';
+require __DIR__.'/../includes/class-csm-transport.php';
 $auth=['username'=>'demo','password'=>'secret:with spaces'];$peer=['url'=>$argv[1],'key'=>str_repeat('a',64),'http_auth'=>$auth];
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 check(CSM_Transport::request($peer,'manifest')['received']===2,'Signed JSON request passes Basic Auth');

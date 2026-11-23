@@ -28,7 +28,7 @@ class CSM_Transport {
         return self::$checkpoint?['continue'=>true]:['components'=>['plugins/fixture'=>'remote-hash','themes/theme'=>'remote-theme-hash','plugins/new-source'=>'source-only-hash']];
     }
 }
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $operate=new ReflectionMethod(CSM_Controller::class,'operate');
 $base=['site'=>'remote','kind'=>'plugins','component'=>'fixture','comparison'=>str_repeat('a',32),'direction'=>'push'];
 function check($yes,$label){if(!$yes)throw new RuntimeException($label);echo "PASS $label\n";}

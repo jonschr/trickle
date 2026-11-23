@@ -1,7 +1,7 @@
 <?php
 // Prefix changes must preserve plugin settings while keeping WordPress roles/user options usable.
 define('ABSPATH','/fixture/');$wpdb=(object)['prefix'=>'wp_'];
-require __DIR__.'/../includes/database.php';
+require __DIR__.'/../includes/class-csm-database.php';
 $map=new ReflectionMethod(CSM_Database::class,'prefix_key');
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $names=['wp_migrate_addon_schema','wp_fly_user_roles','wp_fly_migrate_addon_schema'];

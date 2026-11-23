@@ -10,15 +10,10 @@ defined( 'ABSPATH' ) || exit; ?>
 	<?php require __DIR__ . '/app-header.php'; ?>
 	<div id="csm-app-notices">
 	<?php
-	/**
-	 * Retained migration backup administration markup.
-	 *
-	 * @package Trickle
-	 */
-
-	if ( $loader_error ) :
-		?>
-		<div class="notice notice-warning inline" role="alert"><p><?php echo esc_html( $loader_error ); ?></p></div><?php endif; ?>
+	if ( $loader_error ) {
+		printf( '<div class="notice notice-warning inline" role="alert"><p>%s</p></div>', esc_html( $loader_error ) );
+	}
+	?>
 	<div id="csm-error" class="notice notice-error inline csm-error" role="alert" hidden></div>
 		<p id="csm-feedback" class="csm-feedback" role="status" aria-live="polite" hidden></p>
 	</div>

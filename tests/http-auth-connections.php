@@ -14,7 +14,7 @@ class CSM_Transport{
  static function http_auth($auth){return [];}
  static function request($peer,...$args){$GLOBALS['requests'][]=$peer;return ['name'=>'Fixture'];}
 }
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $operate=new ReflectionMethod(CSM_Controller::class,'operate');$call=static fn($data)=>$operate->invoke(null,'connect',$data);
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $auth=['username'=>'private-user','password'=>'private-password'];

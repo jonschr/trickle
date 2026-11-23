@@ -6,19 +6,29 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-require_once __DIR__ . '/timing.php';
-require_once __DIR__ . '/directories.php';
+require_once __DIR__ . '/class-csm-timing.php';
+require_once __DIR__ . '/class-csm-directories.php';
 
 /**
  * Signed peer endpoints and migration lifecycle coordination.
  */
 final class CSM_Plugin {
+	/**
+	 * Generate the recovery loader with this installation's plugin entry point.
+	 */
 	public static function loader_code(): string {
+		// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_var_export, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Generate an escaped PHP string literal for the recovery loader; this produces no debug output. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		return str_replace( '__CSM_PLUGIN__', var_export( plugin_basename( CSM_FILE ), true ), file_get_contents( __DIR__ . '/loader.php' ) );
 	}
 
+	/**
+	 * Install the current recovery loader without overwriting an unrelated MU plugin.
+	 *
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function install_loader(): void {
 		$path = WPMU_PLUGIN_DIR . '/0-trickle-loader.php';
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		if ( is_file( $path ) && ! str_contains( file_get_contents( $path ), 'TRICKLE_LOADER' ) ) {
 			throw new RuntimeException( 'An unrelated file occupies the Trickle loader path.' ); }
 		if ( ! wp_mkdir_p( WPMU_PLUGIN_DIR ) ) {
@@ -29,13 +39,22 @@ final class CSM_Plugin {
 			opcache_invalidate( $path, true ); }
 	}
 
+	/**
+	 * Install recovery support and schedule the eligible administrator welcome redirect.
+	 *
+	 * @param bool $network_wide Whether WordPress is activating the plugin across a multisite network.
+	 */
 	public static function activate( bool $network_wide = false ): void {
 		self::install_loader();
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Core activation already authorizes this hook; the flag only suppresses an optional welcome redirect.
 		if ( $network_wide || ! is_admin() || wp_doing_ajax() || ( defined( 'WP_CLI' ) && WP_CLI ) || isset( $_REQUEST['activate-multi'] ) || ! current_user_can( 'manage_options' ) ) {
 			return; }
 		set_transient( '_csm_activation_redirect_' . get_current_user_id(), true, 60 );
 	}
 
+	/**
+	 * Consume the current administrator's one-time post-activation redirect.
+	 */
 	public static function activation_redirect(): void {
 		if ( wp_doing_ajax() || wp_doing_cron() || ( defined( 'WP_CLI' ) && WP_CLI ) || ! current_user_can( 'manage_options' ) ) {
 			return; }
@@ -47,11 +66,17 @@ final class CSM_Plugin {
 		exit;
 	}
 
+	/**
+	 * Check that the installed recovery loader exactly matches the generated source.
+	 */
 	public static function loader_ready(): bool {
 		$path = WPMU_PLUGIN_DIR . '/0-trickle-loader.php';
 		return is_file( $path ) && ! is_link( $path ) && hash_equals( hash( 'sha256', self::loader_code() ), hash_file( 'sha256', $path ) );
 	}
 
+	/**
+	 * Register native plugin hooks and refresh required recovery support.
+	 */
 	public static function boot(): void {
 		if ( ! get_option( '_csm_key' ) ) {
 			add_option( '_csm_key', bin2hex( random_bytes( 32 ) ), '', false ); }
@@ -70,6 +95,7 @@ final class CSM_Plugin {
 			// Other plugins were isolated; leave their due cron events untouched for the next request.
 			exit;
 		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Routing only: endpoint performs action validation and peer authentication before dispatch.
 		if ( isset( $_GET['trickle'] ) ) {
 			self::endpoint(); }
 		add_action(
@@ -90,6 +116,11 @@ final class CSM_Plugin {
 		add_action( 'trickle_recover', array( self::class, 'recover_interrupted' ) );
 	}
 
+	/**
+	 * Resume the recorded interrupted apply or restoration through its recovery journal.
+	 *
+	 * @param string $id Transfer identifier.
+	 */
 	public static function recover_interrupted( string $id ): void {
 		try {
 			$job = CSM_Jobs::get( $id );
@@ -141,8 +172,9 @@ final class CSM_Plugin {
 				}
 				CSM_Log::write( 'info', 'Interrupted transfer recovered', array( 'transfer_id' => $id ) );
 			} catch ( Throwable $e ) {
-				$current  = CSM_Jobs::get( $id );
-				$cursor   = CSM_Support::private_dir() . '/' . $id . '-restore.json';
+				$current = CSM_Jobs::get( $id );
+				$cursor  = CSM_Support::private_dir() . '/' . $id . '-restore.json';
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 				$stamp    = hash( 'sha256', CSM_Support::json( array( $current['status'], $current['backup_copy'] ?? null, is_file( $cursor ) ? file_get_contents( $cursor ) : $current['restore_cursor'] ?? 0 ) ) );
 				$failures = get_option( '_csm_recovery_attempts_' . $id, array() );
 				$count    = ( $failures['stamp'] ?? '' ) === $stamp ? ( $failures['count'] ?? 0 ) + 1 : 1;
@@ -179,6 +211,11 @@ final class CSM_Plugin {
 				CSM_Support::unlock(); }
 	}
 
+	/**
+	 * Require the PHP and runtime capabilities needed by the migration protocol.
+	 *
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function supported(): void {
 		if ( is_multisite() ) {
 			throw new RuntimeException( 'This release supports single-site WordPress only.' ); }
@@ -186,6 +223,12 @@ final class CSM_Plugin {
 			throw new RuntimeException( '64-bit PHP is required.' ); }
 	}
 
+	/**
+	 * Build site identity, capabilities and selected component inventory for a peer.
+	 *
+	 * @param bool $refresh Whether to bypass or refresh reusable inventory state.
+	 * @param bool $media Whether to include media metadata in the inventory.
+	 */
 	public static function manifest( bool $refresh = false, bool $media = true ): array {
 		global $wpdb;
 		self::supported();
@@ -233,11 +276,23 @@ final class CSM_Plugin {
 			);
 	}
 
+	/**
+	 * Authenticate and dispatch the signed native peer endpoint.
+	 *
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function endpoint(): void {
-		$action    = sanitize_key( wp_unslash( $_GET['trickle'] ) );
+		$action    = '';
 		$streaming = false;
 		try {
-			if ( 'POST' !== $_SERVER['REQUEST_METHOD'] ) {
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Peer actions use the signed request and one-use nonce verified below by CSM_Transport::authenticate().
+			if ( ! is_string( $_GET['trickle'] ?? null ) ) {
+				throw new RuntimeException( 'Invalid action.', 400 );
+			}
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- This selects the signed action; authentication below consumes its replay-protected nonce.
+			$action = sanitize_key( wp_unslash( $_GET['trickle'] ) );
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Only the exact POST method is accepted; all other values are rejected.
+			if ( 'POST' !== ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) {
 				throw new RuntimeException( 'POST required.', 405 ); }
 			self::supported();
 			CSM_Support::long_request();
@@ -258,6 +313,7 @@ final class CSM_Plugin {
 			if ( in_array( $action, array( 'component_hashes', 'media_hashes', 'file_policy', 'export', 'receive' ), true ) ) {
 				CSM_Support::begin_source_budget();
 				if ( function_exists( 'set_time_limit' ) ) {
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Hosts may forbid runtime changes; bounded work and resumable checkpoints remain mandatory.
 					@set_time_limit( 50 ); }
 			}
 			// Native upgrades may leave the previous MU loader until an administrator visits Trickle.
@@ -301,6 +357,7 @@ final class CSM_Plugin {
 				try {
 					$result = CSM_Updates::install_zip( $data, $input );
 				} finally {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 					fclose( $input ); }
 				self::respond( $result );
 			}
@@ -335,6 +392,7 @@ final class CSM_Plugin {
 				$input = fopen( 'php://input', 'rb' );
 				try {
 					$result = CSM_Live_Stream::receive( $job, $data['selection_hash'] ?? '', $data['seq'] ?? -1, $input, $data['offset'] ?? 0 ); } finally {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 					fclose( $input ); }
 					self::respond( $result );
 			}
@@ -355,6 +413,7 @@ final class CSM_Plugin {
 						CSM_Support::write( $out, $bytes );
 						flush(); }
 				} finally {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 					fclose( $out ); }
 				exit;
 			}
@@ -371,6 +430,7 @@ final class CSM_Plugin {
 					ob_end_clean(); }
 				nocache_headers();
 				header( 'Content-Type: application/octet-stream' );
+				// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Binary protocol bytes under application/octet-stream; HTML escaping would corrupt the payload.
 				echo $bytes;
 				exit;
 			}
@@ -406,6 +466,7 @@ final class CSM_Plugin {
 					if ( connection_aborted() ) {
 						break; }
 				}
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $out );
 				exit;
 			}
@@ -419,6 +480,7 @@ final class CSM_Plugin {
 				nocache_headers();
 				header( 'Content-Type: application/octet-stream' );
 				header( 'Content-Length: ' . strlen( $bytes ) );
+				// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Binary protocol bytes under application/octet-stream; HTML escaping would corrupt the payload.
 				echo $bytes;
 				exit;
 			}
@@ -472,6 +534,7 @@ final class CSM_Plugin {
 					if ( connection_aborted() ) {
 						throw new RuntimeException( 'Receiving connection closed during export.' ); }
 				}
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $out );
 				CSM_Progress::finish( 'Export verified' );
 				exit;
@@ -499,12 +562,14 @@ final class CSM_Plugin {
 				$fp = fopen( 'php://input', 'rb' );
 				try {
 					self::respond( CSM_Segments::receive_stream( $job, $data['kind'] ?? '', $data['bundle'] ?? array(), $data['offset'], $fp, $data['length'] ?? null ) ); } finally {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 					fclose( $fp ); }
 			}
 			if ( 'receive' === $action ) {
 				$fp = fopen( 'php://input', 'rb' );
 				try {
 					$job = self::receive( $job, $data['kind'] ?? '', $fp, $data['progress_run'] ?? null ); } finally {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 					fclose( $fp ); }
 					self::respond( self::summary( $job ) );
 			}
@@ -530,6 +595,7 @@ final class CSM_Plugin {
 			);
 			CSM_Progress::fail( $e->getMessage() );
 			if ( $streaming ) {
+				// phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Emergency server-side failure reporting is required when the response stream or recovery startup cannot report safely.
 				error_log( 'Trickle export stopped: ' . $e->getMessage() );
 				exit; }
 			self::respond(
@@ -544,32 +610,54 @@ final class CSM_Plugin {
 		}
 	}
 
+	/**
+	 * Terminate the request with a JSON success or error envelope and matching content type.
+	 *
+	 * @param array  $data Operation-specific request fields, validated by the receiving operation.
+	 * @param string $error Error description placed in the JSON response envelope.
+	 * @param int    $status HTTP response status code.
+	 */
 	public static function respond( array $data, string $error = '', int $status = 200 ): never {
 		while ( ob_get_level() ) {
 			ob_end_clean(); }
 		nocache_headers();
 		status_header( $status );
 		header( 'Content-Type: application/json; charset=utf-8' );
-		echo CSM_Support::json(
-			$error ? array(
-				'ok'    => false,
-				'error' => $error,
-			) + $data : array(
-				'ok'   => true,
-				'data' => $data,
+		printf(
+			"%s\n",
+			wp_json_encode(
+				$error ? array(
+					'ok'    => false,
+					'error' => $error,
+				) + $data : array(
+					'ok'   => true,
+					'data' => $data,
+				),
+				JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES
 			)
 		);
 		exit;
 	}
 
+	/**
+	 * Remove expired signed-request nonce records from private replay protection.
+	 */
 	public static function prune_nonces(): void {
 		global $wpdb;
 		// Expired nonce records cannot be replayed because their signed timestamps have expired too.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- Bounded nonce pruning uses a validated table identifier and prepared values; freshness is required.
 		$names = $wpdb->get_col( $wpdb->prepare( 'SELECT option_name FROM ' . CSM_Support::ident( $wpdb->options ) . ' WHERE option_name LIKE %s AND CAST(option_value AS UNSIGNED) < %d LIMIT 100', $wpdb->esc_like( '_csm_nonce_' ) . '%', time() - 600 ) );
 		foreach ( $names as $name ) {
 			delete_option( $name ); }
 	}
 
+	/**
+	 * Create a destination staging job for a validated migration selection.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @param array $context Destination preparation metadata supplied by the controlling request.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function prepare( array $selection, array $context = array() ): array {
 		$active = get_option( '_csm_active_job' );
 		if ( $active ) {
@@ -618,6 +706,16 @@ final class CSM_Plugin {
 		return self::summary( $job ) + array( 'initial_checkpoints' => array_fill_keys( self::kinds( $selection ), array( 'offset' => 0 ) ) );
 	}
 
+	/**
+	 * Receive a selected stream and advance its verified destination staging.
+	 *
+	 * @param array       $job Destination job and its durable staging or recovery state.
+	 * @param string      $kind Component or stream kind selected by the caller.
+	 * @param resource    $fp Caller-owned stream handle positioned at the next record or write offset.
+	 * @param string|null $run Optional existing progress activity identifier.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
+	 */
 	public static function receive( array $job, string $kind, $fp, ?string $run = null ): array {
 		CSM_Updates::assert_job( $job );
 		if ( 'staging' !== $job['status'] || ! in_array( $kind, self::kinds( $job['selection'] ), true ) ) {
@@ -661,6 +759,15 @@ final class CSM_Plugin {
 		return $job;
 	}
 
+	/**
+	 * Advance a received stream through bounded verification and staging work.
+	 *
+	 * @param array    $job Destination job and its durable staging or recovery state.
+	 * @param string   $kind Component or stream kind selected by the caller.
+	 * @param resource $fp Caller-owned stream handle positioned at the next record or write offset.
+	 * @param bool     $continuing Whether to preserve the current work-step deadline.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function receive_step( array $job, string $kind, $fp, bool $continuing = false ): array {
 		CSM_Support::step( 8, $continuing );
 		CSM_Updates::assert_job( $job );
@@ -691,6 +798,11 @@ final class CSM_Plugin {
 		return $job;
 	}
 
+	/**
+	 * Return the stream kinds required by the approved selection.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 */
 	public static function kinds( array $selection ): array {
 		$result = array();
 		if ( ! empty( $selection['tables'] ) ) {
@@ -700,6 +812,11 @@ final class CSM_Plugin {
 		return $result;
 	}
 
+	/**
+	 * Build the destination job status and component counts for the controller.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 */
 	public static function summary( array $job ): array {
 		return array(
 			'id'                 => $job['id'],
@@ -723,6 +840,12 @@ final class CSM_Plugin {
 		);
 	}
 
+	/**
+	 * Calculate the selected file actions and aggregate database replacement work.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function changes( array $job ): array {
 		$new     = array();
 		$paths   = array();
@@ -741,6 +864,7 @@ final class CSM_Plugin {
 			$target = CSM_Files::destination( $file['path'], $job['selection'] );
 			if ( ! empty( $file['unchanged'] ) ) {
 				if ( ! ( isset( $file['sha256'] ) ? CSM_Support::verify_file( $target, $file['sha256'], $file['verification_receipt'] ) : CSM_Files::verify_unchanged( $target, $file ) ) ) {
+					// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 					throw new RuntimeException( 'An unchanged destination file changed after staging: ' . $file['path'] . '. Discard and prepare again.' ); }
 				$new[ $file['path'] ] = $file;
 				continue;
@@ -799,6 +923,13 @@ final class CSM_Plugin {
 		);
 	}
 
+	/**
+	 * Build an actionable error for an incompatible selected component file.
+	 *
+	 * @param array  $job Destination job and its durable staging or recovery state.
+	 * @param array  $file Recorded file metadata and expected content digest.
+	 * @param string $problem Actionable compatibility failure description.
+	 */
 	private static function compatibility_error( array $job, array $file, string $problem ): RuntimeException {
 		$parts = explode( '/', $file['path'] );
 		$kind  = array(
@@ -822,6 +953,14 @@ final class CSM_Plugin {
 		return new RuntimeException( ucfirst( $kind ) . ' "' . $name . '": ' . $problem . '. Update or deselect this ' . $kind . ', then retry. File: ' . $file['path'] . '.' );
 	}
 
+	// phpcs:disable Squiz.Commenting.FunctionCommentThrowTag.WrongNumber -- Both compatibility_error() calls return RuntimeException, the same type as the direct throw.
+	/**
+	 * Require staged plugin and theme entry points to meet destination requirements.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @param array $file Recorded file metadata and expected content digest.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function check_compatibility( array $job, array $file ): void {
 		$timing = hrtime( true );
 		try {
@@ -854,6 +993,7 @@ final class CSM_Plugin {
 			}
 			if ( str_ends_with( $file['path'], '.php' ) ) {
 				try {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 					token_get_all( file_get_contents( $file['stage'] ), TOKEN_PARSE ); } catch ( ParseError $e ) {
 					throw self::compatibility_error( $job, $file, 'PHP parse error on destination PHP ' . PHP_VERSION . ' (line ' . $e->getLine() . ': ' . $e->getMessage() . ')' ); }
 			}
@@ -862,6 +1002,15 @@ final class CSM_Plugin {
 	}
 
 
+	// phpcs:enable Squiz.Commenting.FunctionCommentThrowTag.WrongNumber
+
+	/**
+	 * Advance bounded pre-apply checks while retaining the preview cursor.
+	 *
+	 * @param array &$job Destination job and its durable staging or recovery state.
+	 * @param bool  $continuing Whether to preserve the current work-step deadline.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function preview_step( array &$job, bool $continuing = false ): ?array {
 		$timing = hrtime( true );
 		try {
@@ -882,7 +1031,8 @@ final class CSM_Plugin {
 			);
 			CSM_Support::step( 8, $continuing );
 			if ( 'files' === $state['phase'] ) {
-				while ( $state['index'] < count( $job['files'] ) ) {
+				$file_count = count( $job['files'] );
+				while ( $state['index'] < $file_count ) {
 					$file   = $job['files'][ $state['index'] ];
 					$target = CSM_Files::destination( $file['path'], $job['selection'] );
 					$check  = ! empty( $file['unchanged'] ) ? $target : $file['stage'];
@@ -936,8 +1086,9 @@ final class CSM_Plugin {
 				$state['phase'] = 'plan';
 				$state['index'] = 0;
 			}
-			$paths = array_keys( $state['paths'] );
-			while ( $state['index'] < count( $paths ) ) {
+			$paths      = array_keys( $state['paths'] );
+			$path_count = count( $paths );
+			while ( $state['index'] < $path_count ) {
 				$relative = $paths[ $state['index'] ];
 				$target   = $state['paths'][ $relative ];
 				$exists   = is_file( $target );
@@ -981,18 +1132,18 @@ final class CSM_Plugin {
 			ksort( $state['signature'], SORT_STRING );
 			usort(
 				$state['items'],
-				static fn( $a, $b )=>( array(
-					'delete'  => 0,
-					'replace' => 1,
-					'add'     => 2,
-				)[ $a['action'] ] <=> array(
-					'delete'  => 0,
-					'replace' => 1,
-					'add'     => 2,
-				)[ $b['action'] ] ) ?: strcmp(
-					$a['path'],
-					$b['path']
-				)
+				static function ( $a, $b ) {
+					$rank = array(
+						'delete'  => 0,
+						'replace' => 1,
+						'add'     => 2,
+					)[ $a['action'] ] <=> array(
+						'delete'  => 0,
+						'replace' => 1,
+						'add'     => 2,
+					)[ $b['action'] ];
+					return $rank ? $rank : strcmp( $a['path'], $b['path'] );
+				}
 			);
 			$raw  = CSM_Support::json( $state['items'] );
 			$path = CSM_Support::private_dir() . '/' . $job['id'] . '-preview.json';
@@ -1019,6 +1170,12 @@ final class CSM_Plugin {
 			CSM_Timing::add( 'apply.preview', $timing, 0 ); }
 	}
 
+	/**
+	 * Build the checked file-change preview for a staged destination job.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function preview( array $job ): array {
 		$plan      = self::changes( $job );
 		$items     = array();
@@ -1076,18 +1233,18 @@ final class CSM_Plugin {
 			throw new RuntimeException( 'Insufficient private storage for the destination rollback backup.' ); }
 		usort(
 			$items,
-			static fn( $a, $b ) => ( array(
-				'delete'  => 0,
-				'replace' => 1,
-				'add'     => 2,
-			)[ $a['action'] ] <=> array(
-				'delete'  => 0,
-				'replace' => 1,
-				'add'     => 2,
-			)[ $b['action'] ] ) ?: strcmp(
-				$a['path'],
-				$b['path']
-			)
+			static function ( $a, $b ) {
+				$rank = array(
+					'delete'  => 0,
+					'replace' => 1,
+					'add'     => 2,
+				)[ $a['action'] ] <=> array(
+					'delete'  => 0,
+					'replace' => 1,
+					'add'     => 2,
+				)[ $b['action'] ];
+				return $rank ? $rank : strcmp( $a['path'], $b['path'] );
+			}
 		);
 		ksort( $signature, SORT_STRING );
 		return array(
@@ -1101,7 +1258,15 @@ final class CSM_Plugin {
 		);
 	}
 
+	/**
+	 * Read one bounded page of the destination file-change preview.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @param int   $offset Zero-based byte, row or preview offset for this operation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function preview_page( array $job, int $offset = 0 ): array {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Missing local input is checked immediately and rejected or treated as an absent cache. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		$raw = @file_get_contents( CSM_Support::private_dir() . '/' . $job['id'] . '-preview.json' );
 		if ( $offset < 0 || false === $raw || ! hash_equals( $job['preview']['file_hash'] ?? '', hash( 'sha256', $raw ) ) ) {
 			throw new RuntimeException( 'Transfer preview is unavailable or changed. Prepare again.' ); }
@@ -1113,11 +1278,19 @@ final class CSM_Plugin {
 		);
 	}
 
+	/**
+	 * Apply a staged job through durable backups, publication and installed-state checks.
+	 *
+	 * @param array       $job Destination job and its durable staging or recovery state.
+	 * @param string|null $run Optional existing progress activity identifier.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function commit( array $job, ?string $run = null ): array {
 		CSM_Updates::assert_job( $job );
 		if ( 'restoring' === $job['status'] ) {
 			$result = self::rollback( $job );
 			if ( empty( $result['continue'] ) && ! empty( $job['error'] ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Apply failed; changes rolled back. ' . $job['error'] ); }
 			return $result;
 		}
@@ -1137,6 +1310,7 @@ final class CSM_Plugin {
 			if ( CSM_Jobs::get( $job['id'] ) !== $job ) {
 				throw new RuntimeException( 'Could not persist the transfer recovery state.' ); }
 		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Create private staging with explicit permissions; no FTP backend may replace it.
 		if ( ! is_dir( $base ) && ! mkdir( $base, 0700 ) ) {
 			throw new RuntimeException( 'Cannot create rollback storage.' ); }
 		CSM_Support::step();
@@ -1160,6 +1334,7 @@ final class CSM_Plugin {
 		$work        =&$job['apply_work'];
 		$cursor_path = CSM_Support::private_dir() . '/' . $job['id'] . '-apply.json';
 		if ( is_file( $cursor_path ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$work = array_replace( $work, json_decode( file_get_contents( $cursor_path ), true ) ); }
 		$paths = $job['file_plan']['paths'];
 		if ( ! empty( $work['whole_components'] ) && ! CSM_Timing::measure(
@@ -1207,7 +1382,7 @@ final class CSM_Plugin {
 						CSM_Database::replace_tables( $job );
 					}
 				);
-				$authentication    = self::retain_controller( $actor, $job, $authenticated_session ?: null );
+				$authentication    = self::retain_controller( $actor, $job, $authenticated_session ? $authenticated_session : null );
 				$job['db_applied'] = true;
 				CSM_Jobs::save( $job );
 			} else {
@@ -1223,11 +1398,20 @@ final class CSM_Plugin {
 					return $recovered;
 				}
 			} catch ( Throwable $rollback_error ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( $e->getMessage() . ' Rollback needs attention: ' . $rollback_error->getMessage() ); }
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'Apply failed; changes rolled back. ' . $e->getMessage() );
 		}
 	}
 
+	/**
+	 * Advance resumable destination file backups before replacement.
+	 *
+	 * @param array  &$job Destination job and its durable staging or recovery state.
+	 * @param string $base Absolute private backup/recovery storage directory.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function backup_files( array &$job, string $base ): bool {
 		$timing = hrtime( true );
 		try {
@@ -1236,6 +1420,7 @@ final class CSM_Plugin {
 			if ( 'backup' === $work['phase'] ) {
 				$backup_paths = $work['backup_paths'];
 				$keys         = array_keys( $backup_paths );
+				// phpcs:ignore Squiz.PHP.DisallowSizeFunctionsInLoops.Found -- Recovery operations are appended after each checkpoint; re-read the journal length.
 				while ( count( $work['ops'] ) < count( $keys ) ) {
 					$relative = $keys[ count( $work['ops'] ) ];
 					$target   = $backup_paths[ $relative ];
@@ -1280,6 +1465,13 @@ final class CSM_Plugin {
 			CSM_Timing::add( 'apply.media_backup', $timing, 0 ); }
 	}
 
+	/**
+	 * Persist the immutable recovery plan before mutating destination files.
+	 *
+	 * @param array  &$job Destination job and its durable staging or recovery state.
+	 * @param string $base Absolute private backup/recovery storage directory.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function save_recovery_plan( array &$job, string $base ): void {
 		$timing = hrtime( true );
 		try {
@@ -1311,6 +1503,13 @@ final class CSM_Plugin {
 			CSM_Timing::add( 'apply.recovery_plan', $timing, 0 ); }
 	}
 
+	/**
+	 * Advance journaled file publication with durable installation cursors.
+	 *
+	 * @param array  &$job Destination job and its durable staging or recovery state.
+	 * @param string $cursor_path Absolute path to the durable replacement cursor.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function replace_files( array &$job, string $cursor_path ): bool {
 		$timing = hrtime( true );
 		try {
@@ -1440,6 +1639,7 @@ final class CSM_Plugin {
 						}
 						unset( $work['install'] );
 					}
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Delete the validated local file during cleanup or recoverable publication.
 				} elseif ( is_file( $target ) && ! unlink( $target ) ) {
 					throw new RuntimeException( 'Could not remove obsolete file.' );
 				}
@@ -1482,6 +1682,12 @@ final class CSM_Plugin {
 			CSM_Timing::add( 'apply.replace_files', $timing, 0 ); }
 	}
 
+	/**
+	 * Verify installed file and table state within the current work budget.
+	 *
+	 * @param array &$job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function verify_installed_step( array &$job ): bool {
 		$timing = hrtime( true );
 		try {
@@ -1587,6 +1793,12 @@ final class CSM_Plugin {
 			CSM_Timing::add( 'apply.verify_installed', $timing, 0 ); }
 	}
 
+	/**
+	 * Finalize verified installation and retain its destination backup and session state.
+	 *
+	 * @param array &$job Destination job and its durable staging or recovery state.
+	 * @param array $authentication Preserved controller account and session state.
+	 */
 	private static function finish_apply( array &$job, array $authentication ): array {
 		if ( empty( $job['activation_applied'] ) ) {
 			CSM_Timing::measure(
@@ -1620,9 +1832,17 @@ final class CSM_Plugin {
 		return $result;
 	}
 
+	/**
+	 * Advance file restoration from the recorded recovery operations.
+	 *
+	 * @param array &$job Destination job and its durable staging or recovery state.
+	 * @param array $ops Immutable recorded file recovery operations.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function restore_files( array &$job, array $ops ): bool {
 		$restore_path = CSM_Support::private_dir() . '/' . $job['id'] . '-restore.json';
 		if ( is_file( $restore_path ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$cursor                 = json_decode( file_get_contents( $restore_path ), true );
 			$job['restore_cursor']  = $cursor['cursor'];
 			$job['restore_install'] = $cursor['install'] ?? null; }
@@ -1660,6 +1880,7 @@ final class CSM_Plugin {
 			if ( $op['existed'] ) {
 				$verify = empty( $job['restore_install']['copy']['stamp'] ) && isset( $op['sha256'] );
 				if ( ! is_file( $op['backup'] ) || ( $verify && ! hash_equals( $op['sha256'], CSM_Support::hash_file( $op['backup'] ) ) ) ) {
+					// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 					throw new RuntimeException( 'Backup file is missing or changed: ' . $op['path'] );
 				}
 				$done = self::install_file_step(
@@ -1690,6 +1911,7 @@ final class CSM_Plugin {
 					return false;
 				}
 				unset( $job['restore_install'] );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Delete the validated local file during cleanup or recoverable publication.
 			} elseif ( is_file( $target ) && ! unlink( $target ) ) {
 				throw new RuntimeException( 'Could not remove restored file.' );
 			}
@@ -1708,6 +1930,11 @@ final class CSM_Plugin {
 		return true;
 	}
 
+	/**
+	 * Clear maintenance protection owned by the specified transfer.
+	 *
+	 * @param string $id Transfer identifier.
+	 */
 	private static function end_maintenance( string $id ): void {
 		if ( ( get_option( '_csm_maintenance', array() )['id'] ?? '' ) === $id ) {
 			delete_option( '_csm_maintenance' ); }
@@ -1715,12 +1942,24 @@ final class CSM_Plugin {
 		delete_option( '_csm_recovery_blocked_' . $id );
 	}
 
+	/**
+	 * Copy bounded file bytes while retaining resumable source and destination offsets.
+	 *
+	 * @param string        $source Source filesystem path or source inventory, as specified by the parameter type.
+	 * @param string        $target Destination filesystem path.
+	 * @param array|null    &$state Resumable work state; updated in place when passed by reference.
+	 * @param bool          $sealed Whether the destination part is protected between resumable copy steps.
+	 * @param resource|null $target_handle Optional caller-owned output stream already opened for this destination.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function copy_step( string $source, string $target, ?array &$state, bool $sealed = false, $target_handle = null ): bool {
 		$timing = hrtime( true );
 		$copied = 0;
 		clearstatcache( true, $source );
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- A missing or replaced file is handled by the following metadata validation or fallback.
 		$stat = @stat( $source );
 		if ( ! $stat || ! is_file( $source ) ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'Copy source is missing: ' . basename( $source ) ); }
 		$stamp   = array( $stat['size'], $stat['mtime'], $stat['ctime'], $stat['ino'] );
 		$state ??= array(
@@ -1728,14 +1967,19 @@ final class CSM_Plugin {
 			'stamp'  => $stamp,
 		);
 		if ( $stamp !== $state['stamp'] ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'File changed during copy: ' . basename( $source ) ); }
 		if ( $state['offset'] > 0 && ( ! is_file( $target ) || filesize( $target ) < $state['offset'] ) ) {
 			throw new RuntimeException( 'Copy checkpoint is missing or truncated.' ); }
 		if ( $sealed && ! is_resource( $target_handle ) && is_file( $target ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Apply exact local permission bits required by staging and publication.
 			chmod( $target, 0600 ); }
-		$in  = fopen( $source, 'rb' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
+		$in = fopen( $source, 'rb' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 		$out = $target_handle ?? fopen( $target, 'c+b' );
 		if ( $sealed && ! is_resource( $target_handle ) && is_file( $target ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Apply exact local permission bits required by staging and publication.
 			chmod( $target, 0000 ); }
 		if ( ! $in || ! $out || ! ftruncate( $out, $state['offset'] ) || fseek( $in, $state['offset'] ) !== 0 || fseek( $out, $state['offset'] ) !== 0 ) {
 			throw new RuntimeException( 'Cannot resume file copy.' ); }
@@ -1753,11 +1997,24 @@ final class CSM_Plugin {
 			fflush( $out );
 			return $state['offset'] === $stat['size'];
 		} finally {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 			fclose( $in );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 			fclose( $out );
 			CSM_Timing::add( 'files.copy', $timing, $copied ); }
 	}
 
+	/**
+	 * Install a file in bounded steps with durable publication state and metadata.
+	 *
+	 * @param string        $source Source filesystem path or source inventory, as specified by the parameter type.
+	 * @param string        $target Destination filesystem path.
+	 * @param int           $mtime Source modification time to restore after publication.
+	 * @param int           $mode Destination permission bits.
+	 * @param array|null    &$state Resumable work state; updated in place when passed by reference.
+	 * @param callable|null $checkpoint Optional callback persisting a completed file-installation checkpoint.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function install_file_step( string $source, string $target, int $mtime, int $mode, ?array &$state, ?callable $checkpoint = null ): bool {
 		if ( ! is_dir( dirname( $target ) ) && ! wp_mkdir_p( dirname( $target ) ) ) {
 			throw new RuntimeException( 'Cannot create destination directory.' ); }
@@ -1769,10 +2026,14 @@ final class CSM_Plugin {
 				if ( ! $temp ) {
 					throw new RuntimeException( 'Cannot create replacement file.' ); }
 				// Keep the descriptor open so copying need not unseal and reseal the new file.
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 				$handle = fopen( $temp, 'c+b' );
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Apply exact local permission bits required by staging and publication.
 				if ( ! $handle || ! chmod( $temp, 0000 ) ) {
 					if ( is_resource( $handle ) ) {
+						// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 						fclose( $handle );
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- Best-effort removal of an obsolete or failed temporary artifact must not mask the primary result. Delete the validated local file during cleanup or recoverable publication.
 					} @unlink( $temp );
 					throw new RuntimeException( 'Cannot seal replacement file.' ); }
 				$state = array(
@@ -1789,9 +2050,12 @@ final class CSM_Plugin {
 			if ( ! self::copy_step( $source, $state['temp'], $state['copy'], true, $handle ) ) {
 				return false; }
 			$publish = hrtime( true );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_touch -- Retain source timestamps or the recovery heartbeat on local storage.
 			touch( $state['temp'], $mtime );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Same-filesystem rename is the atomic publication/recovery boundary.
 			if ( ! rename( $state['temp'], $target ) ) {
 				throw new RuntimeException( 'Could not replace destination file.' ); }
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Apply exact local permission bits required by staging and publication.
 			if ( ! chmod( $target, $mode ) ) {
 				throw new RuntimeException( 'Could not set destination file permissions.' ); }
 			if ( function_exists( 'opcache_invalidate' ) ) {
@@ -1800,13 +2064,21 @@ final class CSM_Plugin {
 			return true;
 		} finally {
 			if ( is_resource( $handle ) ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $handle ); }
 		}
 	}
 
+	/**
+	 * Read the immutable recovery operations associated with a job.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function recovery_operations( array $job ): array {
 		if ( ! isset( $job['ops_hash'] ) ) {
 			return $job['ops']; }
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Missing local input is checked immediately and rejected or treated as an absent cache. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		$plan = @file_get_contents( ( $job['backup_dir'] ?? CSM_Support::private_dir() . '/' . $job['id'] . '-backup' ) . '/operations.json' );
 		if ( false === $plan || ! hash_equals( $job['ops_hash'], hash( 'sha256', $plan ) ) ) {
 			throw new RuntimeException( 'The file recovery plan is missing or changed.' ); }
@@ -1816,6 +2088,12 @@ final class CSM_Plugin {
 		return $ops;
 	}
 
+	/**
+	 * Restore original destination state through the retained recovery plan.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function rollback( array $job ): array {
 		CSM_Support::work( $job['id'], false );
 		CSM_Progress::update(
@@ -1851,11 +2129,13 @@ final class CSM_Plugin {
 		wp_schedule_single_event( time() + 60, 'trickle_recover', array( $job['id'] ) );
 		$apply_cursor = CSM_Support::private_dir() . '/' . $job['id'] . '-apply.json';
 		if ( is_file( $apply_cursor ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$cursor = json_decode( file_get_contents( $apply_cursor ), true );
 			if ( isset( $job['apply_work'] ) ) {
 				$job['apply_work'] = array_replace( $job['apply_work'], $cursor ); }
 		}
 		if ( ! empty( $job['apply_work']['install']['temp'] ) ) {
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- Best-effort removal of an obsolete or failed temporary artifact must not mask the primary result. Delete the validated local file during cleanup or recoverable publication.
 			@unlink( $job['apply_work']['install']['temp'] );
 			unset( $job['apply_work']['install'] ); }
 		if ( ! CSM_Support::runtime_lock( true ) ) {
@@ -1870,7 +2150,7 @@ final class CSM_Plugin {
 		}
 		$ops = self::recovery_operations( $job );
 		CSM_Database::restore_tables( $job );
-		$authentication = self::retain_controller( $actor, $job, $authenticated_session ?: null );
+		$authentication = self::retain_controller( $actor, $job, $authenticated_session ? $authenticated_session : null );
 		if ( ! self::restore_files( $job, $ops ) ) {
 			return self::summary( $job ) + array( 'continue' => true ) + $authentication; }
 		CSM_Activation::restore( $job );
@@ -1886,6 +2166,14 @@ final class CSM_Plugin {
 		return array_merge( self::summary( $job ), $authentication );
 	}
 
+	/**
+	 * Preserve the controlling administrator's account and authenticated session state.
+	 *
+	 * @param WP_User|null $actor Controlling local administrator, or null for a peer-authorized operation.
+	 * @param array        $job Destination job and its durable staging or recovery state.
+	 * @param array|null   $authenticated_session Previously authenticated controller session metadata, when available.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function retain_controller( ?WP_User $actor, array $job, ?array $authenticated_session = null ): array {
 		global $wpdb;
 		if ( ! $actor || ! array_intersect( array_column( $job['database'], 'target' ), array( $wpdb->users, $wpdb->usermeta ) ) ) {
@@ -1903,9 +2191,11 @@ final class CSM_Plugin {
 				)
 			);
 			if ( is_wp_error( $id ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Could not preserve the controlling administrator: ' . $id->get_error_message() ); }
 			$user = new WP_User( $id );
 		}
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Restore the existing password hash without rehashing; wpdb escapes values and the user cache is cleared below.
 		if ( $wpdb->update( $wpdb->users, array( 'user_pass' => $actor->user_pass ), array( 'ID' => $user->ID ) ) === false ) {
 			throw new RuntimeException( 'Could not preserve administrator credentials.' ); }
 		clean_user_cache( $user->ID );
@@ -1914,7 +2204,11 @@ final class CSM_Plugin {
 		$manager = WP_Session_Tokens::get_instance( $user->ID );
 		$token   = wp_get_session_token();
 		if ( '' !== $token ) {
-			$session                 = $authenticated_session ?? ( $manager->get( $token ) ?: array() );
+			$session = $authenticated_session;
+			if ( null === $session ) {
+				$session = $manager->get( $token );
+				$session = $session ? $session : array();
+			}
 			$session['expiration'] ??= (int) ( wp_parse_auth_cookie( '', 'logged_in' )['expiration'] ?? time() + 2 * DAY_IN_SECONDS );
 			$manager->update( $token, $session );
 			// Cookies identify the username and token, so they remain valid even if its numeric ID changed.
@@ -1928,6 +2222,12 @@ final class CSM_Plugin {
 		return array( 'nonce' => wp_create_nonce( 'csm_admin' ) );
 	}
 
+	/**
+	 * Remove owned transfer staging and recovery data without reverting applied changes.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function discard( array $job ): void {
 		if ( ( get_option( '_csm_backup_restore', array() )['backup_id'] ?? '' ) === $job['id'] ) {
 			throw new RuntimeException( 'Recovery is using this backup. It cannot be discarded yet.' ); }
@@ -1951,12 +2251,20 @@ final class CSM_Plugin {
 			delete_option( '_csm_active_job' ); }
 	}
 
+	/**
+	 * Resolve the controller's selected saved connection for trusted internal use.
+	 */
 	public static function peer(): array {
 		return CSM_Controller::peer(); }
 
+	/**
+	 * Authorize and dispatch administrator dashboard operations with nonce verification.
+	 *
+	 * @throws RuntimeException Internally for invalid dashboard data; caught and returned as JSON.
+	 */
 	public static function ajax(): void {
-		$action = sanitize_key( $_POST['op'] ?? '' );
-		if ( ! current_user_can( 'manage_options' ) || ! is_string( $_POST['nonce'] ?? null ) || ! wp_verify_nonce( $_POST['nonce'], 'csm_admin' ) ) {
+		$action = is_string( $_POST['op'] ?? null ) ? sanitize_key( wp_unslash( $_POST['op'] ) ) : '';
+		if ( ! current_user_can( 'manage_options' ) || ! is_string( $_POST['nonce'] ?? null ) || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['nonce'] ) ), 'csm_admin' ) ) {
 			CSM_Log::write(
 				'warning',
 				'Dashboard control authentication rejected',
@@ -1991,7 +2299,17 @@ final class CSM_Plugin {
 			}
 		);
 		try {
+			if ( '' === $action ) {
+				throw new RuntimeException( 'Invalid dashboard action.' );
+			}
+			if ( ! is_string( $_POST['data'] ?? '{}' ) ) {
+				throw new RuntimeException( 'Invalid dashboard JSON.' );
+			}
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- String JSON is unslashed, decoded with exceptions, checked as structured data and validated by the selected operation.
 			$data = json_decode( wp_unslash( $_POST['data'] ?? '{}' ), true, 64, JSON_THROW_ON_ERROR );
+			if ( ! is_array( $data ) ) {
+				throw new RuntimeException( 'Dashboard data must be a JSON object or array.' );
+			}
 			if ( preg_match( '/^[a-f0-9]{32}$/D', $data['id'] ?? '' ) ) {
 				$id = $data['id']; }
 			$result    = CSM_Controller::execute( $action, $data );
@@ -2021,9 +2339,18 @@ final class CSM_Plugin {
 		}
 	}
 
+	/**
+	 * Build the private site URL and administrator connection-key pairing text.
+	 */
 	public static function pairing(): string {
 		return site_url() . "\n" . get_option( '_csm_key' ); }
 
+	/**
+	 * Validate pasted pairing text and normalize its peer URL and key.
+	 *
+	 * @param string $code Pasted site URL and private connection-key pairing text.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function parse_pairing( string $code ): array {
 		$code = trim( $code );
 		if ( preg_match( '#^(https?://\S+)\s+([a-f0-9]{64})$#D', $code, $matches ) ) {
@@ -2033,6 +2360,7 @@ final class CSM_Plugin {
 			);
 		} else {
 			// Codes issued by the first preview encoded the same URL/key pair as base64 JSON.
+			// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 			$decoded = base64_decode( $code, true );
 			$peer    = false === $decoded ? null : json_decode( $decoded, true );
 		}
@@ -2045,12 +2373,18 @@ final class CSM_Plugin {
 		);
 	}
 
+	/**
+	 * Enqueue assets only for the Trickle administration screen.
+	 *
+	 * @param string $hook Current WordPress administration screen hook.
+	 */
 	public static function assets( string $hook ): void {
 		if ( 'tools_page_trickle' !== $hook ) {
 			return; }
 		wp_enqueue_style( 'trickle', plugins_url( 'assets/admin.css', CSM_FILE ), array(), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/admin.css' ) );
 		wp_enqueue_style( 'trickle-workspace', plugins_url( 'assets/workspace.css', CSM_FILE ), array( 'trickle' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/workspace.css' ) );
 		wp_enqueue_style( 'trickle-clarity', plugins_url( 'assets/clarity.css', CSM_FILE ), array( 'trickle-workspace' ), CSM_VERSION . '.' . filemtime( dirname( CSM_FILE ) . '/assets/clarity.css' ) );
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Read-only navigation uses a strict allowlist/literal branch; no mutation or arbitrary include path is accepted.
 		$script = ( $_GET['view'] ?? '' ) === 'backups' ? 'backups' : 'admin';
 		if ( 'admin' === $script ) {
 			wp_enqueue_script( 'trickle-carbon-date-picker', plugins_url( 'vendor/carbon/date-picker.min.js', CSM_FILE ), array(), '2.68.0', true );
@@ -2081,6 +2415,9 @@ final class CSM_Plugin {
 		);
 	}
 
+	/**
+	 * Render the selected Trickle administration view for an authorized administrator.
+	 */
 	public static function page(): void {
 		if ( ! current_user_can( 'manage_options' ) ) {
 			return; }
@@ -2101,6 +2438,7 @@ final class CSM_Plugin {
 		if ( defined( 'CSM_SETUP_REQUEST_INTERVAL' ) ) {
 			$transfer_defaults['setup_request_interval'] = CSM_SETUP_REQUEST_INTERVAL; }
 		$settings = CSM_Access::settings();
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Read-only navigation uses a strict allowlist/literal branch; no mutation or arbitrary include path is accepted.
 		require __DIR__ . ( ( $_GET['view'] ?? '' ) === 'backups' ? '/backup-page.php' : '/admin.php' );
 	}
 }

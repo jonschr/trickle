@@ -23,7 +23,7 @@ function get_user_by($field,$value){foreach($GLOBALS['users']as$id=>$user){if(($
 function get_userdata($id){return isset($GLOBALS['users'][$id])?new WP_User($id):false;}
 class FakeCookieDB{public $users='wp_users',$usermeta='wp_usermeta';function update($table,$data,$where){$GLOBALS['users'][$where['ID']]=array_merge($GLOBALS['users'][$where['ID']],$data);return 1;}}
 $wpdb=new FakeCookieDB;
-require $core.'class-wp-session-tokens.php';require $core.'class-wp-user-meta-session-tokens.php';require $core.'pluggable.php';require __DIR__.'/../includes/plugin.php';
+require $core.'class-wp-session-tokens.php';require $core.'class-wp-user-meta-session-tokens.php';require $core.'pluggable.php';require __DIR__.'/../includes/class-csm-plugin.php';
 $preserve=new ReflectionMethod(CSM_Plugin::class,'retain_controller');$job=['database'=>[['target'=>'wp_users'],['target'=>'wp_usermeta']]];
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label."\n";}
 foreach([7,21]as$destination){foreach([1,14]as$days){

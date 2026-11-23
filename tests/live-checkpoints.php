@@ -24,7 +24,7 @@ class CSM_Transport {
   return ['continue'=>true,'checkpoint'=>['offset'=>$state['bytes'],'size'=>null],'live_files'=>$state];
  }
 }
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $method=new ReflectionMethod(CSM_Controller::class,'live_step');
 function advance($control){$GLOBALS['method']->invoke(null,$control,false);return $GLOBALS['options']['_csm_control'];}
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}

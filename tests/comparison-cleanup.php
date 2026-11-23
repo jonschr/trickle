@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real comparison-marker cleanup and controller filtering. Isolated private files; no network or sites.
 $root=sys_get_temp_dir().'/trickle-comparison-cleanup-'.bin2hex(random_bytes(5));mkdir($root.'/public',0700,true);
 define('ABSPATH',$root.'/public/');define('DAY_IN_SECONDS',86400);
@@ -10,7 +11,7 @@ class CSM_Transport{
  static function url($s){return rtrim($s,'/');}
  static function request($peer,$op,$data=[],...$args){$GLOBALS['calls'][]=[$op,$data['id']??''];if($op==='version')return ['can_update_trickle'=>$GLOBALS['write']];if($op==='progress')return $GLOBALS['remote'][$data['id']]??[];if($op==='cancel')return [];if($op==='bundle_discard')return ['comparison_cleared'=>CSM_Segments::release_comparison($data['id'])];throw new RuntimeException('Unexpected operation');}
 }
-foreach(['support','access','segments','controller']as$file)require __DIR__.'/../includes/'.$file.'.php';
+foreach(['support','access','segments','controller']as$file)require __DIR__.'/../includes/class-csm-'.$file.'.php';
 $dir=CSM_Support::private_dir();
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function owner($id,$extra=[]){file_put_contents($GLOBALS['dir'].'/segment-'.$id.'-files.source.owner',json_encode($extra+['credential'=>'local','created'=>time()]));}

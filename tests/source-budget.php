@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real snapshot writer with an intentionally slow generator; no WordPress or network.
 define('ABSPATH', '/trickle-budget-fixture-'.bin2hex(random_bytes(8)).'/');
 function wp_salt($scheme){return 'offline-budget-test';}
@@ -6,7 +7,7 @@ function apply_filters($hook,$value){return $hook==='csm_source_packaging_second
 class CSM_Access{static function owner(){return 'test';}static function assert_owner($value){}}
 class CSM_Files{static bool $slow=true;static function selection($s){return $s;}}
 class CSM_Database{static function validate($s){}static function stream($s,$chain=false):Generator{for($i=0;$i<4;$i++){if(CSM_Files::$slow)usleep(300000);yield str_repeat('data',5000);}}}
-require __DIR__.'/../includes/support.php';require __DIR__.'/../includes/jobs.php';require __DIR__.'/../includes/package.php';require __DIR__.'/../includes/segments.php';
+require __DIR__.'/../includes/class-csm-support.php';require __DIR__.'/../includes/class-csm-jobs.php';require __DIR__.'/../includes/class-csm-package.php';require __DIR__.'/../includes/class-csm-segments.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $id=bin2hex(random_bytes(16));$dir=CSM_Support::private_dir();$path=$dir.'/segment-'.$id.'-database.source';$limit=ini_get('max_execution_time');
 try{

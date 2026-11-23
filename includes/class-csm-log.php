@@ -6,7 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-require_once __DIR__ . '/timing.php';
+require_once __DIR__ . '/class-csm-timing.php';
 
 /**
  * Redacted migration diagnostics and bounded log storage.
@@ -51,8 +51,8 @@ final class CSM_Log {
 		$text = preg_replace( '/\b(password|secret|token|api[_ -]?key|signature|nonce|authorization|cookie)\b["\']?\s*[:=]\s*("[^"]*"|\'[^\']*\'|[^\s,;]+)/i', '$1=[redacted]', $text );
 		$text = preg_replace_callback(
 			'#https?://[^\s<>]+#i',
-			static function ( $match ) {
-				$parts = wp_parse_url( $match[0] );
+			static function ( $matches ) {
+				$parts = wp_parse_url( $matches[0] );
 				return $parts && ! empty( $parts['host'] ) ? ( $parts['scheme'] ?? 'https' ) . '://' . $parts['host'] . ( ! empty( $parts['port'] ) ? ':' . $parts['port'] : '' ) . ( $parts['path'] ?? '' ) : '[URL omitted]';
 			},
 			$text
@@ -84,7 +84,8 @@ final class CSM_Log {
 				'context' => $context,
 			);
 			$dir   = CSM_Support::private_dir();
-			$lock  = @fopen( $dir . '/diagnostics.lock', 'c' );
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Open failure is checked immediately; warnings must not corrupt the command or diagnostic response. Native handles retain offsets and locks across bounded streaming steps.
+			$lock = @fopen( $dir . '/diagnostics.lock', 'c' );
 			if ( ! $lock ) {
 				return; }
 			try {
@@ -92,14 +93,20 @@ final class CSM_Log {
 					return; }
 				$path = $dir . '/diagnostics.log';
 				clearstatcache( true, $path );
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rename_rename -- Failed best-effort progress/diagnostic publication returns without interrupting the transfer. Same-filesystem rename is the atomic publication/recovery boundary.
 				if ( is_file( $path ) && filesize( $path ) >= 512 * 1024 && ! @rename( $path, $path . '.1' ) ) {
 					return; }
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Failed progress/diagnostic storage must not interrupt migration or rollback. Write exact local bytes under the specified lock; publication and failure handling stay with this operation.
 				if ( @file_put_contents( $path, CSM_Support::json( $entry ), FILE_APPEND | LOCK_EX ) !== false ) {
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Diagnostic/progress permissions are best-effort; this reporting path must not abort recovery. Apply exact local permission bits required by staging and publication.
 					@chmod( $path, 0600 ); }
 			} finally {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $lock ); }
 		} catch ( Throwable $e ) {
-			/* Diagnostics must never block a transfer or its recovery. */ } finally {
+			// Diagnostics must never block a transfer or its recovery.
+			return;
+		} finally {
 			CSM_Timing::add( 'diagnostics.write', $timing, 0 ); }
 	}
 
@@ -133,7 +140,7 @@ final class CSM_Log {
 			}
 			return $result;
 		};
-		$entries = self::entries( $id ?: null, true );
+		$entries = self::entries( $id ? $id : null, true );
 		return array(
 			'schema_version' => 1,
 			'copied_at'      => gmdate( 'c' ),
@@ -166,7 +173,7 @@ final class CSM_Log {
 		foreach ( array( 'diagnostics.log.1', 'diagnostics.log' ) as $name ) {
 			if ( ! is_file( $dir . '/' . $name ) ) {
 				continue; }
-			foreach ( file( $dir . '/' . $name, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) ?: array() as $line ) {
+			foreach ( (array) file( $dir . '/' . $name, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) as $line ) {
 				$entry = json_decode( $line, true );
 				if ( ! $performance && ( $entry['event'] ?? '' ) === 'Performance sample' ) {
 					continue; }

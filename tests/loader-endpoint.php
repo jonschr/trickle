@@ -1,4 +1,6 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
+function wp_parse_url($url,$component=-1){return parse_url($url,$component);}
 // Real signature verification across separate core/public front controllers.
 $cases=['root','index','split-core','wrapped','subdirectory','bad-signature','login','admin','rest','other-path','manifest','missing-uri'];
 if (!isset($argv[1])) {
@@ -11,7 +13,7 @@ define('ABSPATH',$root.'/');define('WP_CLI',true);define('CSM_VERSION','fixture'
 define('WP_PLUGIN_DIR',dirname(__DIR__,2));define('__CSM_PLUGIN__',basename(dirname(__DIR__)).'/trickle.php');
 function get_option($key,$default=false){return ['active_plugins'=>[__CSM_PLUGIN__,'other/plugin.php'],'_csm_key'=>'fixture-secret','siteurl'=>'https://example.test'.($GLOBALS['mode']==='subdirectory'?'/site':'')][$key]??$default;}
 function add_filter(...$args){}
-require __DIR__.'/../includes/support.php';require __DIR__.'/../includes/access.php';require __DIR__.'/../includes/transport.php';
+require __DIR__.'/../includes/class-csm-support.php';require __DIR__.'/../includes/class-csm-access.php';require __DIR__.'/../includes/class-csm-transport.php';
 $_SERVER=['REQUEST_METHOD'=>'POST','SCRIPT_FILENAME'=>$root.'/index.php','REQUEST_URI'=>'/?trickle=version'];$_GET=['trickle'=>'version'];
 if($mode==='split-core')$_SERVER['SCRIPT_FILENAME']=$root.'/public-index.php';
 if($mode==='wrapped')$_SERVER['SCRIPT_FILENAME']=$root.'/host-router.php';

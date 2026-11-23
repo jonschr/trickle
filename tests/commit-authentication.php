@@ -8,10 +8,10 @@ function home_url(){return 'https://receiver.test';}function wp_salt($name){retu
 function add_option(...$args){return true;}
 class CSM_Support {static function json($data){return json_encode($data);}}
 class CSM_Access {static function id($key){return 'fixture';}static function credential($id){return ['key'=>str_repeat('a',64)];}static function authorize(...$args){}}
-require __DIR__.'/../includes/controller.php';
-require __DIR__.'/../includes/files.php';
-require __DIR__.'/../includes/updates.php';
-require __DIR__.'/../includes/transport.php';
+require __DIR__.'/../includes/class-csm-controller.php';
+require __DIR__.'/../includes/class-csm-files.php';
+require __DIR__.'/../includes/class-csm-updates.php';
+require __DIR__.'/../includes/class-csm-transport.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function signed($change=[]){
  $headers=CSM_Transport::headers('commit',str_repeat('a',64),hash('sha256','{}'));

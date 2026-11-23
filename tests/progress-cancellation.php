@@ -1,11 +1,12 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Actual cancellation markers and time budgets; no WordPress, network or live files.
 define('ABSPATH',sys_get_temp_dir().'/trickle-progress-guards-'.bin2hex(random_bytes(6)).'/public/');
 $salts=0;
 function wp_salt($kind){++$GLOBALS['salts'];return 'progress-guard-fixture';}
 function apply_filters($name,$value){return $name==='csm_source_packaging_seconds'?1:$value;}
 class CSM_Log {static function write(...$args){}}
-require __DIR__.'/../includes/support.php'; require __DIR__.'/../includes/progress.php';
+require __DIR__.'/../includes/class-csm-support.php'; require __DIR__.'/../includes/class-csm-progress.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label.PHP_EOL;}
 $dir=CSM_Support::private_dir();
 try{

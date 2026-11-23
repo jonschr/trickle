@@ -6,7 +6,7 @@ class CSM_Support {
  static function write($fp,$bytes){if(fwrite($fp,$bytes)!==strlen($bytes))throw new RuntimeException('Write failed');}
 }
 function wp_mkdir_p($path){return is_dir($path)||mkdir($path,0700,true);}
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-plugin.php';
 $dir=sys_get_temp_dir().'/trickle-sealed-'.bin2hex(random_bytes(6));mkdir($dir,0700);$source=$dir.'/source';$target=$dir.'/target';$payload=random_bytes(1048576);file_put_contents($source,$payload);$state=null;$recorded=[];
 $method=new ReflectionMethod(CSM_Plugin::class,'install_file_step');
 $check=static function($ok,$label){if(!$ok)throw new RuntimeException($label);echo 'PASS '.$label."\n";};

@@ -2,7 +2,7 @@
 // New native endpoints use the existing read/write scopes; no WordPress or network.
 define('ABSPATH','/fixture/');$settings=['pull'=>true,'push'=>true];
 function get_option($name,$default=false){return $name==='_csm_settings'?$GLOBALS['settings']:$default;}
-require __DIR__.'/../includes/access.php';
+require __DIR__.'/../includes/class-csm-access.php';
 $tokens=['read'=>['id'=>'read','read'=>true,'write'=>false],'write'=>['id'=>'write','read'=>false,'write'=>true],'both'=>['id'=>'both','read'=>true,'write'=>true]];
 foreach(['live_files'=>['read','both'],'live_receive'=>['write','both'],'live_state'=>['read','write','both']]as$action=>$allowed){
  foreach($tokens as$name=>$token){$ok=true;try{CSM_Access::authorize($token,$action);}catch(RuntimeException$e){$ok=false;}if($ok!==in_array($name,$allowed,true))throw new RuntimeException('Scope mismatch: '.$action.' '.$name);}

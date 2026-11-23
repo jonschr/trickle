@@ -11,27 +11,56 @@ defined( 'ABSPATH' ) || exit;
  * Verified database export, staging, replacement and recovery.
  */
 final class CSM_Database {
+	/**
+	 * Read a migration query and reject database errors instead of treating them as empty results.
+	 *
+	 * @param string    $sql Migration SQL whose identifiers and values are checked by the caller.
+	 * @param string    $format Requested wpdb result format, such as ARRAY_A.
+	 * @param wpdb|null $reader Optional database connection; null uses the current WordPress connection.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function rows( string $sql, string $format = ARRAY_A, ?wpdb $reader = null ): array {
 		global $wpdb;
 		$reader ??= $wpdb;
 		$rows     = $reader->get_results( $sql, $format );
 		if ( '' !== $reader->last_error || ! is_array( $rows ) ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'Database read failed: ' . $reader->last_error ); }
 		return $rows;
 	}
 
+	/**
+	 * Check whether an exact table name exists in the current database.
+	 *
+	 * @param string $table Validated table name.
+	 */
 	public static function table_exists( string $table ): bool {
 		global $wpdb;
 		$rows = self::rows( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ), ARRAY_N );
 		return ( $rows[0][0] ?? null ) === $table;
 	}
 
+	/**
+	 * Read a table's ordered primary-key columns for resumable paging.
+	 *
+	 * @param string    $table Validated table name.
+	 * @param wpdb|null $reader Optional database connection; null uses the current WordPress connection.
+	 */
 	public static function primary_keys( string $table, ?wpdb $reader = null ): array {
 		$keys = self::rows( 'SHOW INDEX FROM ' . CSM_Support::ident( $table ) . " WHERE Key_name = 'PRIMARY'", ARRAY_A, $reader );
 		usort( $keys, static fn( $a, $b ) => (int) $a['Seq_in_index'] <=> (int) $b['Seq_in_index'] );
 		return array_column( $keys, 'Column_name' );
 	}
 
+	/**
+	 * Build the validated keyset or offset paging clause for a table export.
+	 *
+	 * @param array      $keys Ordered primary-key column names.
+	 * @param array|null $last Last exported key values, or null before the first page.
+	 * @param int        $offset Zero-based byte, row or preview offset for this operation.
+	 * @param array      $columns Exported column metadata used for paging or ordering.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function page_sql( array $keys, ?array $last, int $offset, array $columns ): string {
 		global $wpdb;
 		$where = '';
@@ -52,6 +81,9 @@ final class CSM_Database {
 		return $where . $order . ( $keys ? ' LIMIT 250' : ' LIMIT ' . $offset . ',250' );
 	}
 
+	/**
+	 * List eligible WordPress tables and their recorded sizes.
+	 */
 	public static function inventory(): array {
 		global $wpdb;
 		$sql    = $wpdb->prepare( 'SELECT TABLE_NAME, ENGINE, TABLE_ROWS, DATA_LENGTH + INDEX_LENGTH AS bytes FROM information_schema.TABLES WHERE TABLE_SCHEMA = %s AND TABLE_TYPE = %s ORDER BY TABLE_NAME', DB_NAME, 'BASE TABLE' );
@@ -70,6 +102,12 @@ final class CSM_Database {
 		return $result;
 	}
 
+	/**
+	 * Require the selected table names to belong to the eligible WordPress inventory.
+	 *
+	 * @param array $tables Selected or recorded table names.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function validate( array $tables ): array {
 		$allowed = array_column( self::inventory(), null, 'id' );
 		$output  = array();
@@ -77,6 +115,7 @@ final class CSM_Database {
 			if ( ! isset( $allowed[ $table ] ) ) {
 				throw new RuntimeException( 'Unknown database table.' ); }
 			if ( ! in_array( strtoupper( $allowed[ $table ]['engine'] ), array( 'INNODB', 'MYISAM', 'MEMORY' ), true ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( $table . ' uses an unsupported database engine: ' . $allowed[ $table ]['engine'] );
 			}
 			$output[] = $table;
@@ -84,6 +123,9 @@ final class CSM_Database {
 		return $output;
 	}
 
+	/**
+	 * Collect source URLs and filesystem roots used by replacement rules.
+	 */
 	public static function identity(): array {
 		return array(
 			'url'     => site_url(),
@@ -93,6 +135,13 @@ final class CSM_Database {
 		);
 	}
 
+	/**
+	 * Build the proposed default replacement rules from both site identities.
+	 *
+	 * @param array $source Source inventory or site identity used for comparison and replacement rules.
+	 * @param array $destination Destination inventory or site identity used for comparison and replacements.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function replacement_defaults( array $source, array $destination ): array {
 		$rules = array();
 		foreach ( array(
@@ -146,6 +195,12 @@ final class CSM_Database {
 		return array_values( $rules );
 	}
 
+	/**
+	 * Validate the configured replacement rules without applying them yet.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function replacement_selection( array $selection ): array {
 		$selection['replace'] = ! array_key_exists( 'replace', $selection ) || ! empty( $selection['replace'] );
 		if ( ! array_key_exists( 'replacements', $selection ) ) {
@@ -175,6 +230,13 @@ final class CSM_Database {
 		return $selection;
 	}
 
+	/**
+	 * Normalize replacement rules and reject conflicting enabled search values.
+	 *
+	 * @param array $rules Configured replacement rules.
+	 * @param bool  $enabled Whether to select enabled rather than disabled replacement rules.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function rules_to_pairs( array $rules, bool $enabled ): array {
 		if ( ! $enabled ) {
 			return array(); }
@@ -192,6 +254,13 @@ final class CSM_Database {
 		return $pairs;
 	}
 
+	/**
+	 * Resolve the enabled source-to-destination replacement pairs.
+	 *
+	 * @param array $source Source inventory or site identity used for comparison and replacement rules.
+	 * @param array $destination Destination inventory or site identity used for comparison and replacements.
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 */
 	public static function replacement_pairs( array $source, array $destination, array $selection ): array {
 		$selection = self::replacement_selection( $selection );
 		if ( ! $selection['replace'] ) {
@@ -199,12 +268,24 @@ final class CSM_Database {
 		return self::rules_to_pairs( $selection['replacements'] ?? self::replacement_defaults( $source, $destination ), $selection['replace'] );
 	}
 
+	/**
+	 * Build deterministic export ordering for a table without a usable primary key.
+	 *
+	 * @param array $columns Exported column metadata used for paging or ordering.
+	 */
 	public static function keyless_order( array $columns ): string {
 		// Equal rows may tie; distinct row contents must have stable paging even without an index.
 		$values = array_map( static fn( $column )=>'IFNULL(HEX(CAST(' . CSM_Support::ident( $column ) . " AS BINARY)),'NULL')", $columns );
 		return " ORDER BY SHA2(CONCAT_WS(','," . implode( ',', $values ) . '),256)';
 	}
 
+	/**
+	 * Yield a consistent database snapshot as bounded schema and row records.
+	 *
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @param bool  $chain Whether to include the framed snapshot checksum-chain records.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function stream( array $selection, bool $chain = false ): Generator {
 		global $wpdb;
 		$tables = self::validate( $selection['tables'] ?? array() );
@@ -238,8 +319,10 @@ final class CSM_Database {
 			}
 			CSM_Support::query( 'SET TRANSACTION ISOLATION LEVEL REPEATABLE READ' );
 			CSM_Support::query( 'START TRANSACTION WITH CONSISTENT SNAPSHOT, READ ONLY' );
+			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_thread_id -- Detect a reconnected MySQL session before continuing a supposedly consistent snapshot.
 			$transaction_connection = mysqli_thread_id( $wpdb->dbh );
-			$locked_connection      = mysqli_thread_id( $reader->dbh );
+			// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_thread_id -- Detect a reconnected MySQL session before continuing a supposedly consistent snapshot.
+			$locked_connection = mysqli_thread_id( $reader->dbh );
 			foreach ( $tables as $table ) {
 				$table_reader = in_array( $table, $locked, true ) ? $reader : $wpdb;
 				CSM_Support::check_source_budget();
@@ -282,6 +365,7 @@ final class CSM_Database {
 				$offset = 0;
 				do {
 					$batch = self::rows( 'SELECT ' . implode( ',', array_map( array( CSM_Support::class, 'ident' ), $names ) ) . ' FROM ' . $quoted . self::page_sql( $keys, $last, $offset, $names ), ARRAY_A, $table_reader );
+					// phpcs:ignore WordPress.DB.RestrictedFunctions.mysql_mysqli_thread_id -- Detect a reconnected MySQL session before continuing a supposedly consistent snapshot.
 					if ( mysqli_thread_id( $table_reader->dbh ) !== ( $table_reader === $wpdb ? $transaction_connection : $locked_connection ) ) {
 						throw new RuntimeException( 'Source database reconnected during snapshot. Prepare again.' ); }
 					foreach ( $batch as $row ) {
@@ -291,6 +375,7 @@ final class CSM_Database {
 							continue; }
 						$encoded = array();
 						foreach ( $row as $name => $value ) {
+							// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 							$encoded[] = null === $value ? null : base64_encode( (string) $value ); }
 						$line = CSM_Support::json(
 							array(
@@ -309,6 +394,7 @@ final class CSM_Database {
 						CSM_Progress::update( array( 'count' => $rows ) );
 					}
 					$offset += count( $batch );
+				// phpcs:ignore Squiz.PHP.DisallowSizeFunctionsInLoops.Found -- Each fetched page replaces this batch; its size determines whether another page is needed.
 				} while ( count( $batch ) === 250 );
 				$line = CSM_Support::json( array( 'type' => 'table-end' ) );
 				if ( $chain ) {
@@ -334,13 +420,25 @@ final class CSM_Database {
 		}
 	}
 
+	/**
+	 * Read the storage engine specified by an exported table schema.
+	 *
+	 * @param string $ddl Exported CREATE TABLE statement subject to schema validation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function schema_engine( string $ddl ): string {
 		if ( ! preg_match( '/\bENGINE=(InnoDB|MyISAM|MEMORY)\b/i', $ddl, $match ) ) {
 			throw new RuntimeException( 'Unsupported database engine.' ); }
 		return strtoupper( $match[1] );
 	}
 
-	/** Rebind only SHOW CREATE TABLE's ordinary, same-database foreign keys. */
+	/** Rebind only SHOW CREATE TABLE's ordinary, same-database foreign keys.
+	 *
+	 * @param string $ddl Exported CREATE TABLE statement subject to schema validation.
+	 * @param array  $mapping Source table names mapped to private staging table names.
+	 * @param string $salt Per-transfer constraint-name salt.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function foreign_schema( string $ddl, array $mapping, string $salt ): array {
 		$keys  = array();
 		$lines = array();
@@ -354,6 +452,7 @@ final class CSM_Database {
 				throw new RuntimeException( 'Unsupported foreign-key definition.' );
 			}
 			if ( ! isset( $mapping[ $match[3] ] ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Include the related table in this transfer: ' . $match[3] ); }
 			$name   = '_csm_fk_' . substr( hash( 'sha256', $salt . $match[1] ), 0, 40 );
 			$keys[] = 'CONSTRAINT ' . CSM_Support::ident( $name ) . ' FOREIGN KEY (' . $match[2] . ') REFERENCES ' . CSM_Support::ident( $mapping[ $match[3] ] ) . ' (' . $match[4] . ')' . $match[5];
@@ -362,6 +461,12 @@ final class CSM_Database {
 		return array( $ddl, $keys );
 	}
 
+	/**
+	 * Map source table names to bounded private destination staging names.
+	 *
+	 * @param array  $tables Selected or recorded table names.
+	 * @param string $id Transfer identifier.
+	 */
 	private static function stage_mapping( array $tables, string $id ): array {
 		$mapping = array();
 		foreach ( $tables as $index => $name ) {
@@ -369,6 +474,12 @@ final class CSM_Database {
 		return $mapping;
 	}
 
+	/**
+	 * Create staged primary-key metadata after row import.
+	 *
+	 * @param string $table Validated table name.
+	 * @param array  $keys Ordered primary-key column names.
+	 */
 	public static function attach_keys( string $table, array $keys ): void {
 		foreach ( $keys as $key ) {
 			$schema = self::rows( 'SHOW CREATE TABLE ' . CSM_Support::ident( $table ), ARRAY_N )[0][1];
@@ -378,12 +489,19 @@ final class CSM_Database {
 		}
 	}
 
+	/**
+	 * Drop recorded private staging tables using validated identifiers.
+	 *
+	 * @param array $tables Selected or recorded table names.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function drop_private_tables( array $tables ): void {
 		global $wpdb;
 		foreach ( $tables as $table ) {
 			if ( ! preg_match( '/^_csm_[a-zA-Z0-9_$-]+$/D', $table ) ) {
 				throw new RuntimeException( 'Invalid private database table.' ); }
 		}
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Session state and staged-table operations use validated identifiers and prepared option values; caching is unsafe.
 		$checks = (int) $wpdb->get_var( 'SELECT @@SESSION.foreign_key_checks' );
 		CSM_Support::query( 'SET SESSION FOREIGN_KEY_CHECKS=0' );
 		try {
@@ -393,6 +511,14 @@ final class CSM_Database {
 			CSM_Support::query( 'SET SESSION FOREIGN_KEY_CHECKS=' . $checks ); }
 	}
 
+	/**
+	 * Remap only WordPress role and per-site usermeta keys tied to the source table prefix.
+	 *
+	 * @param string $value Value to encode or transform.
+	 * @param string $column Source column name whose WordPress identity value may need remapping.
+	 * @param string $table Validated table name.
+	 * @param string $prefix Source WordPress table prefix.
+	 */
 	private static function prefix_key( string $value, string $column, string $table, string $prefix ): string {
 		global $wpdb;
 		// Plugin option names can begin with wp_ without being tied to the site's table prefix.
@@ -401,6 +527,13 @@ final class CSM_Database {
 		return $prefix !== $wpdb->prefix && ( $roles || $user_option ) ? $wpdb->prefix . substr( $value, strlen( $prefix ) ) : $value;
 	}
 
+	/**
+	 * Import a complete database record stream into private staging tables.
+	 *
+	 * @param resource $fp Caller-owned stream handle positioned at the next record or write offset.
+	 * @param array    &$job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function stage( $fp, array &$job ): void {
 		global $wpdb;
 		$header = CSM_Support::line( $fp );
@@ -421,6 +554,7 @@ final class CSM_Database {
 		while ( true ) {
 			$record = CSM_Support::line( $fp );
 			if ( ( $record['type'] ?? '' ) === 'end' ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- Read a bounded block from the current native stream offset.
 				if ( $current || $rows !== $record['rows'] || ! hash_equals( hash_final( $hash ), $record['sha256'] ) || $seen !== $header['tables'] || fread( $fp, 1 ) !== '' ) {
 					throw new RuntimeException( 'Database stream is incomplete or checksum failed.' );
 				}
@@ -474,6 +608,7 @@ final class CSM_Database {
 					if ( null === $value ) {
 						$values[] = 'NULL';
 						continue; }
+					// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 					$decoded = base64_decode( $value, true );
 					if ( false === $decoded ) {
 						throw new RuntimeException( 'Invalid row encoding.' ); }
@@ -493,6 +628,15 @@ final class CSM_Database {
 		}
 	}
 
+	/**
+	 * Advance bounded database staging with durable row and table checkpoints.
+	 *
+	 * @param resource $fp Caller-owned stream handle positioned at the next record or write offset.
+	 * @param array    &$job Destination job and its durable staging or recovery state.
+	 * @param bool     $continuing Whether to preserve the current work-step deadline.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
+	 */
 	public static function stage_step( $fp, array &$job, bool $continuing = false ): bool {
 		global $wpdb;
 		$state = $job['imports']['database'] ?? null;
@@ -552,6 +696,7 @@ final class CSM_Database {
 				$record = CSM_Support::line( $fp );
 				$type   = $record['type'] ?? '';
 				if ( 'end' === $type ) {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- Read a bounded block from the current native stream offset.
 					if ( $state['current'] || $state['rows'] !== $record['rows'] || ! hash_equals( $state['hash'], $record['sha256'] ) || $state['seen'] !== $state['header']['tables'] || fread( $fp, 1 ) !== '' ) {
 						throw new RuntimeException( 'Database stream is incomplete or checksum failed.' ); }
 					$checkpoint();
@@ -603,6 +748,7 @@ final class CSM_Database {
 						if ( null === $value ) {
 							$values[] = 'NULL';
 							continue; }
+						// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 						$decoded = base64_decode( $value, true );
 						if ( false === $decoded ) {
 							throw new RuntimeException( 'Invalid row encoding.' ); }
@@ -647,6 +793,11 @@ final class CSM_Database {
 
 	private const POST_CRON_HOOKS = array( 'upgrader_scheduled_cleanup', 'publish_future_post' );
 
+	/**
+	 * Remove core publication and temporary-upload cleanup hooks from a cron snapshot.
+	 *
+	 * @param array $cron Cron snapshot whose unrelated scheduled events must be retained.
+	 */
 	private static function without_post_cron( array $cron ): array {
 		foreach ( $cron as $time => $hooks ) {
 			if ( ! is_array( $hooks ) ) {
@@ -661,6 +812,13 @@ final class CSM_Database {
 		return $cron;
 	}
 
+	/**
+	 * Rebuild future publication hooks from staged posts while retaining unrelated cron jobs.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @param array $cron Cron snapshot whose unrelated scheduled events must be retained.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function post_cron( array $job, array $cron ): array {
 		global $wpdb;
 		$cron = self::without_post_cron( $cron );
@@ -673,6 +831,7 @@ final class CSM_Database {
 				if ( $id < 1 || false === $time || $time < 1 ) {
 					throw new RuntimeException( 'A scheduled source post has an invalid ID or publication date.' ); }
 				$args = array( $id );
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- WordPress cron identifies events by md5(serialize(args)); retain the core key format.
 				$cron[ $time ]['publish_future_post'][ md5( serialize( $args ) ) ] = array(
 					'schedule' => false,
 					'args'     => $args,
@@ -684,12 +843,19 @@ final class CSM_Database {
 		return $cron;
 	}
 
+	/**
+	 * Publish verified staging tables while retaining database recovery state.
+	 *
+	 * @param array &$job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function replace_tables( array &$job ): void {
 		global $wpdb;
 		$targets   = array_column( $job['database'], 'target' );
 		$relations = self::rows( $wpdb->prepare( 'SELECT TABLE_NAME, REFERENCED_TABLE_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=%s AND REFERENCED_TABLE_SCHEMA=%s AND REFERENCED_TABLE_NAME IS NOT NULL', DB_NAME, DB_NAME ) );
 		foreach ( $relations as $relation ) {
 			if ( in_array( $relation['TABLE_NAME'], $targets, true ) !== in_array( $relation['REFERENCED_TABLE_NAME'], $targets, true ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Include both related destination tables: ' . $relation['TABLE_NAME'] . ' and ' . $relation['REFERENCED_TABLE_NAME'] );
 			}
 		}
@@ -759,6 +925,12 @@ final class CSM_Database {
 		wp_cache_flush();
 	}
 
+	/**
+	 * Restore recorded original tables after an interrupted or reverted migration.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function restore_tables( array $job ): void {
 		foreach ( $job['database'] as $table ) {
 			if ( ! empty( $table['restore_foreign_keys'] ) && self::table_exists( $table['backup'] ) ) {
@@ -812,6 +984,12 @@ final class CSM_Database {
 		}
 	}
 
+	/**
+	 * Preserve destination identity, connection and selected operational options.
+	 *
+	 * @param array $job Destination job and its durable staging or recovery state.
+	 * @param bool  $connection_only Whether to retain only connection-specific options.
+	 */
 	public static function preserve_options( array $job, bool $connection_only = false ): void {
 		global $wpdb;
 		foreach ( $job['database'] ?? array() as $table ) {
@@ -820,8 +998,10 @@ final class CSM_Database {
 			$staged = CSM_Support::ident( $table['stage'] );
 			// Preserve destination settings during table swap; activation is applied separately before the health check.
 			$names = $connection_only ? array() : array( 'siteurl', 'home', 'active_plugins', 'cron', 'blog_public', 'upload_path', 'upload_url_path' );
+			// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Session state and staged-table operations use validated identifiers and prepared option values; caching is unsafe.
 			CSM_Support::query( $wpdb->prepare( 'DELETE FROM ' . $staged . ' WHERE option_name LIKE %s', $wpdb->esc_like( '_csm_' ) . '%' ) );
 			foreach ( $names as $name ) {
+				// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Session state and staged-table operations use validated identifiers and prepared option values; caching is unsafe.
 				CSM_Support::query( $wpdb->prepare( 'DELETE FROM ' . $staged . ' WHERE option_name = %s', $name ) ); }
 			$where = 'option_name LIKE ' . $wpdb->prepare( '%s', $wpdb->esc_like( '_csm_' ) . '%' );
 			if ( $names ) {
@@ -831,6 +1011,7 @@ final class CSM_Database {
 				$before = get_option( 'cron', array() );
 				$after  = self::post_cron( $job, $before );
 				if ( $after !== $before ) {
+					// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Session state and staged-table operations use validated identifiers and prepared option values; caching is unsafe.
 					CSM_Support::query( $wpdb->prepare( 'INSERT INTO ' . $staged . ' (option_name,option_value,autoload) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)', 'cron', maybe_serialize( $after ), 'no' ) ); }
 			}
 		}

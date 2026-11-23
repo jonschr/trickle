@@ -15,7 +15,7 @@ class CSM_Support {
 class CSM_Jobs {static function save($job){$GLOBALS['save_count']=($GLOBALS['save_count']??0)+1;$GLOBALS['jobs'][$job['id']]=unserialize(serialize($job));}}
 class CSM_Progress {static function update(...$args){}}
 function wp_mkdir_p($p){return is_dir($p)||mkdir($p,0755,true);}
-require __DIR__.'/../includes/files.php';require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-files.php';require __DIR__.'/../includes/class-csm-plugin.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);++$GLOBALS['checks'];echo "PASS $label\n";}
 function put($path,$bytes){wp_mkdir_p(dirname($path));file_put_contents($path,$bytes);}
 function make_job($component='demo',$exists=true){

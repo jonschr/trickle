@@ -10,7 +10,7 @@ if (in_array($mode,['false','throw'],true)) {
         return false;
     }
 }
-require __DIR__.'/../includes/package.php';
+require __DIR__.'/../includes/class-csm-package.php';
 $provider_calls=0;
 foreach (['',str_repeat('a',4095),str_repeat('b',4096),random_bytes(262144)] as $bytes) {
     foreach ([false,true] as $binary) {

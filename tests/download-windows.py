@@ -61,7 +61,7 @@ class CSM_Access {static function id($key){return 'fixture';}static function ass
 class CSM_Progress {static function update(...$args){}}
 class CSM_Log {static $events=[];static function secret($value){}static function clean($value){return $value;}static function write($level,$event,$context=[]){self::$events[]=[$level,$event,$context];}}
 class CSM_Plugin {static function kinds($selection){return ['files'];}static function summary($job){return ['id'=>$job['id'],'status'=>'staging'];}}
-require $argv[1].'/includes/transport.php';require $argv[1].'/includes/segments.php';
+require $argv[1].'/includes/class-csm-transport.php';require $argv[1].'/includes/class-csm-segments.php';
 $dir=$argv[2];$url=$argv[3];$peer=['url'=>$url,'key'=>'fixture-key'];
 function check($yes,$label){if(!$yes)throw new RuntimeException($label);echo "PASS $label\n";}
 $size=1024*1024*1024+123;$hash=hash_init('sha256');$chunk=str_repeat('x',1024*1024);

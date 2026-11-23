@@ -2,7 +2,9 @@
 // Actual filesystem permissions, repeated access and replacement by a symlink; no WordPress.
 define('ABSPATH','/trickle-private-fixture-'.bin2hex(random_bytes(8)).'/');
 function wp_salt($kind){return 'private-storage-fixture';}
-require __DIR__.'/../includes/support.php';
+function did_action($hook){return $GLOBALS['magic_quotes_applied']??0;}
+function wp_unslash($value){return stripslashes($value);}
+require __DIR__.'/../includes/class-csm-support.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $path=CSM_Support::private_dir();$outside=$path.'-outside';
 try{
@@ -25,7 +27,7 @@ function mkdir($path,$mode,$recursive){
     elseif($GLOBALS["private_race_kind"]==="symlink") { \\symlink($GLOBALS["private_race_outside"],$path); }
     return false;
 }
-'.str_replace("require_once __DIR__ . '/timing.php';",'',substr(file_get_contents(__DIR__.'/../includes/support.php'),5)));
+'.preg_replace('/^require_once __DIR__ .*;\\R/m','',substr(file_get_contents(__DIR__.'/../includes/class-csm-support.php'),5)));
 $GLOBALS['private_race_root']=$path.'-race';$GLOBALS['private_race_outside']=$outside;
 mkdir($GLOBALS['private_race_root'],0700);mkdir($outside,0700);
 $racePath=$GLOBALS['private_race_root'].'/'.basename($path);
@@ -39,3 +41,20 @@ try{
         check($blocked,'Concurrent '.$kind.' is still rejected');if(is_link($racePath))unlink($racePath);
     }
 }finally{if(is_link($racePath))unlink($racePath);elseif(is_dir($racePath))rmdir($racePath);rmdir($GLOBALS['private_race_root']);rmdir($outside);}
+
+// The same helper is called both before and after WordPress slash-escapes server values.
+$webRoot=$path."-web'root\\segment";mkdir($webRoot,0700);
+$originalRoot=$_SERVER['DOCUMENT_ROOT']??null;
+try{
+    foreach([0,1]as$quoted){
+        $GLOBALS['magic_quotes_applied']=$quoted;
+        $_SERVER['DOCUMENT_ROOT']=$quoted?addslashes($webRoot):$webRoot;
+        check(CSM_Support::public_path($webRoot),'Quoted public root is detected '.($quoted?'after':'before').' WordPress magic quotes');
+    }
+    $_SERVER['DOCUMENT_ROOT']=[];
+    check(!CSM_Support::public_path($webRoot),'A malformed server root does not cause a PHP type error');
+}finally{
+    $GLOBALS['magic_quotes_applied']=0;
+    if($originalRoot===null)unset($_SERVER['DOCUMENT_ROOT']);else $_SERVER['DOCUMENT_ROOT']=$originalRoot;
+    rmdir($webRoot);
+}

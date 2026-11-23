@@ -9,19 +9,39 @@ defined( 'ABSPATH' ) || exit;
 
 /** Media size/mtime metadata, compared in year → month → file order. */
 final class CSM_Media {
+	/**
+	 * Resolve the private media inventory cache path.
+	 */
 	private static function path(): string {
 		return CSM_Support::private_dir() . '/media-hashes-' . substr( hash( 'sha256', CSM_Files::root( 'uploads' ) ), 0, 16 ) . '.json';
 	}
 
+	/**
+	 * Encode filesystem comparison metadata into a stable media stamp.
+	 *
+	 * @param array $stat Filesystem stat fields used to build a media comparison stamp.
+	 */
 	private static function stamp( array $stat ): string {
 		return implode( ':', array_map( static fn( $key ) => $stat[ $key ], array( 'size', 'mtime', 'ctime', 'ino', 'dev', 'mode' ) ) );
 	}
 
+	/**
+	 * Hash media inventory metadata without reading file contents.
+	 *
+	 * @param array $items Media metadata records whose inventory digest is calculated.
+	 */
 	private static function digest( array $items ): string {
 		ksort( $items, SORT_STRING );
 		return hash( 'sha256', CSM_Support::json( $items ) );
 	}
 
+	/**
+	 * Build or reuse the media metadata inventory for the selected comparison policy.
+	 *
+	 * @param bool  $verify Compatibility flag; media comparisons use metadata, not content hashing.
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function build( bool $verify, array $selection = array() ): array {
 		$groups = array();
 		$stats  = array(
@@ -47,6 +67,7 @@ final class CSM_Media {
 			clearstatcache( true, $path );
 			$stat = lstat( $path );
 			if ( ! $stat || ! is_file( $path ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Cannot inspect media file: ' . $tail ); }
 			$metadata                           = array(
 				'size'  => $stat['size'],
@@ -102,14 +123,28 @@ final class CSM_Media {
 		return $index + array( 'stats' => $stats );
 	}
 
+	/**
+	 * Load a media inventory pinned to its metadata digest.
+	 *
+	 * @param string $token Inventory snapshot digest pinning this comparison to stable metadata.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function snapshot( string $token ): array {
 		$snapshot = preg_match( '/^[a-f0-9]{64}$/D', $token ) ? CSM_Support::private_dir() . '/media-snapshot-' . $token . '.json' : '';
-		$index    = $snapshot && is_file( $snapshot ) ? json_decode( file_get_contents( $snapshot ), true ) : self::cached();
+		$path     = $snapshot && is_file( $snapshot ) ? $snapshot : self::path();
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
+		$index = is_file( $path ) ? json_decode( file_get_contents( $path ), true ) : null;
 		if ( ! preg_match( '/^[a-f0-9]{64}$/D', $token ) || ! is_array( $index ) || ! is_array( $index['years'] ?? null ) || ( $index['comparison'] ?? '' ) !== 'size_mtime' || ! hash_equals( $index['token'] ?? '', $token ) || ! hash_equals( $token, self::digest( $index['years'] ) ) ) {
 			throw new RuntimeException( 'Media metadata inventory changed or expired. Retry the file stream to compare again.' ); }
 		return $index;
 	}
 
+	/**
+	 * Build or page the media metadata inventory requested by a peer.
+	 *
+	 * @param array $query Validated inventory request with level, token and paging fields.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function inventory( array $query ): array {
 		$level = $query['level'] ?? '';
 		if ( 'years' === $level ) {
@@ -118,6 +153,7 @@ final class CSM_Media {
 				throw new RuntimeException( 'Invalid media metadata work ID.' ); }
 			$result_path = '' !== $id ? self::path() . '.comparison-' . $id . '.json' : '';
 			if ( $result_path && is_file( $result_path ) ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 				$saved = json_decode( file_get_contents( $result_path ), true, 512, JSON_THROW_ON_ERROR );
 				if ( ( $saved['comparison'] ?? '' ) === 'size_mtime' ) {
 					return $saved; }
@@ -178,6 +214,12 @@ final class CSM_Media {
 		);
 	}
 
+	/**
+	 * Expose the checked media inventory manifest for comparison.
+	 *
+	 * @param array $query Validated inventory request with level, token and paging fields.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function manifest( array $query ): array {
 		if ( ! is_string( $query['year'] ?? null ) || ! is_string( $query['month'] ?? null ) ) {
 			throw new RuntimeException( 'Invalid media month.' ); }
@@ -191,9 +233,20 @@ final class CSM_Media {
 		);
 	}
 
+	/**
+	 * Resolve matching source/destination media paths from size and timestamp metadata.
+	 *
+	 * @param array $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param bool  $pull Whether the remote is the source rather than the destination.
+	 * @param bool  $verify Compatibility flag; media comparisons use metadata, not content hashing.
+	 * @param array $selection Approved database, component and media selection with transfer policies.
+	 * @throws CSM_Yield If bounded work must resume from its saved checkpoint.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function compare( array $peer, bool $pull, bool $verify, array $selection = array() ): array {
 		$id   = $selection['comparison_id'] ?? '';
 		$path = preg_match( '/^[a-f0-9]{32}$/D', $id ) ? CSM_Support::private_dir() . '/media-compare-' . $id . '.json' : '';
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		$work = $path && is_file( $path ) ? json_decode( file_get_contents( $path ), true, 512, JSON_THROW_ON_ERROR ) : null;
 		if ( isset( $work['result'] ) ) {
 			return $work['result']; }
@@ -277,6 +330,7 @@ final class CSM_Media {
 		$read = static function ( array $query, bool $remote ) use ( $peer ): array {
 			if ( ! $remote ) {
 				return self::manifest( $query )['files']; }
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 			$fp = fopen( 'php://temp', 'w+b' );
 			try {
 				CSM_Transport::request( $peer, 'media_manifest', $query, null, $fp, 15, 32 * 1024 * 1024 );
@@ -287,10 +341,12 @@ final class CSM_Media {
 					throw new RuntimeException( 'Invalid media metadata manifest.' ); }
 				return $data['files'];
 			} finally {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $fp ); }
 		};
 		CSM_Support::step();
-		while ( $work['index'] < count( $work['months'] ) ) {
+		$month_count = count( $work['months'] );
+		while ( $work['index'] < $month_count ) {
 			CSM_Support::check_cancel();
 			$month  = $work['months'][ $work['index'] ];
 			$bucket = $month['year'] . '/' . $month['month'];
@@ -331,6 +387,7 @@ final class CSM_Media {
 				throw new RuntimeException( 'Media comparison exceeded its work budget. Narrow the selection.' );
 			}
 		}
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 		$delta = base64_encode(
 			gzencode(
 				CSM_Support::json(
@@ -354,12 +411,21 @@ final class CSM_Media {
 		} return $result;
 	}
 
+	/**
+	 * Decode selected media paths while enforcing selection and path safety.
+	 *
+	 * @param string $encoded Encoded approved relative media paths.
+	 * @param array  $selection Approved database, component and media selection with transfer policies.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function paths( string $encoded, array $selection = array() ): Generator {
 		if ( strlen( $encoded ) > 700000 ) {
 			throw new RuntimeException( 'Invalid media comparison plan.' ); }
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 		$compressed = base64_decode( $encoded, true );
-		$raw        = false === $compressed ? false : @gzdecode( $compressed, 32 * 1024 * 1024 );
-		$plan       = false === $raw ? null : json_decode( $raw, true );
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Malformed bounded gzip input is checked as false and rejected by the following validation.
+		$raw  = false === $compressed ? false : @gzdecode( $compressed, 32 * 1024 * 1024 );
+		$plan = false === $raw ? null : json_decode( $raw, true );
 		if ( ! is_array( $plan ) || ! is_array( $plan['buckets'] ?? null ) || ! array_is_list( $plan['buckets'] ) || ! is_array( $plan['paths'] ?? null ) || ! array_is_list( $plan['paths'] ) ) {
 			throw new RuntimeException( 'Invalid media comparison plan.' ); }
 		$index    = self::snapshot( $plan['token'] ?? '' );
@@ -385,8 +451,10 @@ final class CSM_Media {
 			$relative = 'uploads/' . $tail;
 			$path     = CSM_Files::destination( $relative, $selection + array( 'media' => 'compare' ), ! empty( $selection['protect_source_git'] ) );
 			clearstatcache( true, $path );
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- A missing or replaced file is handled by the following metadata validation or fallback.
 			$stat = @lstat( $path );
 			if ( ! $stat || self::stamp( $stat ) !== $file['stamp'] ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Media changed after comparison: ' . $tail . '. Retry the file stream.' ); }
 			yield array( $relative, $path );
 		}

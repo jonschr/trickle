@@ -5,7 +5,7 @@ $nonces=[];
 function add_option($key,...$args){if(isset($GLOBALS['nonces'][$key]))return false;$GLOBALS['nonces'][$key]=true;return true;}
 class CSM_Support {static function json($data){return json_encode($data);}}
 class CSM_Access {static function id($key){return 'fixture';}static function credential($id){return ['key'=>str_repeat('a',64)];}static function authorize(...$args){}}
-require __DIR__.'/../includes/transport.php';
+require __DIR__.'/../includes/class-csm-transport.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function signed_zip($params,$hash=null){
  foreach(CSM_Transport::headers('update_trickle_zip',str_repeat('a',64),$hash??str_repeat('b',64),$params)as$header){if(!str_contains($header,': '))continue;[$name,$value]=explode(': ',$header,2);$_SERVER['HTTP_'.str_replace('-','_',strtoupper($name))]=$value;}

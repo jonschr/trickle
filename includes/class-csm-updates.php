@@ -11,23 +11,52 @@ defined( 'ABSPATH' ) || exit;
  * Plugin build validation, packaging and authenticated installation.
  */
 final class CSM_Updates {
+	/**
+	 * Require the sender and receiver to use the same Trickle version.
+	 *
+	 * @param mixed $version Peer version to compare with this installation.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function assert_version( $version ): void {
 		if ( ! is_string( $version ) || CSM_VERSION !== $version ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'Trickle versions must match before transferring. This site: ' . CSM_VERSION . '; connected site: ' . ( is_string( $version ) && '' !== $version ? $version : 'unknown' ) . '. Update the older installation, then refresh versions.' );
 		}
 	}
 
+	/**
+	 * Require an advertised peer build to match the local runtime fingerprint.
+	 *
+	 * @param array $remote Peer capability response containing its optional runtime fingerprint.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function assert_build( array $remote ): void {
 		if ( ! empty( $remote['remote_build_update'] ) && ( ! is_string( $remote['trickle_build'] ?? null ) || ! hash_equals( self::fingerprint(), $remote['trickle_build'] ) ) ) {
 			throw new RuntimeException( 'Trickle builds must match before transferring. Install the local Trickle build on the remote site.' );
 		}
 	}
 
+	/**
+	 * Reject continued transfer work prepared under a different plugin version.
+	 *
+	 * This guard applies to continued transfer work, not rollback or recovery controls.
+	 *
+	 * @param array $record Persisted transfer record carrying its preparing plugin version.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function assert_job( array $record ): void {
 		if ( ( $record['plugin_version'] ?? '' ) !== CSM_VERSION ) {
 			throw new RuntimeException( 'Trickle changed since this transfer was prepared. Discard and prepare again. Existing rollback and recovery controls remain available.' ); }
 	}
 
+	/**
+	 * Advertise this build and its authenticated update capabilities.
+	 *
+	 * @return array Feature flags, runtime fingerprint and current connection write permission.
+	 */
 	public static function capabilities(): array {
 		return array(
 			'binary_build_update'    => 1,
@@ -40,6 +69,13 @@ final class CSM_Updates {
 		);
 	}
 
+	/**
+	 * Resolve the configured JSON release updater.
+	 *
+	 * @return object Configured updater instance; no release request is made here.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function checker() {
 		$checker = $GLOBALS['trickle_update_checker'] ?? null;
 		if ( ! $checker ) {
@@ -47,7 +83,15 @@ final class CSM_Updates {
 		return $checker;
 	}
 
+	/**
+	 * Fetch release metadata and require a usable HTTPS package URL.
+	 *
+	 * @return object Validated release metadata from the configured JSON feed.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function release() {
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Updater warnings must not corrupt JSON; the release response is validated immediately below.
 		$info = @self::checker()->requestInfo();
 		if ( ! $info || ! is_string( $info->version ?? null ) || ! is_string( $info->download_url ?? null ) || wp_parse_url( $info->download_url, PHP_URL_SCHEME ) !== 'https' || ! wp_parse_url( $info->download_url, PHP_URL_HOST ) ) {
 			throw new RuntimeException( 'The configured Trickle JSON feed did not return a usable HTTPS release. Try again after the release is published.' );
@@ -55,6 +99,11 @@ final class CSM_Updates {
 		return $info;
 	}
 
+	/**
+	 * Combine published release metadata with native update readiness.
+	 *
+	 * @return array Installed/release versions, requirements, capabilities and any blocking reason.
+	 */
 	public static function info(): array {
 		$info   = self::release();
 		$reason = '';
@@ -74,6 +123,11 @@ final class CSM_Updates {
 		);
 	}
 
+	/**
+	 * Require an idle, writable installation and the current recovery loader.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function preflight(): void {
 		CSM_Segments::prune_sources();
 		if ( get_option( '_csm_control' ) || get_option( '_csm_active_job' ) || glob( CSM_Support::private_dir() . '/segment-*.source.owner' ) ) {
@@ -91,6 +145,16 @@ final class CSM_Updates {
 			throw new RuntimeException( 'Remote updates require direct filesystem access; update through the remote WordPress dashboard instead.' ); }
 	}
 
+	/**
+	 * Install the exact newer version advertised by the configured release feed.
+	 *
+	 * @param string $target Exact version expected in the installed package header.
+	 * @param string $from Receiver version observed before starting the update.
+	 *
+	 * @return array Installed version and update status from the native WordPress upgrader.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function install( string $target, string $from ): array {
 		if ( CSM_VERSION !== $from ) {
 			throw new RuntimeException( 'The remote Trickle version changed. Refresh versions before updating.' ); }
@@ -99,17 +163,28 @@ final class CSM_Updates {
 		self::preflight();
 		$info = self::release();
 		if ( $info->version !== $target ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'The JSON feed currently publishes Trickle ' . $info->version . ', but the controlling site requires ' . $target . '. Publish the matching release or update both installations manually.' ); }
 		if ( ( ! empty( $info->requires_php ) && version_compare( PHP_VERSION, $info->requires_php, '<' ) ) || ( ! empty( $info->requires ) && version_compare( get_bloginfo( 'version' ), $info->requires, '<' ) ) ) {
 			throw new RuntimeException( 'The published Trickle release requires a newer PHP or WordPress version on this site.' ); }
 		return self::apply_package( $target, $info->download_url );
 	}
 
+	/**
+	 * Enumerate allowed runtime files, rejecting linked directories and files.
+	 *
+	 * @param string $root Absolute runtime root; null fingerprints the installed plugin.
+	 *
+	 * @return array Sorted map of relative runtime filenames to absolute file paths.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function runtime_files( string $root ): array {
 		$files = array( 'trickle.php' => $root . '/trickle.php' );
 		foreach ( array( 'includes', 'assets', 'vendor' ) as $directory ) {
 			$base = $root . '/' . $directory;
 			if ( ! is_dir( $base ) || is_link( $base ) ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'Trickle runtime directory is missing or linked: ' . $directory ); }
 			$filtered = new RecursiveCallbackFilterIterator(
 				new RecursiveDirectoryIterator( $base, FilesystemIterator::SKIP_DOTS ),
@@ -136,6 +211,15 @@ final class CSM_Updates {
 		return $files;
 	}
 
+	/**
+	 * Hash the sorted runtime paths and their file digests.
+	 *
+	 * @param string|null $root Absolute runtime root; null fingerprints the installed plugin.
+	 *
+	 * @return string Hexadecimal SHA-256 identifying the exact runtime build.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function fingerprint( ?string $root = null ): string {
 		$root = rtrim( $root ?? dirname( CSM_FILE ), '/' );
 		$hash = hash_init( 'sha256' );
@@ -148,6 +232,15 @@ final class CSM_Updates {
 		return hash_final( $hash );
 	}
 
+	/**
+	 * Package a stable local runtime build for authenticated peer installation.
+	 *
+	 * @param bool $binary Whether to return raw ZIP bytes rather than base64 for JSON compatibility.
+	 *
+	 * @return array Target version, build, ZIP digest, byte size and binary or base64 package bytes.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function package( bool $binary = false ): array {
 		$root = dirname( CSM_FILE );
 		$path = CSM_Support::private_dir() . '/trickle-build-' . bin2hex( random_bytes( 8 ) ) . '.zip';
@@ -181,21 +274,29 @@ final class CSM_Updates {
 			if ( ! hash_equals( $build, self::fingerprint() ) ) {
 				throw new RuntimeException( 'Local Trickle files changed during packaging. Retry the update.' );
 			}
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$bytes = file_get_contents( $path );
 			return array(
 				'target'  => CSM_VERSION,
 				'build'   => $build,
 				'sha256'  => hash( 'sha256', $bytes ),
 				'size'    => strlen( $bytes ),
+				// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 				'package' => $binary ? $bytes : base64_encode( $bytes ),
 			);
 		} finally {
 			if ( is_file( $path ) ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Delete the validated local file during cleanup or recoverable publication.
 				unlink( $path );
 			}
 		}
 	}
 
+	/**
+	 * Report installed-build capabilities and readiness without requesting a release.
+	 *
+	 * @return array Native build metadata, readiness and any blocking reason.
+	 */
 	public static function build_info(): array {
 		$reason = '';
 		try {
@@ -210,6 +311,13 @@ final class CSM_Updates {
 		) + self::capabilities();
 	}
 
+	/**
+	 * Bound archive contents and reject protected or non-runtime paths.
+	 *
+	 * @param string $path Absolute path to the private uploaded ZIP archive.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function validate_archive( string $path ): void {
 		require_once ABSPATH . 'wp-admin/includes/class-pclzip.php';
 		$zip     = new PclZip( $path );
@@ -238,6 +346,13 @@ final class CSM_Updates {
 		}
 	}
 
+	/**
+	 * Require idle update readiness and an unchanged expected receiver build.
+	 *
+	 * @param array $data Signed package metadata, expected receiver state and any compatibility payload.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function check_build( array $data ): void {
 		self::preflight();
 		if ( ( $data['from'] ?? null ) !== CSM_VERSION || ! is_string( $data['from_build'] ?? null ) || ! hash_equals( self::fingerprint(), $data['from_build'] ) ) {
@@ -249,16 +364,36 @@ final class CSM_Updates {
 			throw new RuntimeException( 'Invalid local Trickle package metadata.' ); }
 	}
 
+	/**
+	 * Decode the compatibility JSON package after validating receiver state.
+	 *
+	 * @param array $data Signed package metadata, expected receiver state and any compatibility payload.
+	 *
+	 * @return array Installed version, update status and verified runtime fingerprint.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function install_build( array $data ): array {
 		self::check_build( $data );
 		if ( ! is_string( $data['package'] ?? null ) || strlen( $data['package'] ) > 940000 ) {
 			throw new RuntimeException( 'Invalid local Trickle package metadata.' ); }
+		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode -- Protocol encoding preserves binary bytes; decoded input is validated before use.
 		$bytes = base64_decode( $data['package'], true );
 		if ( false === $bytes ) {
 			throw new RuntimeException( 'Local Trickle package checksum mismatch.' ); }
 		return self::install_archive( $data, $bytes );
 	}
 
+	/**
+	 * Read a signed binary ZIP without exceeding its declared bounded size.
+	 *
+	 * @param array    $data Signed package metadata, expected receiver state and any compatibility payload.
+	 * @param resource $input Readable binary upload stream; ownership remains with the caller.
+	 *
+	 * @return array Installed version, update status and verified runtime fingerprint.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	public static function install_zip( array $data, $input ): array {
 		self::check_build( $data );
 		if ( ! is_int( $data['size'] ?? null ) || $data['size'] < 1 || $data['size'] > 700000 ) {
@@ -269,6 +404,16 @@ final class CSM_Updates {
 		return self::install_archive( $data, $bytes );
 	}
 
+	/**
+	 * Verify package bytes and archive boundaries before native installation.
+	 *
+	 * @param array  $data Signed package metadata, expected receiver state and any compatibility payload.
+	 * @param string $bytes Exact compressed ZIP bytes whose SHA-256 must match the signed metadata.
+	 *
+	 * @return array Installed version, update status and verified runtime fingerprint.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function install_archive( array $data, string $bytes ): array {
 		if ( strlen( $bytes ) > 700000 || ! hash_equals( $data['sha256'], hash( 'sha256', $bytes ) ) ) {
 			throw new RuntimeException( 'Local Trickle package checksum mismatch.' );
@@ -279,11 +424,26 @@ final class CSM_Updates {
 			self::validate_archive( $path );
 			return self::apply_package( $data['target'], $path, $data['build'] ); } finally {
 			if ( is_file( $path ) ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Delete the validated local file during cleanup or recoverable publication.
 				unlink( $path );
 			}
 			}
 	}
 
+	/**
+	 * Install a checked package while preserving the real plugin activation list.
+	 *
+	 * Archive contents and any requested build are checked before publication. The
+	 * complete activation list is restored even when the upgrader fails.
+	 *
+	 * @param string      $target Exact version expected in the installed package header.
+	 * @param string      $package HTTPS package URL or validated private ZIP path supplied to WordPress.
+	 * @param string|null $build Expected runtime fingerprint, or null for a published-feed update.
+	 *
+	 * @return array Installed version and update status, plus build identity when requested.
+	 *
+	 * @throws RuntimeException If the expected version, runtime build, package or installation is invalid.
+	 */
 	private static function apply_package( string $target, string $package, ?string $build = null ): array {
 		$plugin = plugin_basename( CSM_FILE );
 		// The recovery loader filters this option during RPCs; preserve the complete real list.
@@ -331,6 +491,7 @@ final class CSM_Updates {
 					foreach ( self::runtime_files( untrailingslashit( $source ) ) as $relative => $path ) {
 						if ( str_ends_with( $relative, '.php' ) ) {
 							try {
+								// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 								token_get_all( file_get_contents( $path ), TOKEN_PARSE );
 							} catch ( ParseError $error ) {
 								return new WP_Error( 'trickle_php', $relative . ' has a PHP parse error on PHP ' . PHP_VERSION . ': ' . $error->getMessage() ); }

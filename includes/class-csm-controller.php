@@ -6,16 +6,24 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-require_once __DIR__ . '/timing.php';
+require_once __DIR__ . '/class-csm-timing.php';
 
 /**
  * Local administration requests and retained transfer orchestration.
  */
 final class CSM_Controller {
+	/**
+	 * Derive a site instance fingerprint for self-connection protection.
+	 */
 	public static function fingerprint(): string {
 		return hash_hmac( 'sha256', ABSPATH . "\n" . (string) get_option( 'siteurl' ), wp_salt( 'auth' ) );
 	}
 
+	/**
+	 * Normalize a site URL for self-connection comparisons.
+	 *
+	 * @param string $url WordPress installation URL to normalize or compare.
+	 */
 	private static function url_identity( string $url ): string {
 		$parts = wp_parse_url( $url );
 		if ( ! $parts || empty( $parts['host'] ) ) {
@@ -27,6 +35,11 @@ final class CSM_Controller {
 		return $host . ( $port ? ':' . $port : '' ) . rtrim( rawurldecode( $parts['path'] ?? '' ), '/' );
 	}
 
+	/**
+	 * Check whether a peer URL identifies this WordPress installation.
+	 *
+	 * @param string $url WordPress installation URL to normalize or compare.
+	 */
 	public static function is_self( string $url ): bool {
 		$identity = self::url_identity( $url );
 		if ( '' === $identity ) {
@@ -38,6 +51,13 @@ final class CSM_Controller {
 		return false;
 	}
 
+	/**
+	 * Reject local or mirrored peer identities before starting a migration.
+	 *
+	 * @param array $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param array $manifest Peer identity or recorded filesystem entry metadata.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function assert_remote( array $peer, array $manifest = array() ): void {
 		$fingerprint = $manifest['instance_fingerprint'] ?? $peer['instance_fingerprint'] ?? '';
 		if ( self::is_self( $peer['url'] ) || self::is_self( $manifest['url'] ?? '' ) || self::is_self( $manifest['canonical_url'] ?? '' ) || ( '' !== $fingerprint && hash_equals( self::fingerprint(), $fingerprint ) ) ) {
@@ -45,10 +65,18 @@ final class CSM_Controller {
 		}
 	}
 
+	/**
+	 * Derive the saved-site identifier from a normalized peer URL.
+	 *
+	 * @param string $url WordPress installation URL to normalize or compare.
+	 */
 	public static function site_id( string $url ): string {
 		return substr( hash( 'sha256', CSM_Transport::url( $url ) ), 0, 16 );
 	}
 
+	/**
+	 * Return saved peer metadata without exposing connection secrets to the dashboard.
+	 */
 	public static function peers(): array {
 		$peers = get_option( '_csm_peers', array() );
 		foreach ( array( get_option( '_csm_peer' ), get_option( '_csm_control' )['peer'] ?? null ) as $peer ) {
@@ -68,6 +96,12 @@ final class CSM_Controller {
 		return $peers;
 	}
 
+	/**
+	 * Resolve a saved peer for trusted transport use, including its connection credentials.
+	 *
+	 * @param string $site Saved peer identifier; an empty string uses the selected connection.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function peer( string $site = '' ): array {
 		$peers = self::peers();
 		if ( '' === $site ) {
@@ -88,6 +122,9 @@ final class CSM_Controller {
 		throw new RuntimeException( 'Choose a saved remote site, or add its connection code.' );
 	}
 
+	/**
+	 * Return retained controller state with compatible selection defaults.
+	 */
 	public static function session(): ?array {
 		$control = get_option( '_csm_control' );
 		if ( ! $control ) {
@@ -106,6 +143,9 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Build the dashboard's retained transfer and endpoint state.
+	 */
 	public static function state(): array {
 		$peers    = self::peers();
 		$session  = self::session();
@@ -133,6 +173,12 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Build a recent-transfer record suitable for dashboard display.
+	 *
+	 * @param string $id Transfer identifier.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function recent( string $id ): array {
 		$recent = get_option( '_csm_recents', array() )[ $id ] ?? null;
 		if ( ! $recent ) {
@@ -143,6 +189,12 @@ final class CSM_Controller {
 		return $recent;
 	}
 
+	/**
+	 * Fetch peer inventory with the supported refresh policy.
+	 *
+	 * @param array $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param bool  $refresh Whether to bypass or refresh reusable inventory state.
+	 */
 	public static function inventory( array $peer, bool $refresh = false ): array {
 		self::assert_remote( $peer );
 		$remote = CSM_Transport::request( $peer, 'manifest', array( 'refresh' => $refresh ) );
@@ -165,6 +217,12 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Merge source and destination component metadata for the comparison view.
+	 *
+	 * @param array $source Source inventory or site identity used for comparison and replacement rules.
+	 * @param array $destination Destination inventory or site identity used for comparison and replacements.
+	 */
 	private static function compare_components( array $source, array $destination ): array {
 		foreach ( array( 'plugins', 'themes' ) as $kind ) {
 			$lookup = array_column( $destination[ $kind ] ?? array(), null, 'id' );
@@ -179,6 +237,12 @@ final class CSM_Controller {
 		return $source;
 	}
 
+	/**
+	 * Persist controller progress and its current destination summary.
+	 *
+	 * @param array $control Retained local controller state for this transfer.
+	 * @param array $summary Current destination job summary.
+	 */
 	private static function remember( array $control, array $summary ): void {
 		$recent = get_option( '_csm_recents', array() );
 		$peer   = $control['peer'];
@@ -202,6 +266,16 @@ final class CSM_Controller {
 		update_option( '_csm_recents', array_slice( $recent, 0, 20, true ), false );
 	}
 
+	/**
+	 * Validate the selected components and explicit Git-folder approvals before preparation.
+	 *
+	 * @param array      $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param bool       $pull Whether the remote is the source rather than the destination.
+	 * @param array      $selection Approved database, component and media selection with transfer policies.
+	 * @param array      $confirmed Explicit Git-folder approvals supplied for this selection.
+	 * @param array|null $remote Optional previously fetched remote manifest.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function review( array $peer, bool $pull, array $selection, array $confirmed = array(), ?array $remote = null ): array {
 		$remote ??= CSM_Transport::request(
 			$peer,
@@ -232,6 +306,13 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Record source cleanup that must be retried after a completed destination apply.
+	 *
+	 * @param array  $peer Saved peer connection, including credentials for trusted internal transport use.
+	 * @param string $id Transfer identifier.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function defer_source_cleanup( array $peer, string $id ): void {
 		if ( ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) {
 			throw new RuntimeException( 'Invalid cleanup transfer ID.' ); }
@@ -250,6 +331,11 @@ final class CSM_Controller {
 		}
 	}
 
+	/**
+	 * Retry a retained cancellation without starting another transfer.
+	 *
+	 * @param string $id Transfer identifier.
+	 */
 	public static function retry_cancel( string $id ): ?array {
 		$control = get_option( '_csm_control' );
 		if ( ! $control || ! hash_equals( $control['id'], $id ) || ! CSM_Support::is_cancelled( $id ) ) {
@@ -295,6 +381,12 @@ final class CSM_Controller {
 			return null;
 	}
 
+	/**
+	 * Retry deferred cleanup for the specified saved peer and transfer.
+	 *
+	 * @param string $peer_id Saved peer identifier owning the deferred cleanup.
+	 * @param string $id Transfer identifier.
+	 */
 	public static function retry_source_cleanup( string $peer_id, string $id ): void {
 		if ( ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) {
 			return; }
@@ -321,6 +413,12 @@ final class CSM_Controller {
 		}
 	}
 
+	/**
+	 * Release a completed transfer while retaining required destination backup state.
+	 *
+	 * @param array $control Retained local controller state for this transfer.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function finish( array $control ): array {
 		$timing = hrtime( true );
 		try {
@@ -361,11 +459,25 @@ final class CSM_Controller {
 			CSM_Timing::add( 'cleanup.controller', $timing, 0 ); }
 	}
 
+	/**
+	 * Run a dashboard action through the bounded transport retry policy.
+	 *
+	 * @param string $action Supported controller, peer or retained-transfer operation.
+	 * @param array  $data Operation-specific request fields, validated by the receiving operation.
+	 */
 	public static function execute( string $action, array $data = array() ): array {
 		$operation = static fn()=>self::attempt( $action, $data );
 		return in_array( $action, array( 'preflight', 'transfer' ), true ) ? CSM_Transport::retry( $operation ) : $operation();
 	}
 
+	/**
+	 * Dispatch one dashboard action and update its retained failure state when needed.
+	 *
+	 * @param string $action Supported controller, peer or retained-transfer operation.
+	 * @param array  $data Operation-specific request fields, validated by the receiving operation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
+	 */
 	private static function attempt( string $action, array $data ): array {
 		CSM_Timing::begin( $data['id'] ?? '', $action );
 		CSM_Plugin::supported();
@@ -426,6 +538,7 @@ final class CSM_Controller {
 				$context  = trim( ( $failure['phase'] ?? '' ) . ': ' . ( $failure['component'] ?? '' ), ': ' );
 				if ( $e instanceof CSM_Network_Error ) {
 					throw $e; }
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( $e->getMessage() . ( $context ? ' Last activity: ' . $context . '.' : '' ), (int) $e->getCode(), $e );
 			}
 			throw $e;
@@ -450,6 +563,11 @@ final class CSM_Controller {
 		}
 	}
 
+	/**
+	 * Build phase timing and progress information for the retained transfer.
+	 *
+	 * @param array $control Retained local controller state for this transfer.
+	 */
 	private static function timeline( array $control ): array {
 		$streams    = array();
 		$components = $control['estimates'] ?? array(
@@ -501,10 +619,20 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Read current progress from the transfer's active execution side.
+	 *
+	 * @param array $control Retained local controller state for this transfer.
+	 */
 	private static function progress( array $control ): array {
 		return self::activity( $control ) + array( 'timeline' => self::timeline( $control ) );
 	}
 
+	/**
+	 * Read activity from the transfer's active execution side.
+	 *
+	 * @param array $control Retained local controller state for this transfer.
+	 */
 	private static function activity( array $control ): array {
 		$local = CSM_Progress::read( $control['id'] );
 		try {
@@ -530,6 +658,12 @@ final class CSM_Controller {
 						return ! empty( $remote['component'] ) ? $remote : $local;
 	}
 
+	/**
+	 * Build the source selection and reuse recorded comparison decisions.
+	 *
+	 * @param array  &$control Retained local controller state for this transfer.
+	 * @param string $kind Component or stream kind selected by the caller.
+	 */
 	private static function export_selection( array &$control, string $kind ): array {
 		$peer      = $control['peer'];
 		$pull      = 'pull' === $control['direction'];
@@ -555,6 +689,13 @@ final class CSM_Controller {
 		return $selection;
 	}
 
+	/**
+	 * Advance one resumable live-file transfer step.
+	 *
+	 * @param array $control Retained local controller state for this transfer.
+	 * @param bool  $preflight Whether to perform this step’s preparation checks before transfer.
+	 * @throws CSM_Network_Error If the operation fails validation or cannot complete safely.
+	 */
 	private static function live_step( array $control, bool $preflight ): array {
 		$id                            = $control['id'];
 		$peer                          = $control['peer'];
@@ -646,6 +787,16 @@ final class CSM_Controller {
 			return $summary + array( 'timeline' => self::timeline( $control ) ) + $extra;
 	}
 
+	/**
+	 * Advance one bounded snapshot transfer or staging step.
+	 *
+	 * @param array  $control Retained local controller state for this transfer.
+	 * @param string $kind Component or stream kind selected by the caller.
+	 * @param bool   $preflight Whether to perform this step’s preparation checks before transfer.
+	 * @throws CSM_Yield If bounded work must resume from its saved checkpoint.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
+	 */
 	private static function segment_step( array $control, string $kind, bool $preflight = false ): array {
 		if ( ! in_array( $kind, CSM_Plugin::kinds( $control['selection'] ), true ) ) {
 			throw new RuntimeException( 'Invalid stream kind.' ); }
@@ -764,6 +915,7 @@ final class CSM_Controller {
 			$bytes = '';
 			if ( $state['offset'] < $bundle['size'] ) {
 				if ( $pull ) {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 					$fp = fopen( 'php://temp', 'w+b' );
 					try {
 						CSM_Transport::request(
@@ -780,6 +932,7 @@ final class CSM_Controller {
 						);
 						rewind( $fp );
 						$bytes = stream_get_contents( $fp, CSM_Segments::SIZE + 1 ); } finally {
+						// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 						fclose( $fp ); }
 				} else {
 					$bytes = CSM_Segments::chunk( $id, $kind, $state['offset'] ); }
@@ -817,6 +970,12 @@ final class CSM_Controller {
 		) + $state;
 	}
 
+	/**
+	 * Validate peer identities and selections before preparing a new destination job.
+	 *
+	 * @param array $data Operation-specific request fields, validated by the receiving operation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function prepare_transfer( array $data ): array {
 		if ( get_option( '_csm_control' ) ) {
 			throw new RuntimeException( 'Discard the retained transfer and its backup before starting another.' ); }
@@ -951,6 +1110,12 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Invalidate component comparison state after a plugin build update.
+	 *
+	 * @param array $data Operation-specific request fields, validated by the receiving operation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function clear_update_comparisons( array $data ): array {
 		if ( get_option( '_csm_control' ) || get_option( '_csm_active_job' ) ) {
 			throw new RuntimeException( 'Finish or cancel the current transfer before clearing comparisons.' ); }
@@ -960,7 +1125,7 @@ final class CSM_Controller {
 		if ( empty( $version['can_update_trickle'] ) ) {
 			throw new RuntimeException( 'Use an administrator or read/write connection key to resolve remote update blockers.' ); }
 		$ids = array();
-		foreach ( array_merge( glob( CSM_Support::private_dir() . '/*.comparison-*.json' ) ?: array(), glob( CSM_Support::private_dir() . '/media-compare-*.json' ) ?: array() ) as $path ) {
+		foreach ( array_merge( (array) glob( CSM_Support::private_dir() . '/*.comparison-*.json' ), (array) glob( CSM_Support::private_dir() . '/media-compare-*.json' ) ) as $path ) {
 			if ( filemtime( $path ) < time() - DAY_IN_SECONDS || ! preg_match( '/(?:comparison-|media-compare-)([a-f0-9]{32})\.json$/D', $path, $match ) ) {
 				continue; }
 			$id = $match[1];
@@ -1004,6 +1169,14 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Check or install a peer Trickle build through its supported update protocol.
+	 *
+	 * @param string $action Supported controller, peer or retained-transfer operation.
+	 * @param array  $data Operation-specific request fields, validated by the receiving operation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
+	 */
 	private static function update_remote( string $action, array $data ): array {
 		$peer = self::peer( $data['site'] ?? '' );
 		self::assert_remote( $peer );
@@ -1022,7 +1195,7 @@ final class CSM_Controller {
 						'target'               => CSM_VERSION,
 						'target_build'         => CSM_Updates::fingerprint(),
 						'can_update_to_target' => $eligible,
-						'reason'               => $info['blocked_reason'] ?: 'Install the exact local Trickle build.',
+						'reason'               => $info['blocked_reason'] ? $info['blocked_reason'] : 'Install the exact local Trickle build.',
 					);
 				}
 				if ( get_option( '_csm_control' ) ) {
@@ -1112,6 +1285,13 @@ final class CSM_Controller {
 		);
 	}
 
+	/**
+	 * Advance a retained transfer using the compatibility transport.
+	 *
+	 * @param array  &$control Retained local controller state for this transfer.
+	 * @param string $kind Component or stream kind selected by the caller.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function transfer_legacy( array &$control, string $kind ): array {
 		$peer = $control['peer'];
 		$pull = 'pull' === $control['direction'];
@@ -1135,7 +1315,8 @@ final class CSM_Controller {
 		if ( $pull ) {
 			CSM_Progress::start( $id, 'Downloading stream' );
 			$path = CSM_Support::private_dir() . '/' . $id . '-incoming';
-			$fp   = fopen( $path, 'w+b' );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
+			$fp = fopen( $path, 'w+b' );
 			if ( ! $fp ) {
 				throw new RuntimeException( 'Cannot create incoming stream storage.' ); }
 			try {
@@ -1155,7 +1336,9 @@ final class CSM_Controller {
 				rewind( $fp );
 				$summary = CSM_Plugin::summary( CSM_Plugin::receive( CSM_Jobs::get( $id ), $kind, $fp ) );
 			} finally {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 				fclose( $fp );
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Delete the validated local file during cleanup or recoverable publication.
 				unlink( $path ); }
 		} else {
 			CSM_Progress::start( $id, 'Exporting stream' );
@@ -1175,6 +1358,13 @@ final class CSM_Controller {
 		return $summary;
 	}
 
+	/**
+	 * Dispatch supported connection, selection, transfer and settings operations.
+	 *
+	 * @param string $action Supported controller, peer or retained-transfer operation.
+	 * @param array  $data Operation-specific request fields, validated by the receiving operation.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function operate( string $action, array $data ): array {
 		// A cancellation can clear control between retries in this same PHP request.
 		wp_cache_delete( '_csm_control', 'options' );
@@ -1192,8 +1382,12 @@ final class CSM_Controller {
 			$restore = get_option( '_csm_backup_restore' );
 			return ( $restore['job_id'] ?? '' ) === $id ? CSM_Backups::restore( $restore['backup_id'] ) : CSM_Plugin::rollback( $job );
 		}
-		if ( in_array( $action, array( 'prepare', 'select', 'update_remote', 'restore_backup' ), true ) && ( $previous = get_option( '_csm_control' ) ) ) {
-			self::finish( $previous ); }
+		if ( in_array( $action, array( 'prepare', 'select', 'update_remote', 'restore_backup' ), true ) ) {
+			$previous = get_option( '_csm_control' );
+			if ( $previous ) {
+				self::finish( $previous );
+			}
+		}
 		if ( in_array( $action, array( 'backups', 'restore_backup', 'backup_progress' ), true ) ) {
 			$site = $data['site'] ?? '';
 			if ( 'backups' === $action ) {
@@ -1324,7 +1518,8 @@ final class CSM_Controller {
 						'state'            => self::state(),
 					);
 			}
-			$path  = CSM_Support::private_dir() . '/' . $id . '-retry.json';
+			$path = CSM_Support::private_dir() . '/' . $id . '-retry.json';
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$state = is_file( $path ) ? json_decode( file_get_contents( $path ), true ) : array(
 				'since'    => time(),
 				'failures' => 0,
@@ -1414,7 +1609,7 @@ final class CSM_Controller {
 			$name         = sanitize_text_field( $data['name'] ?? '' );
 			$peer        += array(
 				'id'                   => $id,
-				'name'                 => $name ?: ( $peers[ $id ]['name'] ?? ( ( $remote['name'] ?? '' ) ?: $peer['url'] ) ),
+				'name'                 => $name ? $name : ( $peers[ $id ]['name'] ?? ( ( $remote['name'] ?? '' ) ? $remote['name'] : $peer['url'] ) ),
 				'icon'                 => esc_url_raw( $remote['icon'] ?? '', array( 'http', 'https' ) ),
 				'instance_fingerprint' => $remote['instance_fingerprint'] ?? '',
 			);
@@ -1442,7 +1637,11 @@ final class CSM_Controller {
 			$selected = get_option( '_csm_peer' );
 			if ( 'rename_connection' === $action ) {
 				$name = $data['name'] ?? '';
-				if ( ! is_string( $name ) || strlen( $name ) > 480 || ( $name = trim( sanitize_text_field( $name ) ) ) === '' ) {
+				if ( ! is_string( $name ) || strlen( $name ) > 480 ) {
+					throw new RuntimeException( 'Enter a connection label.' );
+				}
+				$name = trim( sanitize_text_field( $name ) );
+				if ( '' === $name ) {
 					throw new RuntimeException( 'Enter a connection label.' ); }
 				$peers[ $id ]['name'] = $name;
 				if ( $selected && self::site_id( $selected['url'] ) === $id ) {

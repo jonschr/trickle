@@ -23,7 +23,7 @@ function wp_upload_dir(...$args){return ['basedir'=>$GLOBALS['fixture'].'/upload
 class CSM_Progress {static function update(...$args){}static function run(){return null;}}
 class CSM_Transport {static function request($peer,$action,$query){if($action!=='component_hashes')throw new RuntimeException('Unexpected remote request');return CSM_Components::inventory($query);}}
 function wp_get_theme($id){return new class {function exists(){return true;}function get($key){return '';}function get_theme_root(){return $GLOBALS['fixture'].'/themes';}};}
-require __DIR__.'/../includes/files.php';require __DIR__.'/../includes/components.php';require __DIR__.'/../includes/package.php';
+require __DIR__.'/../includes/class-csm-files.php';require __DIR__.'/../includes/class-csm-components.php';require __DIR__.'/../includes/class-csm-package.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function remove_fixture($path){if(is_dir($path)){foreach(new FilesystemIterator($path)as$p)remove_fixture($p->getPathname());rmdir($path);}else unlink($path);}
 try{

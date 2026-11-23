@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real frame encoder/decoder and crash publication recovery, isolated from WordPress.
 define('ABSPATH','/trickle-frame-fixture-'.bin2hex(random_bytes(6)).'/'); define('DAY_IN_SECONDS',86400);
 function wp_salt($scheme){return 'frame-fixture';}
@@ -7,7 +8,7 @@ function get_option($key,$default=false){return $default;}
 class CSM_Access {static function owner(){return 'fixture';} static function assert_owner($record){}}
 class CSM_Log {static function write(...$args){}}
 class CSM_Progress {static function update(...$args){}}
-require __DIR__.'/../includes/support.php';require __DIR__.'/../includes/jobs.php';require __DIR__.'/../includes/package.php';require __DIR__.'/../includes/segments.php';
+require __DIR__.'/../includes/class-csm-support.php';require __DIR__.'/../includes/class-csm-jobs.php';require __DIR__.'/../includes/class-csm-package.php';require __DIR__.'/../includes/class-csm-segments.php';
 $checks=0;function check($ok,$label){if(!$ok)throw new RuntimeException($label);$GLOBALS['checks']++;echo 'PASS '.$label."\n";}
 $dir=CSM_Support::private_dir(); $path=$dir.'/incoming'; $bytes=random_bytes(4*1024*1024);
 try {

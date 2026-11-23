@@ -31,7 +31,7 @@ The controlling site's PHP cURL transport sends authenticated HTTPS requests dir
 The default migration and health-check header is:
 
 ```http
-User-Agent: Trickle/0.1.33 (+https://github.com/jonschr/trickle)
+User-Agent: Trickle/1.0.0 (+https://github.com/jonschr/trickle)
 ```
 
 The version follows the installed plugin. A `csm_user_agent` filter can override this value. These are plugin-originated requests, whether initiated through the dashboard or WP-CLI.

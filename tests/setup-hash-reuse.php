@@ -19,8 +19,8 @@ class CSM_Files {
  static function paths($selection){foreach(new RecursiveIteratorIterator(new RecursiveDirectoryIterator($GLOBALS['dir'].'/uploads',FilesystemIterator::SKIP_DOTS)) as $f){if($f->isFile())yield ['uploads/'.substr($f->getPathname(),strlen($GLOBALS['dir'].'/uploads/')),$f->getPathname()];}}
  static function scan($root,$relative,$selection,$deadline,$source){foreach(glob($root.'/*') as $path){if(!in_array($relative.'/'.basename($path),$selection['skip_paths']??[],true))yield $path;}}
 }
-require __DIR__.'/../includes/components.php';
-require __DIR__.'/../includes/media.php';
+require __DIR__.'/../includes/class-csm-components.php';
+require __DIR__.'/../includes/class-csm-media.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 try {
  $mtime=time()-60; foreach(glob($dir.'/plugins/example/*') as $f)touch($f,$mtime);

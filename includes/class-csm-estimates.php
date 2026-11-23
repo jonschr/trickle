@@ -9,14 +9,23 @@ defined( 'ABSPATH' ) || exit;
 
 /** Cached allocation estimates: metadata only, never read or hash file contents. */
 final class CSM_Estimates {
+	/**
+	 * Read or advance the bounded component and media size-estimate inventory.
+	 *
+	 * @param bool $advance Whether to advance the resumable estimate cursor during this read.
+	 * @param bool $refresh Whether to bypass or refresh reusable inventory state.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	public static function read( bool $advance = false, bool $refresh = false ): array {
 		$scope = hash( 'sha256', CSM_Support::json( array( CSM_Files::root( 'plugins' ), CSM_Files::root( 'themes' ), CSM_Files::root( 'uploads' ) ) ) );
 		$path  = CSM_Support::private_dir() . '/size-estimates-' . substr( $scope, 0, 16 ) . '.json';
-		$lock  = fopen( $path . '.lock', 'c' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
+		$lock = fopen( $path . '.lock', 'c' );
 		if ( ! $lock ) {
 			throw new RuntimeException( 'Cannot open size estimate cache.' ); }
 		$locked = flock( $lock, LOCK_EX | LOCK_NB );
 		try {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
 			$state = is_file( $path ) ? json_decode( file_get_contents( $path ), true ) : null;
 			if ( ! is_array( $state ) || ( $state['version'] ?? 0 ) !== 2 || ! isset( $state['queue'], $state['bytes'], $state['items'], $state['complete'], $state['updated'] ) ) {
 				$state = null; }
@@ -114,15 +123,31 @@ final class CSM_Estimates {
 		} finally {
 			if ( $locked ) {
 				flock( $lock, LOCK_UN );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 			} fclose( $lock ); }
 	}
 
+	/**
+	 * Check whether a filesystem entry is excluded from the estimate for its kind.
+	 *
+	 * @param string $path Filesystem path checked or operated on by this helper.
+	 * @param string $kind Component or stream kind selected by the caller.
+	 */
 	private static function excluded( string $path, string $kind ): bool {
 		if ( CSM_Files::excluded( $path ) ) {
 			return true; }
 		return 'media' === $kind && ( preg_match( '#(^|/)(cache|backups?|ai1wm-backups|wpvividbackups)(/|$)#i', $path ) || str_starts_with( basename( $path ), '.' ) || preg_match( '/\.(php\d*|phtml|phar|cgi|pl|sh|htaccess|user\.ini)$/i', $path ) );
 	}
 
+	/**
+	 * Accumulate a selected entry's bytes in component and aggregate estimate counters.
+	 *
+	 * @param array  &$state Resumable work state; updated in place when passed by reference.
+	 * @param string $kind Component or stream kind selected by the caller.
+	 * @param string $component Plugin or theme directory identifier, when applicable.
+	 * @param int    $bytes Logical byte payload or count for this operation.
+	 * @param string $relative Content-relative path subject to exclusion and link policies.
+	 */
 	private static function add( array &$state, string $kind, string $component, int $bytes, string $relative ): void {
 		$state['bytes'][ $kind ] += $bytes;
 		if ( 'media' === $kind ) {

@@ -11,7 +11,7 @@ if (in_array($mode,['false','throw'],true)) {
     }
 }
 function apply_filters($name,$value){return $value;}
-require __DIR__.'/../includes/support.php';require __DIR__.'/../includes/package.php';
+require __DIR__.'/../includes/class-csm-support.php';require __DIR__.'/../includes/class-csm-package.php';
 $path=tempnam(sys_get_temp_dir(),'trickle-digest-');
 try {
     foreach ([0,4095,4096,1048576,2097152,2097153] as $size) {

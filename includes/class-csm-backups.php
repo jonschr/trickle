@@ -98,7 +98,7 @@ final class CSM_Backups {
 		return array(
 			'backups'     => $items,
 			'destination' => site_url(),
-			'recovery'    => $restore ?: null,
+			'recovery'    => $restore ? $restore : null,
 		);
 	}
 
@@ -120,6 +120,8 @@ final class CSM_Backups {
 	 * @return array Native restoration status for the selected backup.
 	 *
 	 * @throws RuntimeException If validation or the protected operation fails.
+	 *
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
 	 */
 	public static function restore( string $id ): array {
 		if ( ! in_array( $id, get_option( '_csm_backups', array() ), true ) ) {
@@ -146,12 +148,15 @@ final class CSM_Backups {
 				$known[ $op['path'] ] = true;
 				if ( ! empty( $op['directory'] ) ) {
 					if ( ! is_file( $op['journal'] ) ) {
+						// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 						throw new RuntimeException( 'A component recovery journal is missing: ' . $op['path'] ); }
 					if ( $op['existed'] && ! file_exists( $op['backup'] ) ) {
+						// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 						throw new RuntimeException( 'A component backup is missing: ' . $op['path'] ); }
 					continue;
 				}
 				if ( $op['existed'] && ( ! is_file( $op['backup'] ) || ( isset( $op['sha256'] ) && ! hash_equals( $op['sha256'], hash_file( 'sha256', $op['backup'] ) ) ) ) ) {
+					// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 					throw new RuntimeException( 'A backup file is missing or changed: ' . $op['path'] ); }
 			}
 			// A saved code component is a snapshot, including files introduced by later migrations.
@@ -176,6 +181,7 @@ final class CSM_Backups {
 			}
 			foreach ( $original['database'] as $table ) {
 				if ( ! empty( $table['existed'] ) && ! CSM_Database::table_exists( $table['backup'] ) ) {
+					// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 					throw new RuntimeException( 'A backup table is missing: ' . $table['target'] ); }
 			}
 			$job              = $original;
@@ -219,12 +225,13 @@ final class CSM_Backups {
 			CSM_Support::work( $job['id'], false );
 			CSM_Support::step();
 			if ( 'backup_copy' === $job['status'] ) {
-				$cursor = $job['backup_copy'] ?? array(
+				$cursor      = $job['backup_copy'] ?? array(
 					'table'       => 0,
 					'offset'      => 0,
 					'initialized' => false,
 				);
-				while ( $cursor['table'] < count( $original['database'] ) ) {
+				$table_count = count( $original['database'] );
+				while ( $cursor['table'] < $table_count ) {
 					$i     = $cursor['table'];
 					$table = $original['database'][ $i ];
 					if ( empty( $table['existed'] ) ) {

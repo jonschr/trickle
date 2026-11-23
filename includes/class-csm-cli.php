@@ -16,11 +16,18 @@ final class CSM_CLI {
 	 */
 	private static array $failure_context = array();
 
-	private static function guard( callable $fn, array $assoc = array() ) {
+	/**
+	 * Run a CLI operation with the site's HTTPS context and structured failure reporting.
+	 *
+	 * @param callable $operation Command callback whose result or failure is reported by the CLI guard.
+	 * @param array    $assoc Named WP-CLI options.
+	 */
+	private static function guard( callable $operation, array $assoc = array() ) {
+		// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- Preserve and restore the exact server HTTPS value around the CLI operation.
 		$https            = $_SERVER['HTTPS'] ?? null;
 		$_SERVER['HTTPS'] = wp_parse_url( get_option( 'siteurl' ), PHP_URL_SCHEME ) === 'https' ? 'on' : 'off';
 		try {
-			return $fn(); } catch ( Throwable $e ) {
+			return $operation(); } catch ( Throwable $e ) {
 			if ( ( $assoc['format'] ?? '' ) === 'json' ) {
 				$session = CSM_Controller::session();
 				WP_CLI::line(
@@ -45,6 +52,13 @@ final class CSM_CLI {
 			}
 	}
 
+	/**
+	 * Render structured command output in the requested supported format.
+	 *
+	 * @param array $data Operation-specific request fields, validated by the receiving operation.
+	 * @param array $assoc Named WP-CLI options.
+	 * @param array $fields Explicit table output columns; empty selects the command defaults.
+	 */
 	private static function output( array $data, array $assoc, array $fields = array() ): void {
 		if ( ! empty( $data['activation_missing'] ) ) {
 			WP_CLI::warning( 'Source plugins unavailable for activation: ' . implode( ', ', $data['activation_missing'] ) ); }
@@ -53,7 +67,7 @@ final class CSM_CLI {
 			WP_CLI::line( wp_json_encode( $data, JSON_UNESCAPED_SLASHES ) );
 			return; }
 		$rows = array_is_list( $data ) ? $data : array( $data );
-		\WP_CLI\Utils\format_items( 'table', $rows, $fields ?: array( 'id', 'status', 'tables', 'rows', 'files', 'bytes', 'destination' ) );
+		\WP_CLI\Utils\format_items( 'table', $rows, $fields ? $fields : array( 'id', 'status', 'tables', 'rows', 'files', 'bytes', 'destination' ) );
 	}
 
 	/**
@@ -63,6 +77,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function sites( $args, $assoc ): void {
 		self::guard( static fn() => self::output( CSM_Controller::state()['connections'], $assoc, array( 'id', 'name', 'url' ) ) );
@@ -74,6 +91,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function presets( $args, $assoc ): void {
 		self::guard( static fn() => self::output( array_values( CSM_Presets::catalog() ), $assoc, array( 'id', 'name', 'direction', 'description' ) ), $assoc );
@@ -88,6 +108,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function inventory( $args, $assoc ): void {
 		self::guard(
@@ -147,6 +170,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function run( $args, $assoc ): void {
 		self::guard(
@@ -169,6 +195,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function preview( $args, $assoc ): void {
 		self::guard(
@@ -201,11 +230,15 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function connect( $args, $assoc ): void {
 		self::guard(
 			static function () use ( $assoc ) {
 				$path = $assoc['code-file'];
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Missing local input is checked immediately and rejected or treated as an absent cache. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 				$code = '-' === $path ? stream_get_contents( STDIN ) : @file_get_contents( $path );
 				if ( false === $code ) {
 					throw new RuntimeException( 'Cannot read the connection code file.' ); }
@@ -239,6 +272,9 @@ final class CSM_CLI {
 	 * : Confirm the plugin update without an interactive prompt.
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function update_remote( $args, $assoc ): void {
 		self::guard(
@@ -271,6 +307,9 @@ final class CSM_CLI {
 	 *
 	 * [--output=<path>]
 	 * : Create a new file with permissions 0600 instead of printing the secret.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function code( $args, $assoc ): void {
 		self::guard(
@@ -279,14 +318,17 @@ final class CSM_CLI {
 				if ( empty( $assoc['output'] ) ) {
 					WP_CLI::line( $code );
 					return; }
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Open failure is checked immediately; warnings must not corrupt the command or diagnostic response. Native handles retain offsets and locks across bounded streaming steps.
 				$fp = @fopen( $assoc['output'], 'xb' );
 				if ( ! $fp ) {
 					throw new RuntimeException( 'Cannot create the code file; choose a new writable path.' ); }
 				try {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Apply exact local permission bits required by staging and publication.
 					if ( ! chmod( $assoc['output'], 0600 ) ) {
 						throw new RuntimeException( 'Cannot make the code file private.' ); }
 					CSM_Support::write( $fp, $code . "\n" );
 				} finally {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 					fclose( $fp ); }
 				WP_CLI::line( 'Connection code written to a private file.' );
 			}
@@ -301,6 +343,9 @@ final class CSM_CLI {
 	 * : Immediately revoke this key.
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function keys( $args, $assoc ): void {
 		self::guard(
@@ -319,6 +364,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json; json includes all selections and timestamps.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function recent( $args, $assoc ): void {
 		self::guard(
@@ -347,6 +395,9 @@ final class CSM_CLI {
 	 * [--remote=<site>]
 	 * : Saved remote destination; omit for this site.
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function backups( $args, $assoc ): void {
 		self::guard( static fn() => self::output( CSM_Controller::execute( 'backups', array( 'site' => $assoc['remote'] ?? '' ) )['backups'], $assoc, array( 'id', 'created', 'source' ) ) );
@@ -364,6 +415,9 @@ final class CSM_CLI {
 	 * [--yes]
 	 * : Confirm replacement of the included destination items.
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function restore_backup( $args, $assoc ): void {
 		self::guard(
@@ -398,6 +452,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function replacements( $args, $assoc ): void {
 		self::guard(
@@ -483,6 +540,9 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function push( $args, $assoc ): void {
 		self::guard( static fn() => self::transfer( 'push', $assoc ) ); }
@@ -554,16 +614,29 @@ final class CSM_CLI {
 	 *
 	 * [--format=<format>]
 	 * : table or json.
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function pull( $args, $assoc ): void {
 		self::guard( static fn() => self::transfer( 'pull', $assoc ) ); }
 
+	/**
+	 * Prepare and execute an authorized CLI push or pull selection.
+	 *
+	 * @param string $direction Migration direction: push or pull.
+	 * @param array  $assoc Named WP-CLI options.
+	 * @param bool   $automated Whether a higher-level preset workflow owns execution and cleanup.
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 * @throws Throwable If underlying migration work fails and its original error is rethrown.
+	 */
 	private static function transfer( string $direction, array $assoc, bool $automated = false ): void {
 		if ( ! $automated && get_option( '_csm_control' ) ) {
 			throw new RuntimeException( 'A transfer is retained. Use status, resume, apply, rollback or discard before starting another.' ); }
 		if ( ! empty( $assoc['recent'] ) ) {
 			$recent = CSM_Controller::recent( $assoc['recent'] );
 			if ( $recent['direction'] !== $direction ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( 'This recent transfer uses the other direction; use trickle ' . $recent['direction'] . '.' ); }
 			if ( array_intersect( array_keys( $assoc ), array( 'remote', 'plugins', 'themes', 'tables', 'media', 'transport', 'force-media', 'rehash-files', 'rehash-media', 'media-ids', 'uploaded-after', 'uploaded-before', 'since', 'keep-destination-plugins', 'skip-replace', 'skip-default-replacements', 'replacements' ) ) ) {
 				throw new RuntimeException( 'Use --recent alone to reuse exact settings, or specify a new remote and selection.' ); }
@@ -601,11 +674,13 @@ final class CSM_CLI {
 				$skipped                   = self::csv( $assoc['skip-default-replacements'] ?? '' );
 				$unknown                   = array_diff( $skipped, array_column( $selection['replacements'], 'id' ) );
 				if ( $unknown ) {
+					// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 					throw new RuntimeException( 'Unknown default replacement IDs: ' . implode( ', ', $unknown ) . '. Use trickle replacements to list the available IDs.' ); }
 				foreach ( $selection['replacements'] as &$rule ) {
 					$rule['enabled'] = ! in_array( $rule['id'], $skipped, true ); }
 				unset( $rule );
 				if ( isset( $assoc['replacements'] ) ) {
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Missing local input is checked immediately and rejected or treated as an absent cache. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 					$file = @file_get_contents( $assoc['replacements'] );
 					if ( false === $file ) {
 						throw new RuntimeException( 'Cannot read the custom replacement JSON file.' ); }
@@ -649,8 +724,10 @@ final class CSM_CLI {
 				return;
 			}
 			if ( ! $plan['can_run'] ) {
+				// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 				throw new RuntimeException( implode( ' ', array_column( $plan['blockers'], 'message' ) ) ); }
-			if ( $previous = CSM_Controller::session() ) {
+			$previous = CSM_Controller::session();
+			if ( $previous ) {
 				CSM_Controller::execute( 'finish', array( 'id' => $previous['id'] ) ); }
 			$assoc['apply'] = true;
 		}
@@ -740,9 +817,19 @@ final class CSM_CLI {
 		);
 	}
 
+	/**
+	 * Normalize a comma-separated CLI selection into distinct nonempty values.
+	 *
+	 * @param string $value Value to encode or transform.
+	 */
 	private static function csv( string $value ): array {
 		return array_values( array_unique( array_filter( array_map( 'trim', explode( ',', $value ) ), static fn( $item ) => '' !== $item ) ) ); }
 
+	/**
+	 * Require a retained controller transfer before continuing CLI work.
+	 *
+	 * @throws RuntimeException If the operation fails validation or cannot complete safely.
+	 */
 	private static function current(): array {
 		$session = CSM_Controller::session();
 		if ( ! $session ) {
@@ -756,6 +843,9 @@ final class CSM_CLI {
 	 * ## OPTIONS
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function status( $args, $assoc ): void {
 		self::guard(
@@ -779,6 +869,9 @@ final class CSM_CLI {
 	 * ## OPTIONS
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function resume( $args, $assoc ): void {
 		self::guard(
@@ -816,6 +909,9 @@ final class CSM_CLI {
 	 * [--yes]
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function apply( $args, $assoc ): void {
 		self::guard( static fn() => self::finish( 'commit', 'Apply the verified transfer to', $assoc ) ); }
@@ -828,6 +924,9 @@ final class CSM_CLI {
 	 * [--yes]
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function rollback( $args, $assoc ): void {
 		self::guard( static fn() => self::finish( 'rollback', 'Restore the pre-transfer backup on', $assoc ) ); }
@@ -840,6 +939,9 @@ final class CSM_CLI {
 	 * [--yes]
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function discard( $args, $assoc ): void {
 		self::guard( static fn() => self::finish( 'discard', 'Permanently delete the retained staging data and backup for', $assoc ) ); }
@@ -851,6 +953,9 @@ final class CSM_CLI {
 	 * [--yes]
 	 *
 	 * [--format=<format>]
+	 *
+	 * @param array $args Positional WP-CLI arguments.
+	 * @param array $assoc Named WP-CLI options.
 	 */
 	public function cancel( $args, $assoc ): void {
 		self::guard(
@@ -874,6 +979,13 @@ final class CSM_CLI {
 		);
 	}
 
+	/**
+	 * Confirm and execute a terminal action on the retained CLI transfer.
+	 *
+	 * @param string $action Supported controller, peer or retained-transfer operation.
+	 * @param string $question Confirmation text shown before a destructive retained-transfer action.
+	 * @param array  $assoc Named WP-CLI options.
+	 */
 	private static function finish( string $action, string $question, array $assoc ): void {
 		$session = self::current();
 		CSM_Controller::execute( 'status', array( 'id' => $session['id'] ) );
@@ -883,7 +995,7 @@ final class CSM_CLI {
 		} while ( ! empty( $result['continue'] ) );
 		unset( $result['nonce'] );
 		self::output(
-			( $result ?: array(
+			( $result ? $result : array(
 				'id'     => $session['id'],
 				'status' => 'discarded',
 				'tables' => 0,

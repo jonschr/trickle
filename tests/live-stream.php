@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Real file generator, frame codec, incremental importer and replay journals. Private fixtures only.
 $root=sys_get_temp_dir().'/trickle-live-'.bin2hex(random_bytes(6));
 define('ABSPATH',$root.'/public/');define('WP_CONTENT_DIR',ABSPATH.'wp-content');define('WP_PLUGIN_DIR',WP_CONTENT_DIR.'/plugins');define('CSM_FILE',dirname(__DIR__).'/trickle.php');
@@ -20,7 +21,7 @@ class CSM_Access {static function owner(){return 'fixture';}static function asse
 class CSM_Log {static function clean($s){return $s;}static function write(...$args){}}
 class CSM_Plugin {static function kinds($s){return ['files'];}static function summary($job){return ['id'=>$job['id'],'files'=>count($job['files']??[]),'status'=>$job['status']];}static function receive_step($job,$kind,$fp,$continuing){$job['received'][$kind]=true;CSM_Jobs::save($job);return $job;}}
 class CSM_Network_Error extends RuntimeException {}class CSM_Busy_Error extends CSM_Network_Error {}
-foreach(['support','files','components','package','live-stream','segments']as$part)require __DIR__.'/../includes/'.$part.'.php';
+foreach(['support','files','components','package','live-stream','segments']as$part)require __DIR__.'/../includes/class-csm-'.$part.'.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 function newJob(){return ['id'=>bin2hex(random_bytes(16)),'status'=>'staging','selection'=>['plugins'=>['demo'],'themes'=>[],'tables'=>[],'media'=>'none'],'files'=>[],'database'=>[],'received'=>[]];}
 function selection(){return ['plugins'=>['demo'],'themes'=>[],'tables'=>[],'media'=>'none','file_policy'=>1];}

@@ -19,7 +19,7 @@ function wp_check_invalid_utf8($text,$strip){return $text;}
 class CSM_Support {static function private_dir(){return $GLOBALS['fixture'];}static function json($v){return json_encode($v)."\n";}}
 class CSM_Jobs {static function save($job){$GLOBALS['saved']=$job;}}
 class CSM_Progress {static function update(...$args){}}
-require __DIR__.'/../includes/files.php';require __DIR__.'/../includes/log.php';require __DIR__.'/../includes/activation.php';
+require __DIR__.'/../includes/class-csm-files.php';require __DIR__.'/../includes/class-csm-log.php';require __DIR__.'/../includes/class-csm-activation.php';
 function check($ok,$message){if(!$ok)throw new RuntimeException($message);echo "PASS $message\n";}
 try{
     $missing=['missing-one/plugin.php','missing-two/plugin.php'];

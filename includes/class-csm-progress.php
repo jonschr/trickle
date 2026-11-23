@@ -6,7 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-require_once __DIR__ . '/timing.php';
+require_once __DIR__ . '/class-csm-timing.php';
 
 /**
  * Throttled progress publication, cancellation and activity tracking.
@@ -65,7 +65,12 @@ final class CSM_Progress {
 		$timing = hrtime( true );
 		try {
 			$path = self::path( $id );
-			return is_file( $path ) ? ( json_decode( file_get_contents( $path ), true ) ?: array() ) : array();
+			if ( ! is_file( $path ) ) {
+				return array();
+			}
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
+			$progress = json_decode( file_get_contents( $path ), true );
+			return is_array( $progress ) ? $progress : array();
 		} finally {
 			CSM_Timing::add( 'progress.read', $timing, 0 ); }
 	}
@@ -147,11 +152,16 @@ final class CSM_Progress {
 			// Reporting must not interrupt an apply or prevent rollback when storage is full.
 			$write_timing = hrtime( true );
 			$json         = CSM_Support::json( self::$current );
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Failed progress/diagnostic storage must not interrupt migration or rollback. Write exact local bytes under the specified lock; publication and failure handling stay with this operation.
 			if ( @file_put_contents( $temp, $json, LOCK_EX ) === false ) {
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- Best-effort removal of an obsolete or failed temporary artifact must not mask the primary result. Delete the validated local file during cleanup or recoverable publication.
 				@unlink( $temp );
 				return; }
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_chmod -- Diagnostic/progress permissions are best-effort; this reporting path must not abort recovery. Apply exact local permission bits required by staging and publication.
 			@chmod( $temp, 0600 );
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rename_rename -- Failed best-effort progress/diagnostic publication returns without interrupting the transfer. Same-filesystem rename is the atomic publication/recovery boundary.
 			if ( ! @rename( $temp, $path ) ) {
+				// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- Best-effort removal of an obsolete or failed temporary artifact must not mask the primary result. Delete the validated local file during cleanup or recoverable publication.
 				@unlink( $temp );
 				return; }
 			CSM_Timing::add( $force ? 'progress.write_forced' : 'progress.write', $write_timing, strlen( $json ) );
@@ -259,6 +269,7 @@ final class CSM_Progress {
 	public static function remove( string $id ): void {
 		$path = self::path( $id );
 		if ( is_file( $path ) ) {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Delete the validated local file during cleanup or recoverable publication.
 			unlink( $path ); }
 	}
 }

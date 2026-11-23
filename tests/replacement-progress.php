@@ -12,7 +12,7 @@ class CSM_Progress {static array $current=[];static function update($detail){sel
 class CSM_Jobs {static function save($job){}}
 class CSM_Files {static function destination($path,$selection){return $GLOBALS['targets'][$path];}}
 function do_action(...$args){if(isset($GLOBALS['crash_at'])&&($args[2]??null)==='apply'&&$GLOBALS['crash_at']===($args[3]??null))throw new RuntimeException('Simulated request loss');}
-require __DIR__.'/../includes/plugin.php';
+require __DIR__.'/../includes/class-csm-plugin.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 try{
     $targets=[];foreach(['plugins/first/a.php','plugins/second/b.php','themes/child/style.css','uploads/2026/01/a.jpg']as$index=>$path){$targets[$path]=$fixture.'/file-'.$index;file_put_contents($targets[$path],'fixture');}

@@ -122,6 +122,7 @@ final class CSM_Timing {
 			'started'        => $request['started'],
 			'elapsed_ms'     => round( ( hrtime( true ) - $request['clock'] ) / 1e6, 3 ),
 			'process_cpu_ms' => null !== $cpu && null !== $request['cpu'] ? round( max( 0, $cpu - $request['cpu'] ), 3 ) : null,
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.MissingUnslash, WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- PHP supplies this numeric request-start timestamp; it is used only for timing arithmetic.
 			'bootstrap_ms'   => isset( $_SERVER['REQUEST_TIME_FLOAT'] ) && PHP_SAPI !== 'cli' ? round( max( 0, 1000 * ( $request['started'] - $_SERVER['REQUEST_TIME_FLOAT'] ) ), 3 ) : null,
 			'metrics'        => $metrics,
 		);

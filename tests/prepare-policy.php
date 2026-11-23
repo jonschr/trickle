@@ -4,7 +4,7 @@ define('ABSPATH','/fixture/');
 $requests=0;
 class CSM_Transport {static function request(...$args){++$GLOBALS['requests'];return ['git_folders'=>['plugins/repo']];}}
 class CSM_Files {static function git_folders(...$args){return ['themes/local-repo'];}}
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $method=new ReflectionMethod(CSM_Controller::class,'review');$peer=['url'=>'https://remote.example'];$policy=['git_folders'=>['plugins/repo']];
 $r=$method->invoke(null,$peer,false,[],[],$policy);

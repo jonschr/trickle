@@ -1,4 +1,5 @@
 <?php
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 // Shared host scheduling without WordPress or network traffic.
 define('ABSPATH','/fixture/');
 $root=sys_get_temp_dir().'/test-trickle-pacing-'.bin2hex(random_bytes(6));mkdir($root,0700);
@@ -8,7 +9,7 @@ function get_option($key,$default=false){return $GLOBALS['options'][$key]??$defa
 function update_option($key,$value,...$args){$GLOBALS['options'][$key]=$value;}
 function apply_filters($hook,$value,...$args){return $hook==='csm_setup_request_interval'?($GLOBALS['setup_interval']??0):($GLOBALS['interval']??$value);}
 class CSM_Support {static function private_dir(){return $GLOBALS['root'];}static function check_cancel(){if(!empty($GLOBALS['cancel']))throw new RuntimeException('Cancelled');}}
-require __DIR__.'/../includes/transport.php';
+require __DIR__.'/../includes/class-csm-transport.php';
 $method=new ReflectionMethod(CSM_Transport::class,'paced');
 $run=static fn($url,$action,$fn)=>$method->invoke(null,$url,$action,$fn);
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}

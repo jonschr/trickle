@@ -6,7 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-require_once __DIR__ . '/timing.php';
+require_once __DIR__ . '/class-csm-timing.php';
 
 /** Owns job persistence; transfer phases never choose an inline or file-backed representation. */
 final class CSM_Jobs {
@@ -84,10 +84,12 @@ final class CSM_Jobs {
 			throw new RuntimeException( 'Invalid transfer checkpoint reference.' );
 		}
 		$dir = self::private_directory( $record['_csm_blob_dir'] ?? CSM_Support::private_dir() . '/job-records/' . $id );
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Missing local input is checked immediately and rejected or treated as an absent cache. Read exact local file or input-stream bytes; no outbound HTTP request is made.
 		$raw = @file_get_contents( $dir . '/' . $digest . '.json.gz' );
 		if ( false === $raw || ! hash_equals( $digest, hash( 'sha256', $raw ) ) ) {
 			throw new RuntimeException( 'Transfer checkpoint is missing or changed.' );
 		}
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- Malformed bounded gzip input is checked as false and rejected by the following validation.
 		$decoded = @gzdecode( $raw, self::MAX_RECORD_BYTES );
 		$job     = false === $decoded ? null : json_decode( $decoded, true, 512, JSON_THROW_ON_ERROR );
 		if ( ! is_array( $job ) || ( $job['id'] ?? null ) !== $id || ( $job['status'] ?? null ) !== $record['status'] ) {
@@ -108,9 +110,12 @@ final class CSM_Jobs {
 	private static function read_cursor( string $id ): array {
 		global $wpdb;
 		// Transactional writes bypass the options cache, including its negative cache.
-		$sql   = $wpdb->prepare( 'SELECT option_value FROM ' . CSM_Support::ident( $wpdb->options ) . ' WHERE option_name=%s', '_csm_cursor_' . $id );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Transactional cursor SQL uses validated identifiers and prepared values, bypassing stale option caches.
+		$sql = $wpdb->prepare( 'SELECT option_value FROM ' . CSM_Support::ident( $wpdb->options ) . ' WHERE option_name=%s', '_csm_cursor_' . $id );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.NotPrepared -- Transactional cursor SQL uses validated identifiers and prepared values, bypassing stale option caches.
 		$value = $wpdb->get_var( $sql );
 		if ( '' !== $wpdb->last_error ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Exception text is data; JSON/CLI and context-escaped UI handlers own output encoding.
 			throw new RuntimeException( 'Could not read transfer checkpoint: ' . $wpdb->last_error ); }
 		if ( null === $value ) {
 			return array(); }
@@ -131,6 +136,7 @@ final class CSM_Jobs {
 		$timing = hrtime( true );
 		try {
 			self::require_id( $job['id'] ?? '' );
+			// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_touch -- A best-effort activity heartbeat must not interrupt checkpoint publication or recovery. Retain source timestamps or the recovery heartbeat on local storage.
 			@touch( CSM_Support::private_dir() . '/' . $job['id'] . '-heartbeat' );
 			$record = self::encode_record( $job );
 			$key    = '_csm_job_' . $job['id'];
@@ -168,6 +174,7 @@ final class CSM_Jobs {
 		$digest = hash( 'sha256', $raw );
 		$dir    = isset( $job['backup_dir'] ) ? $job['backup_dir'] . '/job-records' : CSM_Support::private_dir() . '/job-records/' . $job['id'];
 		self::private_directory( $dir );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Create private staging with explicit permissions; no FTP backend may replace it.
 		if ( ! is_dir( $dir ) && ! mkdir( $dir, 0700, true ) ) {
 			throw new RuntimeException( 'Cannot create transfer checkpoint storage.' ); }
 		$path = $dir . '/' . $digest . '.json.gz';
@@ -187,11 +194,13 @@ final class CSM_Jobs {
 	 */
 	public static function save_transactional( array $job ): void {
 		self::require_id( $job['id'] ?? '' );
+		// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_touch -- A best-effort activity heartbeat must not interrupt checkpoint publication or recovery. Retain source timestamps or the recovery heartbeat on local storage.
 		@touch( CSM_Support::private_dir() . '/' . $job['id'] . '-heartbeat' );
 		global $wpdb;
 		$key    = '_csm_cursor_' . $job['id'];
 		$cursor = array_intersect_key( $job, array_flip( array( 'status', 'imports', 'rows', 'backup_copy' ) ) );
-		$sql    = $wpdb->prepare( 'INSERT INTO ' . CSM_Support::ident( $wpdb->options ) . ' (option_name,option_value,autoload) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)', $key, maybe_serialize( $cursor ), 'off' );
+		// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- Transactional cursor SQL uses validated identifiers and prepared values, bypassing stale option caches.
+		$sql = $wpdb->prepare( 'INSERT INTO ' . CSM_Support::ident( $wpdb->options ) . ' (option_name,option_value,autoload) VALUES (%s,%s,%s) ON DUPLICATE KEY UPDATE option_value=VALUES(option_value)', $key, maybe_serialize( $cursor ), 'off' );
 		CSM_Support::query( $sql );
 		wp_cache_delete( $key, 'options' );
 	}
@@ -213,7 +222,7 @@ final class CSM_Jobs {
 	 */
 	public static function prune(): void {
 		$dirs = array();
-		foreach ( glob( CSM_Support::private_dir() . '/job-records/*', GLOB_ONLYDIR ) ?: array() as $dir ) {
+		foreach ( (array) glob( CSM_Support::private_dir() . '/job-records/*', GLOB_ONLYDIR ) as $dir ) {
 			$id = basename( $dir );
 			if ( ! preg_match( '/^[a-f0-9]{32}$/D', $id ) ) {
 				continue; }
@@ -226,9 +235,10 @@ final class CSM_Jobs {
 			}
 		}
 		foreach ( $dirs as $dir => $current ) {
-			foreach ( glob( $dir . '/*.json.gz' ) ?: array() as $path ) {
+			foreach ( (array) glob( $dir . '/*.json.gz' ) as $path ) {
 				// Retain old immutable versions long enough for concurrent status readers.
 				if ( basename( $path ) !== $current . '.json.gz' && filemtime( $path ) < time() - 3600 ) {
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink -- Best-effort removal of an obsolete or failed temporary artifact must not mask the primary result. Delete the validated local file during cleanup or recoverable publication.
 					@unlink( $path ); }
 			}
 		}

@@ -15,6 +15,8 @@ function wp_verify_nonce($nonce,$action) { return $nonce==='valid' ? 1 : false; 
 ''')
     runner = base/'runner.php'
     runner.write_text('''<?php
+function wp_parse_url($url,$component=-1){return parse_url($url,$component);}
+function wp_json_encode($value,$flags=0,$depth=512){return json_encode($value,$flags,$depth);}
 $scenario=json_decode($argv[1],true); $wp=$argv[2]; $repo=$argv[3];
 define('ABSPATH',$wp.'/');define('WPINC','wp-includes');define('WP_PLUGIN_DIR',$wp.'/wp-content/plugins');
 define('CSM_VERSION','0.1.15');define('__CSM_PLUGIN__','trickle/trickle.php');
@@ -32,7 +34,7 @@ $_GET=$scenario['get']??[];$_POST=$scenario['post']??[];$_REQUEST=$scenario['req
 $_SERVER['SCRIPT_FILENAME']=$wp.'/'.($scenario['script']??'wp-login.php');
 $_SERVER['REQUEST_URI']='/'.($scenario['script']??'wp-login.php');
 $_SERVER['REQUEST_METHOD']=$scenario['method']??'GET';$_SERVER['DOCUMENT_ROOT']=dirname($wp);
-require $repo.'/includes/support.php';require $repo.'/includes/access.php';require $repo.'/includes/transport.php';
+require $repo.'/includes/class-csm-support.php';require $repo.'/includes/class-csm-access.php';require $repo.'/includes/class-csm-transport.php';
 if (isset($scenario['signed'])) {
  $action=!empty($scenario['auth'])?'stream_data':'status';
  foreach(CSM_Transport::headers($action,str_repeat('a',64),!empty($scenario['auth'])?'stream':hash('sha256','')) as $h){if(!str_contains($h,': '))continue;[$k,$v]=explode(': ',$h,2);$_SERVER['HTTP_'.str_replace('-','_',strtoupper($k))]=$v;}

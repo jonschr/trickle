@@ -4,7 +4,7 @@ define('ABSPATH','/fixture/');define('ARRAY_A','ARRAY_A');
 class wpdb {public $posts='wp_posts',$options='wp_options',$last_error='';public $rows=[],$reads=0;function get_results($sql,$format){$this->reads++;if($sql!=="SELECT ID, post_date_gmt FROM `_csm_test_posts` WHERE post_status='future'")throw new RuntimeException('Unexpected SQL');return $this->rows;}}
 $wpdb=new wpdb();
 class CSM_Support {static function ident($name){return '`'.$name.'`';}}
-require __DIR__.'/../includes/database.php';
+require __DIR__.'/../includes/class-csm-database.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 $job=['database'=>[['target'=>'wp_posts','stage'=>'_csm_test_posts']]];
 $base=[100=>['test_global'=>['unchanged'=>['schedule'=>false,'args'=>['keep']]],'upgrader_scheduled_cleanup'=>['old-zip'=>['schedule'=>false,'args'=>[6]]]],200=>['publish_future_post'=>['old-post'=>['schedule'=>false,'args'=>[999]]]],'version'=>2];

@@ -20,9 +20,9 @@ class CSM_Files {
     public static function git_folders($selection){return ['plugins/git-plugin','themes/git-theme'];}
     public static function beneath($path,$folders){foreach($folders as $folder)if($path===$folder||str_starts_with($path,$folder.'/'))return true;return false;}
 }
-require __DIR__.'/../includes/support.php';
-require __DIR__.'/../includes/presets.php';
-require __DIR__.'/../includes/controller.php';
+require __DIR__.'/../includes/class-csm-support.php';
+require __DIR__.'/../includes/class-csm-presets.php';
+require __DIR__.'/../includes/class-csm-controller.php';
 $local=['url'=>site_url(),'tables'=>[['id'=>'local_posts']], 'plugins'=>[['id'=>'common'],['id'=>'git-plugin'],['id'=>'third-party'],['id'=>'trickle','protected'=>true]], 'themes'=>[['id'=>'git-theme'],['id'=>'vendor-theme']]];
 $remote=['url'=>'https://remote.test','tables'=>[['id'=>'wp_posts'],['id'=>'wp_options']], 'plugins'=>[['id'=>'common'],['id'=>'missing'],['id'=>'trickle','protected'=>true]], 'themes'=>[]];
 $operate = new ReflectionMethod(CSM_Controller::class, 'operate');

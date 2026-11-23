@@ -7,7 +7,7 @@ function get_plugins(){return array_fill_keys(['plain/main.php','nested/main.php
 function get_site_transient($key){return (object)[];}function get_option($key,$default=[]){return $default;}function get_template(){return 'child';}function get_stylesheet(){return 'child';}function esc_url_raw($url,$protocols){return $url;}
 class TestTheme{function get($key){return $key==='Name'?'Child':'1';}function get_screenshot(){return false;}function get_theme_root(){return $GLOBALS['dir'].'/themes';}}
 function wp_get_themes(){return ['child'=>new TestTheme];}
-require __DIR__.'/../includes/files.php';
+require __DIR__.'/../includes/class-csm-files.php';
 function check($ok,$label){if(!$ok)throw new RuntimeException($label);echo "PASS $label\n";}
 try{
  foreach(['plain','nested','broken','excluded']as$name){mkdir(WP_PLUGIN_DIR.'/'.$name);file_put_contents(WP_PLUGIN_DIR.'/'.$name.'/main.php','<?php');}

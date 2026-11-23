@@ -10,15 +10,10 @@ defined( 'ABSPATH' ) || exit; ?>
 	<?php require __DIR__ . '/app-header.php'; ?>
 	<div id="csm-app-notices">
 	<?php
-	/**
-	 * WordPress administration page templates and controls.
-	 *
-	 * @package Trickle
-	 */
-
-	if ( $loader_error ) :
-		?>
-		<div class="notice notice-warning inline" role="alert"><p><?php echo esc_html( $loader_error ); ?></p></div><?php endif; ?>
+	if ( $loader_error ) {
+		printf( '<div class="notice notice-warning inline" role="alert"><p>%s</p></div>', esc_html( $loader_error ) );
+	}
+	?>
 		<div id="csm-error" class="notice notice-error inline csm-error" role="alert" hidden></div>
 		<p id="csm-feedback" class="csm-feedback" role="status" aria-live="polite" hidden></p>
 	</div>
@@ -64,64 +59,84 @@ defined( 'ABSPATH' ) || exit; ?>
 	</div>
 	<dialog id="csm-git-review" aria-labelledby="csm-git-review-title" aria-describedby="csm-git-review-help"><form method="dialog"><h2 id="csm-git-review-title">Protect development folders</h2><p id="csm-git-review-help">Git folders are skipped. Select one to include it for this transfer; confirmation is required.</p><div id="csm-git-folders"></div><div class="csm-git-actions"><button class="button" value="cancel" autofocus>Cancel</button><button class="button button-primary" value="prepare">Continue</button></div></form></dialog>
 	</section>
-	<section data-csm-view="settings" aria-label="Settings"
 	<?php
-	if ( 'settings' !== $view ) {
-		echo 'hidden';}
+	printf(
+		'<section data-csm-view="settings" aria-label="Settings"%s>',
+		'settings' !== $view ? ' hidden' : ''
+	);
+	printf( '<details class="csm-card" id="csm-connection" open>' );
+	printf( '<summary><span>Connection &amp; access</span></summary>' );
+	printf( '<div class="csm-panel-body csm-access-settings">' );
+	printf( '<section aria-labelledby="csm-access-title"><h2 id="csm-access-title">This site</h2>' );
+	printf(
+		'<p class="csm-site-url"><strong>%s</strong></p>',
+		esc_html( site_url() )
+	);
+	printf( '<div class="csm-permissions">' );
+	printf(
+		'<label><input type="checkbox" id="csm-allow-read"%s> Allow authenticated remote reads</label>',
+		checked( ! empty( $settings['pull'] ), true, false )
+	);
+	printf(
+		'<label><input type="checkbox" id="csm-allow-write"%s> Allow authenticated incoming writes</label>',
+		checked( ! empty( $settings['push'] ), true, false )
+	);
+	printf( '</div>' );
+	printf( '<p id="csm-permissions-status" class="csm-inline-status" role="status" aria-live="polite"></p>' );
+	printf( '<div class="csm-key-settings">' );
+	printf( '<p>Connect from another site using this code. Regenerating it revokes the old code.</p>' );
+	printf(
+		'<textarea id="csm-pairing" readonly rows="3" aria-label="This site\'s private connection code" hidden>%s</textarea>',
+		esc_textarea( self::pairing() )
+	);
+	printf( '<div class="csm-key-actions">' );
+	printf( '<button type="button" class="button button-primary" id="csm-copy-settings"><span aria-live="polite" aria-atomic="true">Copy connection code</span></button>' );
+	printf( '<button type="button" class="button-link" id="csm-reveal" aria-controls="csm-pairing" aria-expanded="false">Show connection code</button>' );
+	printf( '<button type="button" class="button-link" id="csm-rotate">Regenerate connection key</button>' );
+	printf( '</div></div></section></div></details>' );
+	printf( '<details class="csm-card" id="csm-source-preparations">' );
+	printf( '<summary><span>Retained source preparations</span></summary><div class="csm-panel-body">' );
+	printf( '<p>Source snapshots retained for connected sites. Cancelling a preparation stops its source work and discards its export; destination backups are kept. Use the original controller to finish or cancel an active migration.</p>' );
+	printf( '<button type="button" class="button" id="csm-refresh-source-preparations">Refresh status</button>' );
+	printf( '<p id="csm-source-preparations-status" role="status" aria-live="polite"></p>' );
+	printf( '<div id="csm-source-preparations-list"></div></div></details>' );
+	printf( '<section class="csm-card csm-settings-transfer" aria-labelledby="csm-transfer-settings-title"><div class="csm-panel-body">' );
+	printf( '<h2 id="csm-transfer-settings-title">Transfer preferences</h2>' );
+	printf( '<p class="csm-note"><label for="csm-transport">Transfer method</label> <select id="csm-transport" aria-describedby="csm-transport-help">' );
+	printf(
+		'<option value="stream"%s>Automatic (recommended)</option>',
+		selected( $transfer_defaults['transport'], 'stream', false )
+	);
+	printf(
+		'<option value="chunks"%s>512 KB chunks</option>',
+		selected( $transfer_defaults['transport'], 'chunks', false )
+	);
+	printf( '</select> <span id="csm-transport-help">Continuous downloads, 16 MiB uploads. Both methods resume.</span></p>' );
+	printf( '<p class="csm-note">Files are compared by size and modification time. Transferred files are verified after receipt.</p>' );
+	printf( '<h3>Request spacing</h3>' );
+	printf( '<p class="csm-note">Site-wide preferences for every push, pull and Trickle update started here. Requests to each host remain serial. Set either interval to 0 to disable it; server-requested cooldowns still apply.</p>' );
+	printf(
+		'<p class="csm-note"><label for="csm-setup-request-interval">Startup and update spacing (seconds)</label> <input type="number" class="small-text" id="csm-setup-request-interval" min="0" max="60" step="0.1" value="%s" aria-describedby="csm-setup-request-interval-help"%s> <span id="csm-setup-request-interval-help">Minimum time between setup request starts. File and database streams run without this recurring delay.%s</span></p>',
+		esc_attr( $transfer_defaults['setup_request_interval'] ),
+		defined( 'CSM_SETUP_REQUEST_INTERVAL' ) ? ' readonly' : '',
+		defined( 'CSM_SETUP_REQUEST_INTERVAL' ) ? ' Controlled by this site’s configuration.' : ''
+	);
+	printf(
+		'<p class="csm-note"><label for="csm-request-interval">Quiet time after every request (seconds)</label> <input type="number" class="small-text" id="csm-request-interval" min="0" max="60" step="0.1" value="%s" aria-describedby="csm-request-interval-help"%s> <span id="csm-request-interval-help">Optional pause after all requests, including file and database streams. Default: 0.%s</span></p>',
+		esc_attr( $transfer_defaults['request_interval'] ),
+		defined( 'CSM_REQUEST_INTERVAL' ) ? ' readonly' : '',
+		defined( 'CSM_REQUEST_INTERVAL' ) ? ' Controlled by this site’s configuration.' : ''
+	);
+	printf( '<p id="csm-transfer-settings-status" class="csm-inline-status" role="status" aria-live="polite"></p>' );
+	printf( '<h3>Exclusions</h3>' );
+	printf( '<p class="csm-note">Always excluded: <code>node_modules</code>, <code>.git</code>, <code>.gitignore</code>, and environment files (<code>.env</code>, <code>.env.*</code>, <code>*.env</code>). Existing destination copies are kept. Git folders are skipped unless explicitly included.</p>' );
+	printf( '</div></section>' );
+	printf( '<details class="csm-requirements"><summary>Connection requirements &amp; transfer limits</summary>' );
+	printf( '<p>Both sites need this plugin and 64-bit PHP 8.1+, cURL, writable private temporary storage, and writable selected destination files. Production connections require verified HTTPS. Endpoint: <code>?trickle=…</code>; requests use signed <code>X-CSM-*</code> headers.</p>' );
+	printf( '<p>Trickle supports single sites with InnoDB, MEMORY and MyISAM tables. Related foreign-key tables must be selected together. Non-InnoDB snapshots require source LOCK TABLES permission. It transfers selected plugins, themes, tables and media, not WordPress core or wp-config.php. Destination URLs, Trickle credentials, and cron schedule are preserved. Plugin activation follows the source unless disabled. Database transfers can replace user accounts and other integration settings; keep destination login access and backups available.</p>' );
+	printf( '<p>Transfers use retained source snapshots with resumable streaming or 512 KB chunks. Retry resumes at the destination checkpoint. Building the source stream and final staging can still hit hosting time limits; both sites need temporary disk space. Checksums are validated before applying. Media uses temporary files in uploads; database/code staging and rollback data stay private. The three most recent backups are kept on the destination. Rollback restores the earlier data and will overwrite changes made after applying.</p>' );
+	printf( '</details></section>' );
 	?>
-	>
-	<details class="csm-card" id="csm-connection" open>
-		<summary><span>Connection &amp; access</span></summary>
-		<div class="csm-panel-body csm-access-settings">
-			<section aria-labelledby="csm-access-title"><h2 id="csm-access-title">This site</h2><p class="csm-site-url"><strong><?php echo esc_html( site_url() ); ?></strong></p>
-				<div class="csm-permissions"><label><input type="checkbox" id="csm-allow-read" <?php checked( ! empty( $settings['pull'] ) ); ?>> Allow authenticated remote reads</label>
-				<label><input type="checkbox" id="csm-allow-write" <?php checked( ! empty( $settings['push'] ) ); ?>> Allow authenticated incoming writes</label></div>
-				<p id="csm-permissions-status" class="csm-inline-status" role="status" aria-live="polite"></p>
-				<div class="csm-key-settings"><p>Connect from another site using this code. Regenerating it revokes the old code.</p>
-				<textarea id="csm-pairing" readonly rows="3" aria-label="This site's private connection code" hidden><?php echo esc_textarea( self::pairing() ); ?></textarea>
-				<div class="csm-key-actions"><button type="button" class="button button-primary" id="csm-copy-settings"><span aria-live="polite" aria-atomic="true">Copy connection code</span></button><button type="button" class="button-link" id="csm-reveal" aria-controls="csm-pairing" aria-expanded="false">Show connection code</button><button type="button" class="button-link" id="csm-rotate">Regenerate connection key</button></div></div>
-			</section>
-
-		</div>
-	</details>
-	<details class="csm-card" id="csm-source-preparations"><summary><span>Retained source preparations</span></summary><div class="csm-panel-body">
-		<p>Source snapshots retained for connected sites. Cancelling a preparation stops its source work and discards its export; destination backups are kept. Use the original controller to finish or cancel an active migration.</p>
-		<button type="button" class="button" id="csm-refresh-source-preparations">Refresh status</button><p id="csm-source-preparations-status" role="status" aria-live="polite"></p><div id="csm-source-preparations-list"></div>
-	</div></details>
-	<section class="csm-card csm-settings-transfer" aria-labelledby="csm-transfer-settings-title"><div class="csm-panel-body">
-		<h2 id="csm-transfer-settings-title">Transfer preferences</h2>
-		<p class="csm-note"><label for="csm-transport">Transfer method</label> <select id="csm-transport" aria-describedby="csm-transport-help"><option value="stream" <?php selected( $transfer_defaults['transport'], 'stream' ); ?>>Automatic (recommended)</option><option value="chunks" <?php selected( $transfer_defaults['transport'], 'chunks' ); ?>>512 KB chunks</option></select> <span id="csm-transport-help">Continuous downloads, 16 MiB uploads. Both methods resume.</span></p>
-		<p class="csm-note">Files are compared by size and modification time. Transferred files are verified after receipt.</p>
-		<h3>Request spacing</h3>
-		<p class="csm-note">Site-wide preferences for every push, pull and Trickle update started here. Requests to each host remain serial. Set either interval to 0 to disable it; server-requested cooldowns still apply.</p>
-		<p class="csm-note"><label for="csm-setup-request-interval">Startup and update spacing (seconds)</label> <input type="number" class="small-text" id="csm-setup-request-interval" min="0" max="60" step="0.1" value="<?php echo esc_attr( $transfer_defaults['setup_request_interval'] ); ?>" aria-describedby="csm-setup-request-interval-help"
-																																																										<?php
-																																																										if ( defined( 'CSM_SETUP_REQUEST_INTERVAL' ) ) {
-																																																											echo 'readonly';}
-																																																										?>
-		> <span id="csm-setup-request-interval-help">Minimum time between setup request starts. File and database streams run without this recurring delay.
-<?php
-if ( defined( 'CSM_SETUP_REQUEST_INTERVAL' ) ) {
-			echo ' Controlled by this site’s configuration.';}
-?>
-</span></p>
-		<p class="csm-note"><label for="csm-request-interval">Quiet time after every request (seconds)</label> <input type="number" class="small-text" id="csm-request-interval" min="0" max="60" step="0.1" value="<?php echo esc_attr( $transfer_defaults['request_interval'] ); ?>" aria-describedby="csm-request-interval-help"
-																																																								<?php
-																																																								if ( defined( 'CSM_REQUEST_INTERVAL' ) ) {
-																																																									echo 'readonly';}
-																																																								?>
-		> <span id="csm-request-interval-help">Optional pause after all requests, including file and database streams. Default: 0.
-<?php
-if ( defined( 'CSM_REQUEST_INTERVAL' ) ) {
-			echo ' Controlled by this site’s configuration.';}
-?>
-</span></p>
-		<p id="csm-transfer-settings-status" class="csm-inline-status" role="status" aria-live="polite"></p>
-		<h3>Exclusions</h3>
-		<p class="csm-note">Always excluded: <code>node_modules</code>, <code>.git</code>, <code>.gitignore</code>, and environment files (<code>.env</code>, <code>.env.*</code>, <code>*.env</code>). Existing destination copies are kept. Git folders are skipped unless explicitly included.</p>
-	</div></section>
-		<details class="csm-requirements"><summary>Connection requirements &amp; transfer limits</summary><p>Both sites need this plugin and 64-bit PHP 8.1+, cURL, writable private temporary storage, and writable selected destination files. Production connections require verified HTTPS. Endpoint: <code>?trickle=…</code>; requests use signed <code>X-CSM-*</code> headers.</p><p>Trickle supports single sites with InnoDB, MEMORY and MyISAM tables. Related foreign-key tables must be selected together. Non-InnoDB snapshots require source LOCK TABLES permission. It transfers selected plugins, themes, tables and media, not WordPress core or wp-config.php. Destination URLs, Trickle credentials, and cron schedule are preserved. Plugin activation follows the source unless disabled. Database transfers can replace user accounts and other integration settings; keep destination login access and backups available.</p><p>Transfers use retained source snapshots with resumable streaming or 512 KB chunks. Retry resumes at the destination checkpoint. Building the source stream and final staging can still hit hosting time limits; both sites need temporary disk space. Checksums are validated before applying. Media uses temporary files in uploads; database/code staging and rollback data stay private. The three most recent backups are kept on the destination. Rollback restores the earlier data and will overwrite changes made after applying.</p></details>
-	</section>
 	<section data-csm-view="diagnostics" aria-label="Diagnostics"
 	<?php
 	if ( 'diagnostics' !== $view ) {

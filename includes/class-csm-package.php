@@ -6,7 +6,7 @@
  */
 
 defined( 'ABSPATH' ) || exit;
-require_once __DIR__ . '/timing.php';
+require_once __DIR__ . '/class-csm-timing.php';
 
 /** Small, independently verified gzip frames; saved cursors never depend on a PHP process surviving. */
 final class CSM_Package {
@@ -17,27 +17,56 @@ final class CSM_Package {
 	 */
 	private static ?bool $openssl = null;
 
-	/** Same SHA-256 bytes, using the accelerated provider for large blocks when available. */
+	/**
+	 * Compute SHA-256 with an optional accelerated provider and exact fallback.
+	 *
+	 * @param string $bytes Exact bytes whose SHA-256 digest is required.
+	 * @param bool   $binary Whether to return the digest as raw binary bytes.
+	 *
+	 * @return string Raw 32-byte digest when binary is true; otherwise 64 lowercase hex characters.
+	 */
 	public static function digest( string $bytes, bool $binary = false ): string {
 		$started = hrtime( true );
 		$backend = 'checksum.block_native';
 		try {
-			if ( strlen( $bytes ) >= 4096 && ( self::$openssl ??= function_exists( 'openssl_digest' ) ) ) {
-				try {
-					$digest = @openssl_digest( $bytes, 'sha256', $binary ); } catch ( Throwable $error ) {
-					$digest = false; }
-					if ( is_string( $digest ) && strlen( $digest ) === ( $binary ? 32 : 64 ) ) {
-						$backend = 'checksum.block_openssl';
-						return $digest; }
-					self::$openssl = false;
+			if ( strlen( $bytes ) >= 4096 ) {
+				self::$openssl ??= function_exists( 'openssl_digest' );
+				if ( self::$openssl ) {
+					try {
+						// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- A rejected optional provider falls back to the exact native SHA-256 implementation.
+						$digest = @openssl_digest( $bytes, 'sha256', $binary ); } catch ( Throwable $error ) {
+						$digest = false; }
+						if ( is_string( $digest ) && strlen( $digest ) === ( $binary ? 32 : 64 ) ) {
+							$backend = 'checksum.block_openssl';
+							return $digest; }
+						self::$openssl = false;
+				}
 			}
 			return hash( 'sha256', $bytes, $binary );
 		} finally {
 			CSM_Timing::add( $backend, $started, strlen( $bytes ) ); }
 	}
 
+	/**
+	 * Extend the stream checksum chain with one record.
+	 *
+	 * @param string $hash Previous checksum-chain value; empty before the first record.
+	 * @param string $record Exact bytes appended to the checksum chain.
+	 *
+	 * @return string Hexadecimal SHA-256 of the previous chain followed by the record bytes.
+	 */
 	public static function chain( string $hash, string $record ): string {
 		return hash( 'sha256', $hash . $record ); }
+	/**
+	 * Encode one bounded gzip frame with its length, digest and control flag.
+	 *
+	 * @param string $part Nonempty uncompressed frame payload, at most 256 KiB.
+	 * @param bool   $control Whether to set the frame header control-record bit.
+	 *
+	 * @return string Binary frame containing a 36-byte header and compressed payload.
+	 *
+	 * @throws RuntimeException If stream metadata, bytes or protected storage fail validation.
+	 */
 	public static function frame( string $part, bool $control = false ): string {
 		if ( '' === $part || strlen( $part ) > 262144 ) {
 			throw new RuntimeException( 'Invalid frame payload size.' ); }
@@ -48,14 +77,35 @@ final class CSM_Package {
 		return pack( 'N', strlen( $gzip ) | ( $control ? 0x80000000 : 0 ) ) . self::digest( $gzip, true ) . $gzip;
 	}
 
+	/**
+	 * Split bytes into bounded frames and write them to the supplied stream.
+	 *
+	 * @param resource $fp Writable framed-output stream; ownership remains with the caller.
+	 * @param string   $bytes Exact payload bytes to frame or append.
+	 */
 	public static function put( $fp, string $bytes ): void {
 		foreach ( str_split( $bytes, 262144 ) as $part ) {
 			CSM_Support::write( $fp, self::frame( $part ) ); }
 	}
 
+	/**
+	 * Build or resume a private framed snapshot for the approved selection.
+	 *
+	 * File snapshots may yield a durable continuation. A database snapshot is rebuilt
+	 * within one consistent source budget rather than mixing transactions across requests.
+	 *
+	 * @param string $path Absolute private snapshot path.
+	 * @param string $kind Selected stream kind: database or files.
+	 * @param array  $selection Approved source component selection.
+	 *
+	 * @return array Continuation progress or completed format, size, SHA-256 and component metadata.
+	 *
+	 * @throws RuntimeException If stream metadata, bytes or protected storage fail validation.
+	 */
 	public static function build( string $path, string $kind, array $selection ): array {
 		$checkpoint = $path . '.build';
-		$state      = is_file( $checkpoint ) ? json_decode( file_get_contents( $checkpoint ), true, 512, JSON_THROW_ON_ERROR ) : array(
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
+		$state = is_file( $checkpoint ) ? json_decode( file_get_contents( $checkpoint ), true, 512, JSON_THROW_ON_ERROR ) : array(
 			'offset'         => 0,
 			'cursor'         => array(),
 			'components'     => array(
@@ -77,6 +127,7 @@ final class CSM_Package {
 			); }
 		if ( $state['offset'] > 0 && ( ! is_file( $path . '.part' ) || filesize( $path . '.part' ) < $state['offset'] ) ) {
 			throw new RuntimeException( 'Source package checkpoint is missing or truncated.' ); }
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 		$fp = fopen( $path . '.part', 'c+b' );
 		if ( ! $fp || ! ftruncate( $fp, $state['offset'] ) || fseek( $fp, $state['offset'] ) !== 0 ) {
 			throw new RuntimeException( 'Cannot resume source packaging.' ); }
@@ -102,6 +153,7 @@ final class CSM_Package {
 				foreach ( CSM_Database::stream( $selection, true ) as $bytes ) {
 					$buffer                          .= $bytes;
 					$state['components']['database'] += strlen( $bytes );
+					// phpcs:ignore Squiz.PHP.DisallowSizeFunctionsInLoops.Found -- The buffer changes on each step; its current length controls exact frame boundaries.
 					while ( strlen( $buffer ) >= 262144 ) {
 						self::put( $fp, substr( $buffer, 0, 262144 ) );
 						$buffer = substr( $buffer, 262144 ); }
@@ -113,6 +165,7 @@ final class CSM_Package {
 				$buffer    = '';
 				$component = null;
 				$flush     = static function ( bool $all ) use ( $fp, &$buffer, &$component, &$state ): void {
+					// phpcs:ignore Squiz.PHP.DisallowSizeFunctionsInLoops.Found -- The buffer changes on each step; its current length controls exact frame boundaries.
 					while ( strlen( $buffer ) >= 262144 || ( $all && '' !== $buffer ) ) {
 						$part   = substr( $buffer, 0, 262144 );
 						$buffer = substr( $buffer, strlen( $part ) );
@@ -167,7 +220,9 @@ final class CSM_Package {
 			$state['complete'] = true;
 			CSM_Support::atomic_json( $checkpoint, $state );
 		} finally {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 			fclose( $fp ); }
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Same-filesystem rename is the atomic publication/recovery boundary.
 		if ( $done && ! rename( $path . '.part', $path ) ) {
 			throw new RuntimeException( 'Cannot publish source snapshot.' ); }
 		return array(
@@ -179,10 +234,22 @@ final class CSM_Package {
 		);
 	}
 
+	/**
+	 * Verify and decompress snapshot frames using durable input/output offsets.
+	 *
+	 * @param string $path Absolute private snapshot path.
+	 * @param array  $bundle Snapshot size, SHA-256 and negotiated transport metadata.
+	 * @param bool   $continuing Whether to retain the current bounded-work deadline.
+	 *
+	 * @return bool True after all frames and the whole snapshot checksum verify; false to resume later.
+	 *
+	 * @throws RuntimeException If stream metadata, bytes or protected storage fail validation.
+	 */
 	public static function unpack( string $path, array $bundle, bool $continuing = false ): bool {
 		CSM_Support::step( 8, $continuing );
 		$checkpoint = $path . '.unpack';
-		$state      = is_file( $checkpoint ) ? json_decode( file_get_contents( $checkpoint ), true, 32, JSON_THROW_ON_ERROR ) : array(
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- Read exact local file or input-stream bytes; no outbound HTTP request is made.
+		$state = is_file( $checkpoint ) ? json_decode( file_get_contents( $checkpoint ), true, 32, JSON_THROW_ON_ERROR ) : array(
 			'in'  => 0,
 			'out' => 0,
 		);
@@ -221,13 +288,16 @@ final class CSM_Package {
 			CSM_Support::atomic_json( $checkpoint, $state );
 			return true;
 		}
-		$in  = fopen( $path, 'rb' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
+		$in = fopen( $path, 'rb' );
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fopen -- Native handles retain offsets and locks across bounded streaming steps.
 		$out = fopen( $path . '.raw', 'c+b' );
 		if ( ! $in || ! $out || fseek( $in, $state['in'] ) !== 0 || ! ftruncate( $out, $state['out'] ) || fseek( $out, $state['out'] ) !== 0 ) {
 			throw new RuntimeException( 'Cannot resume frame verification.' ); }
 		try {
 			while ( $state['in'] < $bundle['size'] ) {
 				CSM_Support::check_cancel();
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- Read a bounded block from the current native stream offset.
 				$header = fread( $in, 36 );
 				if ( strlen( $header ) !== 36 ) {
 					throw new RuntimeException( 'Truncated frame header.' ); }
@@ -235,7 +305,9 @@ final class CSM_Package {
 				if ( $length < 1 || $length > 300000 || $state['in'] + 36 + $length > $bundle['size'] ) {
 					throw new RuntimeException( 'Invalid frame length.' ); }
 				$gzip = '';
+				// phpcs:ignore Squiz.PHP.DisallowSizeFunctionsInLoops.Found -- The buffer changes on each step; its current length controls exact frame boundaries.
 				while ( strlen( $gzip ) < $length ) {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fread -- Read a bounded block from the current native stream offset.
 					$part = fread( $in, $length - strlen( $gzip ) );
 					if ( false === $part || '' === $part ) {
 						throw new RuntimeException( 'Truncated frame.' );
@@ -265,7 +337,9 @@ final class CSM_Package {
 			fflush( $out );
 			CSM_Support::atomic_json( $checkpoint, $state );
 		} finally {
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 			fclose( $in );
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_fclose -- Release the native handle owned by this stream or lock.
 			fclose( $out ); }
 		return $state['in'] === $bundle['size'] && ! CSM_Support::due() && self::unpack( $path, $bundle, true );
 	}
